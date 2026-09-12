@@ -1,0 +1,47 @@
+{
+  "$schema": "https://schema.tauri.app/config/2.0.0-rc",
+  "productName": "JMComic Shelf",
+  "version": "1.0.6",
+  "identifier": "com.slumber999.jmcomic-shelf",
+  "build": {
+    "beforeDevCommand": "pnpm dev",
+    "devUrl": "http://localhost:5005",
+    "beforeBuildCommand": "pnpm build",
+    "frontendDist": "../dist"
+  },
+  "app": {
+    "windows": [
+      {
+        "title": "禁漫书架",
+        "width": 600,
+        "height": 720,
+        "minWidth": 600,
+        "minHeight": 400,
+        "center": true
+      }
+    ],
+    "security": {
+      "csp": null
+    }
+  },
+  "bundle": {
+    "active": true,
+    "targets": "all",
+    "licenseFile": "../LICENSE",
+    "icon": [
+      "icons/32x32.png",
+      "icons/128x128.png",
+      "icons/128x128@2x.png",
+      "icons/icon.icns",
+      "icons/icon.ico"
+    ],
+    "windows": {
+      "nsis": {
+        "installMode": "perMachine",
+        "languages": [
+          "SimpChinese"
+        ]
+      }
+    }
+  }
+}
