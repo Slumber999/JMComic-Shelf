@@ -101,8 +101,8 @@ pnpm install
 # 开发模式（改前端热更新）
 pnpm tauri dev
 
-# 打包：exe + 安装包
-pnpm tauri build
+# 打包：exe + NSIS 安装包
+pnpm tauri build --bundles nsis
 
 # 只想要免安装 exe，不打安装包（产物在 src-tauri/target/release/）
 pnpm build

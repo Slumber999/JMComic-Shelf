@@ -48,6 +48,8 @@ jobs:
 
       - name: Build tauri app
         uses: tauri-apps/tauri-action@v0
+        with:
+          args: --bundles nsis
 
       - name: Create artifacts directory
         run: mkdir -p artifacts
