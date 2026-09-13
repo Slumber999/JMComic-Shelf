@@ -15,6 +15,7 @@ import LogDialog from './dialogs/LogDialog.vue'
 import WeeklyPane from './panes/WeeklyPane.vue'
 import ComicReader from './reader/ComicReader.vue'
 import DownloadStatusBar from './components/DownloadStatusBar.vue'
+import CoverPreview from './components/CoverPreview.vue'
 import SettingsDialog from './dialogs/SettingsDialog/SettingsDialog.vue'
 import { lastProgress, progressLabel } from './reader/progress.ts'
 
@@ -238,6 +239,8 @@ onMounted(async () => {
         <ProgressesPane />
       </div>
     </div>
+    <!-- 列表模式下封面悬停预览的大图 -->
+    <CoverPreview v-if="store.coverPreview && store.comicLayout === 'list'" />
     <comic-reader
       v-if="store.readerTarget !== undefined"
       v-model:showing="readerShowing"

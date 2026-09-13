@@ -149,13 +149,19 @@ async resumeDownloadTask(chapterId: number) : Promise<Result<null, CommandError>
     else return { status: "error", error: e  as any };
 }
 },
-async deleteDownloadTask(chapterId: number) : Promise<Result<null, CommandError>> {
+async deleteDownloadTask(chapterId: number, deleteFiles: boolean) : Promise<Result<null, CommandError>> {
     try {
-    return { status: "ok", data: await TAURI_INVOKE("delete_download_task", { chapterId }) };
+    return { status: "ok", data: await TAURI_INVOKE("delete_download_task", { chapterId, deleteFiles }) };
 } catch (e) {
     if(e instanceof Error) throw e;
     else return { status: "error", error: e  as any };
 }
+},
+/**
+ * 前端挂载后同步一次下载任务，把恢复出来的任务补进进度列表
+ */
+async syncDownloadTasks() : Promise<void> {
+    await TAURI_INVOKE("sync_download_tasks");
 },
 async downloadComic(aid: number) : Promise<Result<null, CommandError>> {
     try {
@@ -264,6 +270,45 @@ async exportCbzWithoutDownload(comicIds: number[]) : Promise<Result<null, Comman
     if(e instanceof Error) throw e;
     else return { status: "error", error: e  as any };
 }
+},
+/**
+ * 暂停导出任务：当前章节做完后停下，任务留在暂停状态
+ */
+async pauseExportTask(uuid: string) : Promise<Result<null, CommandError>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("pause_export_task", { uuid }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+/**
+ * 继续导出任务：用「跳过已存在」重新跑一遍，已经导完的章节会跳过
+ */
+async resumeExportTask(uuid: string) : Promise<Result<null, CommandError>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("resume_export_task", { uuid }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+/**
+ * 删除导出任务；delete_files 为 true 时连这本漫画的导出目录一起删掉
+ */
+async deleteExportTask(uuid: string, deleteFiles: boolean) : Promise<Result<null, CommandError>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("delete_export_task", { uuid, deleteFiles }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+/**
+ * 前端挂载后同步一次导出任务，把恢复出来的任务补进列表
+ */
+async syncExportTasks() : Promise<void> {
+    await TAURI_INVOKE("sync_export_tasks");
 },
 /**
  * 列出某个目录里可以导出进快速阅读器的漫画（给前端勾选）
@@ -442,6 +487,7 @@ downloadEvent: DownloadEvent,
 exportCbzEvent: ExportCbzEvent,
 exportPdfEvent: ExportPdfEvent,
 exportQuickReaderEvent: ExportQuickReaderEvent,
+exportTaskEvent: ExportTaskEvent,
 logEvent: LogEvent,
 updateDownloadedComicsEvent: UpdateDownloadedComicsEvent
 }>({
@@ -450,6 +496,7 @@ downloadEvent: "download-event",
 exportCbzEvent: "export-cbz-event",
 exportPdfEvent: "export-pdf-event",
 exportQuickReaderEvent: "export-quick-reader-event",
+exportTaskEvent: "export-task-event",
 logEvent: "log-event",
 updateDownloadedComicsEvent: "update-downloaded-comics-event"
 })
@@ -548,6 +595,18 @@ export type ExportSkipMode =
  * 跳过曾导出过的章节（即使本地文件已删除）
  */
 "SkipExported"
+/**
+ * 导出任务的状态变化（暂停/继续/完成/删除）
+ */
+export type ExportTaskEvent = { event: "StateChanged"; data: { uuid: string; kind: ExportTaskKind; state: ExportTaskState; comicId: number; comicTitle: string; done: number; total: number; comicExportDir: string } } | { event: "Deleted"; data: { uuid: string } }
+/**
+ * 导出类型（pdf 暂时没有任务，保持原样）
+ */
+export type ExportTaskKind = "Cbz" | "CbzDirect"
+/**
+ * 导出任务状态
+ */
+export type ExportTaskState = "Exporting" | "Paused" | "Completed" | "Failed"
 export type FavoriteFolderRespData = { FID: string; UID: string; name: string }
 export type FavoriteSort = "FavoriteTime" | "UpdateTime"
 export type GetFavoriteResult = { list: ComicInFavorite[]; folderList: FavoriteFolderRespData[]; total: number; count: number }

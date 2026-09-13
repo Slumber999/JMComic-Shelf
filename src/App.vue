@@ -5,6 +5,7 @@ import AppContent from './AppContent.vue'
 import {
   GlobalThemeOverrides,
   NConfigProvider,
+  NDialogProvider,
   NMessageProvider,
   NModalProvider,
   NNotificationProvider,
@@ -43,7 +44,9 @@ const themeOverrides: GlobalThemeOverrides = {
     <n-modal-provider>
       <n-notification-provider placement="bottom-right" :max="3">
         <n-message-provider>
-          <app-content />
+          <n-dialog-provider>
+            <app-content />
+          </n-dialog-provider>
         </n-message-provider>
       </n-notification-provider>
     </n-modal-provider>

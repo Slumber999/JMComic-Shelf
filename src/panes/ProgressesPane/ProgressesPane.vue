@@ -79,6 +79,8 @@ onMounted(async () => {
     .then((unListenFn) => {
       unListenDownloadEvent = unListenFn
     })
+  // 启动时恢复的任务对应的下载事件前端收不到，这里主动拉一次
+  await commands.syncDownloadTasks()
 })
 
 onUnmounted(() => {

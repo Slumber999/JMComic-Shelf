@@ -227,7 +227,7 @@ onMounted(refresh)
                 清理选中的 {{ selectedQuickReaders.length }} 个
               </n-button>
             </template>
-            分享包里的图片是复制出来的，删掉不影响你下载的漫画；需要时可以在「导出相关」里重新导出。
+            分享包里的图片是复制出来的，删掉不影响你下载的漫画；需要时可以在「导出」里重新导出。
           </n-popconfirm>
           <span v-else class="text-xs text-gray-500">没有</span>
         </div>

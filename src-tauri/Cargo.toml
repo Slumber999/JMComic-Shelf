@@ -1,7 +1,7 @@
 [package]
 name = "jmcomic-shelf"
 # 与 tauri.conf.json 的 version 保持一致，否则 exe 的文件属性会显示成旧版本
-version = "1.0.6"
+version = "1.0.7"
 description = "禁漫书架 (JMComic Shelf) - 禁漫天堂下载与本地书库客户端"
 authors = ["Slumber999"]
 edition = "2021"

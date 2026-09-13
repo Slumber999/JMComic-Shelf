@@ -6,6 +6,7 @@ use tauri_specta::Event;
 
 use crate::{
     downloader::download_task_state::DownloadTaskState,
+    export::manager::{ExportTaskKind, ExportTaskState},
     types::{ChapterInfo, Comic},
 };
 
@@ -122,6 +123,25 @@ pub enum ExportCbzEvent {
         comic_id: i64,
         chapter_export_dir: PathBuf,
     },
+}
+
+/// 导出任务的状态变化（暂停/继续/完成/删除）
+#[derive(Debug, Clone, Serialize, Deserialize, Type, Event)]
+#[serde(tag = "event", content = "data")]
+pub enum ExportTaskEvent {
+    #[serde(rename_all = "camelCase")]
+    StateChanged {
+        uuid: String,
+        kind: ExportTaskKind,
+        state: ExportTaskState,
+        comic_id: i64,
+        comic_title: String,
+        done: u32,
+        total: u32,
+        comic_export_dir: PathBuf,
+    },
+    #[serde(rename_all = "camelCase")]
+    Deleted { uuid: String },
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Type, Event)]

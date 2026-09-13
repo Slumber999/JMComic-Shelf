@@ -1,5 +1,6 @@
 mod cbz;
 mod cbz_direct;
+pub mod manager;
 mod pdf;
 
 use std::{
@@ -9,7 +10,7 @@ use std::{
 };
 
 pub use cbz::{cbz, cbz_chapters};
-pub use cbz_direct::export_cbz_without_download;
+pub use cbz_direct::{export_cbz_without_download, resume_comic_cbz};
 use eyre::WrapErr;
 use parking_lot::Mutex;
 pub use pdf::{pdf, pdf_chapters};

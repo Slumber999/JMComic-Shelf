@@ -3,7 +3,7 @@ import { ProgressData } from '../../../types.ts'
 import { ref, watchEffect, computed, nextTick, useTemplateRef, defineComponent, PropType } from 'vue'
 import { PartialSelectionOptions, SelectionArea, SelectionEvent } from '@viselect/vue'
 import { commands } from '../../../bindings.ts'
-import { DropdownOption, NDropdown, NIcon, NProgress, ProgressProps } from 'naive-ui'
+import { DropdownOption, NDropdown, NIcon, NProgress, ProgressProps, useDialog, useMessage } from 'naive-ui'
 import { useStore } from '../../../store.ts'
 import {
   PhPause,
@@ -16,6 +16,8 @@ import {
 } from '@phosphor-icons/vue'
 
 const store = useStore()
+const dialog = useDialog()
+const message = useMessage()
 
 const selectionOptions: PartialSelectionOptions = {
   selectables: '.selectable',
@@ -63,6 +65,40 @@ function unselectAll({ event, selection }: SelectionEvent) {
     selection.clearSelection()
     selectedIds.value.clear()
   }
+}
+
+/// 删除选中的下载任务；deleteFiles 为 true 时连已下载的文件一起删掉
+async function deleteSelectedTasks(deleteFiles: boolean) {
+  const chapterIds = Array.from(selectedIds.value)
+  if (chapterIds.length === 0) {
+    return
+  }
+
+  for (const chapterId of chapterIds) {
+    const result = await commands.deleteDownloadTask(chapterId, deleteFiles)
+    if (result.status === 'error') {
+      console.error(result.error)
+      message.error(result.error.message, { duration: 8000 })
+    }
+  }
+}
+
+/// 删文件是不可恢复的操作，先确认一下
+function confirmDeleteTasksAndFiles() {
+  const chapterIds = Array.from(selectedIds.value)
+  if (chapterIds.length === 0) {
+    return
+  }
+
+  dialog.warning({
+    title: '删除任务和已下载文件',
+    content: `将删除选中的 ${chapterIds.length} 个下载任务，并删除它们已经下载到磁盘的文件夹（直接删除，不进回收站）。`,
+    positiveText: '删除',
+    negativeText: '取消',
+    onPositiveClick: async () => {
+      await deleteSelectedTasks(true)
+    },
+  })
 }
 
 const dropdownX = ref<number>(0)
@@ -143,8 +179,8 @@ const dropdownOptions: DropdownOption[] = [
     },
   },
   {
-    label: '删除',
-    key: 'cancel',
+    label: '删除任务',
+    key: 'delete-task',
     icon: () => (
       <NIcon size="20">
         <PhTrash />
@@ -152,12 +188,22 @@ const dropdownOptions: DropdownOption[] = [
     ),
     props: {
       onClick: () => {
-        selectedIds.value.forEach(async (chapterId) => {
-          const result = await commands.deleteDownloadTask(chapterId)
-          if (result.status === 'error') {
-            console.error(result.error)
-          }
-        })
+        void deleteSelectedTasks(false)
+        dropdownShowing.value = false
+      },
+    },
+  },
+  {
+    label: '删除任务和文件',
+    key: 'delete-task-and-files',
+    icon: () => (
+      <NIcon size="20">
+        <PhTrash />
+      </NIcon>
+    ),
+    props: {
+      onClick: () => {
+        confirmDeleteTasksAndFiles()
         dropdownShowing.value = false
       },
     },

@@ -18,7 +18,8 @@ use tokio::time::sleep;
 use tracing::{instrument, Instrument};
 use walkdir::WalkDir;
 
-use crate::config::{api_line_domains, ApiDomainMode, Config, LocalLibrarySource};
+use crate::config::{api_line_domains, ApiDomainMode, Config, ExportSkipMode, LocalLibrarySource};
+use crate::export::manager::{ExportTaskKind, ExportTaskState};
 use crate::errors::{CommandError, CommandResult};
 use crate::events::{DownloadAllFavoritesEvent, UpdateDownloadedComicsEvent};
 use crate::extensions::{AppHandleExt, EyreReportToMessage};
@@ -423,13 +424,24 @@ pub fn resume_download_task(app: AppHandle, chapter_id: i64) -> CommandResult<()
 #[tauri::command(async)]
 #[specta::specta]
 #[instrument(level = "error", skip_all, fields(chapter_id = chapter_id))]
-pub fn delete_download_task(app: AppHandle, chapter_id: i64) -> CommandResult<()> {
+pub fn delete_download_task(
+    app: AppHandle,
+    chapter_id: i64,
+    delete_files: bool,
+) -> CommandResult<()> {
     let download_manager = app.get_download_manager();
 
     download_manager
-        .delete_download_task(chapter_id)
+        .delete_download_task(chapter_id, delete_files)
         .map_err(|err| CommandError::from("删除下载任务失败", err))?;
     Ok(())
+}
+
+/// 前端挂载后同步一次下载任务，把恢复出来的任务补进进度列表
+#[tauri::command(async)]
+#[specta::specta]
+pub fn sync_download_tasks(app: AppHandle) {
+    app.get_download_manager().sync_tasks();
 }
 
 #[tauri::command(async)]
@@ -1078,7 +1090,33 @@ pub fn get_downloaded_comics(app: AppHandle) -> Vec<Comic> {
 #[allow(clippy::needless_pass_by_value)]
 #[instrument(level = "error", skip_all, fields(comic_id = comic.id, comic_title = comic.name))]
 pub fn export_cbz(app: AppHandle, comic: Comic) -> CommandResult<()> {
-    export::cbz(&app, &comic).map_err(|err| CommandError::from("导出cbz失败", err))?;
+    let skip_mode = app.get_config().read().export_skip_mode;
+    let total = u32::try_from(
+        comic
+            .chapter_infos
+            .iter()
+            .filter(|chapter| chapter.is_downloaded.unwrap_or(false))
+            .count(),
+    )
+    .unwrap_or(u32::MAX);
+    let comic_export_dir = comic
+        .get_comic_export_dir(&app)
+        .map_err(|err| CommandError::from("导出cbz失败", err))?;
+
+    let task = app.get_export_manager().create_task(
+        uuid::Uuid::new_v4().to_string(),
+        comic.id,
+        comic.name.clone(),
+        ExportTaskKind::Cbz,
+        total,
+        comic_export_dir,
+    );
+
+    export::cbz(&app, &comic, &task, skip_mode).map_err(|err| {
+        task.set_state(ExportTaskState::Failed);
+        CommandError::from("导出cbz失败", err)
+    })?;
+
     Ok(())
 }
 
@@ -1100,9 +1138,35 @@ pub fn export_cbz_chapters(
     chapter_ids: Vec<i64>,
 ) -> CommandResult<()> {
     let comic_title = comic.name.clone();
-    export::cbz_chapters(&app, &comic, chapter_ids)
-        .wrap_err(format!("漫画`{comic_title}`导出指定章节cbz失败"))
+    let total = u32::try_from(
+        comic
+            .chapter_infos
+            .iter()
+            .filter(|chapter| {
+                chapter.is_downloaded.unwrap_or(false) && chapter_ids.contains(&chapter.chapter_id)
+            })
+            .count(),
+    )
+    .unwrap_or(u32::MAX);
+    let comic_export_dir = comic
+        .get_comic_export_dir(&app)
         .map_err(|err| CommandError::from("导出指定章节cbz失败", err))?;
+
+    let task = app.get_export_manager().create_task(
+        uuid::Uuid::new_v4().to_string(),
+        comic.id,
+        comic_title.clone(),
+        ExportTaskKind::Cbz,
+        total,
+        comic_export_dir,
+    );
+
+    export::cbz_chapters(&app, &comic, chapter_ids, &task, ExportSkipMode::None)
+        .wrap_err(format!("漫画`{comic_title}`导出指定章节cbz失败"))
+        .map_err(|err| {
+            task.set_state(ExportTaskState::Failed);
+            CommandError::from("导出指定章节cbz失败", err)
+        })?;
     Ok(())
 }
 
@@ -1122,8 +1186,98 @@ pub fn export_pdf_chapters(
 }
 
 
-#[allow(clippy::cast_possible_wrap)]
+/// 暂停导出任务：当前章节做完后停下，任务留在暂停状态
 #[tauri::command(async)]
+#[specta::specta]
+#[instrument(level = "error", skip_all, fields(uuid = uuid))]
+pub fn pause_export_task(app: AppHandle, uuid: String) -> CommandResult<()> {
+    let Some(task) = app.get_export_manager().get(&uuid) else {
+        return Err(CommandError::from(
+            "暂停导出任务失败",
+            eyre!("未找到导出任务 {uuid}"),
+        ));
+    };
+
+    task.set_state(ExportTaskState::Paused);
+    Ok(())
+}
+
+/// 继续导出任务：用「跳过已存在」重新跑一遍，已经导完的章节会跳过
+#[tauri::command(async)]
+#[specta::specta]
+#[instrument(level = "error", skip_all, fields(uuid = uuid))]
+pub async fn resume_export_task(app: AppHandle, uuid: String) -> CommandResult<()> {
+    let Some(task) = app.get_export_manager().get(&uuid) else {
+        return Err(CommandError::from(
+            "继续导出任务失败",
+            eyre!("未找到导出任务 {uuid}"),
+        ));
+    };
+
+    task.set_state(ExportTaskState::Exporting);
+
+    match task.kind {
+        ExportTaskKind::Cbz => {
+            let Some(comic) = load_local_comic(&app, task.comic_id) else {
+                task.set_state(ExportTaskState::Failed);
+                return Err(CommandError::from(
+                    "继续导出任务失败",
+                    eyre!("本地找不到这本漫画的元数据，无法继续导出"),
+                ));
+            };
+
+            tauri::async_runtime::spawn_blocking(move || {
+                if let Err(err) = export::cbz(&app, &comic, &task, ExportSkipMode::SkipExisting) {
+                    tracing::error!(message = format!("{err:?}"), "继续导出cbz失败");
+                    task.set_state(ExportTaskState::Failed);
+                }
+            });
+        }
+        ExportTaskKind::CbzDirect => {
+            let comic = utils::get_comic(app.clone(), task.comic_id)
+                .await
+                .map_err(|err| {
+                    task.set_state(ExportTaskState::Failed);
+                    CommandError::from("继续导出任务失败", err)
+                })?;
+
+            tauri::async_runtime::spawn(async move {
+                if let Err(err) = export::resume_comic_cbz(&app, &comic, &task).await {
+                    tracing::error!(message = format!("{err:?}"), "继续导出cbz失败");
+                    task.set_state(ExportTaskState::Failed);
+                }
+            });
+        }
+    }
+
+    Ok(())
+}
+
+/// 删除导出任务；delete_files 为 true 时连这本漫画的导出目录一起删掉
+#[tauri::command(async)]
+#[specta::specta]
+#[instrument(level = "error", skip_all, fields(uuid = uuid))]
+pub fn delete_export_task(app: AppHandle, uuid: String, delete_files: bool) -> CommandResult<()> {
+    app.get_export_manager()
+        .delete_task(&uuid, delete_files)
+        .map_err(|err| CommandError::from("删除导出任务失败", err))?;
+    Ok(())
+}
+
+/// 前端挂载后同步一次导出任务，把恢复出来的任务补进列表
+#[tauri::command(async)]
+#[specta::specta]
+pub fn sync_export_tasks(app: AppHandle) {
+    app.get_export_manager().sync_tasks();
+}
+
+/// 从本地下载目录的元数据里还原 Comic（继续导出时用）
+fn load_local_comic(app: &AppHandle, comic_id: i64) -> Option<Comic> {
+    let (comic_download_dir, _comic_title) = local_index::comic_dir_and_name(app, comic_id)?;
+    Comic::from_metadata(&comic_download_dir.join("元数据.json")).ok()
+}
+
+#[allow(clippy::cast_possible_wrap)]#[tauri::command(async)]
 #[specta::specta]
 #[instrument(level = "error", skip_all, fields(folder_id = folder_id, sort = ?sort))]
 pub async fn get_all_favorite_comics(

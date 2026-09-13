@@ -1,13 +1,13 @@
 <script setup lang="tsx">
 import { commands, events } from '../../../bindings.ts'
 import { computed, defineComponent, nextTick, onMounted, onUnmounted, PropType, ref, watchEffect } from 'vue'
-import { DropdownOption, NDropdown, NIcon, NProgress } from 'naive-ui'
-import { PhChecks, PhCircleNotch, PhFolderOpen, PhTrash } from '@phosphor-icons/vue'
+import { DropdownOption, NDropdown, NIcon, NProgress, useDialog, useMessage } from 'naive-ui'
+import { PhCaretRight, PhChecks, PhCircleNotch, PhFolderOpen, PhPause, PhTrash } from '@phosphor-icons/vue'
 import { PartialSelectionOptions, SelectionArea, SelectionEvent } from '@viselect/vue'
 import { useStore } from '../../../store.ts'
 import IconButton from '../../../components/IconButton.vue'
 
-type ProgressState = 'Processing' | 'Error' | 'End'
+type ProgressState = 'Processing' | 'Paused' | 'Error' | 'End'
 
 export interface ProgressData {
   uuid: string
@@ -23,6 +23,9 @@ export interface ProgressData {
 }
 
 const store = useStore()
+const dialog = useDialog()
+const message = useMessage()
+
 const selectionOptions: PartialSelectionOptions = {
   selectables: '.selectable',
   features: { deselectOnBlur: true },
@@ -42,6 +45,118 @@ watchEffect(() => {
     }
   }
 })
+
+/// 导出任务的状态事件：暂停 / 继续 / 完成 / 失败，以及任务被删除
+let unListenExportTaskEvent: undefined | (() => void)
+onMounted(async () => {
+  unListenExportTaskEvent = await events.exportTaskEvent.listen(({ payload: taskEvent }) => {
+    if (taskEvent.event === 'Deleted') {
+      progresses.value.delete(taskEvent.data.uuid)
+      selectedIds.value.delete(taskEvent.data.uuid)
+      return
+    }
+
+    if (taskEvent.event !== 'StateChanged') {
+      return
+    }
+
+    const { uuid, state, comicTitle, done, total, comicId, comicExportDir } = taskEvent.data
+    const existing = progresses.value.get(uuid)
+    const percentage = total === 0 ? 100 : Math.min(100, (done / total) * 100)
+
+    if (state === 'Exporting') {
+      // 进度细节由 ExportCbzEvent::Progress 上报，这里只在还没有这一行时补一行
+      if (existing === undefined) {
+        progresses.value.set(uuid, {
+          uuid,
+          exportType: 'cbz',
+          state: 'Processing',
+          comicTitle,
+          current: done,
+          total,
+          percentage,
+          indicator: `CBZ导出中 ${done}/${total}`,
+          chapterExportDir: comicExportDir,
+          comicId,
+        })
+      }
+      return
+    }
+
+    progresses.value.set(uuid, {
+      uuid,
+      exportType: 'cbz',
+      state: state === 'Paused' ? 'Paused' : state === 'Completed' ? 'End' : 'Error',
+      comicTitle,
+      current: done,
+      total,
+      percentage,
+      indicator: state === 'Paused' ? `已暂停 ${done}/${total}` : state === 'Completed' ? 'CBZ导出完成' : 'CBZ导出失败',
+      chapterExportDir: existing?.chapterExportDir ?? comicExportDir,
+      comicId,
+    })
+  })
+
+  // 启动时恢复的任务对应的导出事件前端收不到，这里主动拉一次
+  await commands.syncExportTasks()
+})
+onUnmounted(() => {
+  unListenExportTaskEvent?.()
+})
+
+/// 暂停选中的导出任务
+async function pauseSelectedExportTasks() {
+  for (const uuid of selectedIds.value) {
+    const result = await commands.pauseExportTask(uuid)
+    if (result.status === 'error') {
+      console.error(result.error)
+      message.error(result.error.message, { duration: 8000 })
+    }
+  }
+}
+
+/// 继续选中的导出任务（被暂停的那一章会重新导出，已导完的章节会跳过）
+async function resumeSelectedExportTasks() {
+  for (const uuid of selectedIds.value) {
+    const result = await commands.resumeExportTask(uuid)
+    if (result.status === 'error') {
+      console.error(result.error)
+      message.error(result.error.message, { duration: 8000 })
+    }
+  }
+}
+
+/// 删除选中的导出任务
+async function deleteSelectedExportTasks(deleteFiles: boolean) {
+  for (const uuid of Array.from(selectedIds.value)) {
+    const result = await commands.deleteExportTask(uuid, deleteFiles)
+    if (result.status === 'error') {
+      console.error(result.error)
+      message.error(result.error.message, { duration: 8000 })
+      continue
+    }
+    progresses.value.delete(uuid)
+    selectedIds.value.delete(uuid)
+  }
+}
+
+/// 删导出文件是不可恢复的操作，先确认一下
+function confirmDeleteSelectedExportTasks() {
+  const count = selectedIds.value.size
+  if (count === 0) {
+    return
+  }
+
+  dialog.warning({
+    title: '删除导出任务和文件',
+    content: `将删除选中的 ${count} 个导出任务，并删除这些漫画在导出目录里的文件夹（直接删除，不进回收站）。`,
+    positiveText: '删除',
+    negativeText: '取消',
+    onPositiveClick: async () => {
+      await deleteSelectedExportTasks(true)
+    },
+  })
+}
 
 async function syncPickedAndDownloadedComic(comicId: number) {
   const pickedComic = store.pickedComic?.id === comicId ? store.pickedComic : undefined
@@ -91,6 +206,10 @@ onMounted(() => {
         const { uuid, current, imgCurrent, imgTotal, chapterTitle } = exportEvent.data
         const progressData = progresses.value.get(uuid)
         if (progressData !== undefined) {
+          // 已暂停的行不要被进度事件刷回「导出中」
+          if (progressData.state === 'Paused') {
+            return
+          }
           progressData.state = 'Processing'
           progressData.current = current
 
@@ -261,7 +380,7 @@ function useDropdown() {
       props: {
         onClick: () => {
           progresses.value.forEach((p, uuid) => {
-            if (p.state !== 'Processing') {
+            if (p.state !== 'End' && p.state !== 'Error') {
               selectedIds.value.add(uuid)
             }
           })
@@ -270,8 +389,38 @@ function useDropdown() {
       },
     },
     {
-      label: '删除',
-      key: 'delete',
+      label: '继续',
+      key: 'resume',
+      icon: () => (
+        <NIcon size="20">
+          <PhCaretRight />
+        </NIcon>
+      ),
+      props: {
+        onClick: () => {
+          void resumeSelectedExportTasks()
+          dropdownShowing.value = false
+        },
+      },
+    },
+    {
+      label: '暂停',
+      key: 'pause',
+      icon: () => (
+        <NIcon size="20">
+          <PhPause />
+        </NIcon>
+      ),
+      props: {
+        onClick: () => {
+          void pauseSelectedExportTasks()
+          dropdownShowing.value = false
+        },
+      },
+    },
+    {
+      label: '删除任务',
+      key: 'delete-task',
       icon: () => (
         <NIcon size="20">
           <PhTrash />
@@ -279,7 +428,22 @@ function useDropdown() {
       ),
       props: {
         onClick: () => {
-          selectedIds.value.forEach((uuid) => progresses.value.delete(uuid))
+          void deleteSelectedExportTasks(false)
+          dropdownShowing.value = false
+        },
+      },
+    },
+    {
+      label: '删除任务和文件',
+      key: 'delete-task-and-files',
+      icon: () => (
+        <NIcon size="20">
+          <PhTrash />
+        </NIcon>
+      ),
+      props: {
+        onClick: () => {
+          confirmDeleteSelectedExportTasks()
           dropdownShowing.value = false
         },
       },
@@ -316,7 +480,6 @@ const ExportProgress = defineComponent({
     },
   },
   setup(props) {
-    const progressSelectable = computed(() => props.p.state !== 'Processing')
     const selectableClass = computed(() => {
       return ['selectable', selectedIds.value.has(props.uuid) ? 'selected shadow-md' : 'hover:bg-gray-1']
     })
@@ -343,11 +506,8 @@ const ExportProgress = defineComponent({
     return () => (
       <div
         data-key={props.uuid}
-        class={[
-          'flex flex-col border border-solid rounded-md border-gray-2 p-1 mb-2',
-          progressSelectable.value && selectableClass.value,
-        ]}
-        onContextmenu={progressSelectable.value ? onContextMenu : undefined}>
+        class={['flex flex-col border border-solid rounded-md border-gray-2 p-1 mb-2', selectableClass.value]}
+        onContextmenu={onContextMenu}>
         <div class="text-ellipsis whitespace-nowrap overflow-hidden" title={props.p.comicTitle}>
           {props.p.comicTitle}
         </div>
@@ -360,6 +520,14 @@ const ExportProgress = defineComponent({
             <NProgress class="text-blue-5" percentage={props.p.percentage} processing>
               {props.p.indicator}
             </NProgress>
+          </div>
+        )}
+        {props.p.state === 'Paused' && (
+          <div class="flex items-center">
+            <NIcon class="text-yellow-5 mr-2" size={20}>
+              <PhPause />
+            </NIcon>
+            <div class="ml-auto text-yellow-6">{props.p.indicator}</div>
           </div>
         )}
         {props.p.state === 'Error' && (

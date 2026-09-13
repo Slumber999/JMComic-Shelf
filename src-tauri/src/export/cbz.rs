@@ -16,6 +16,7 @@ use crate::{
     events::ExportCbzEvent,
     export::{
         get_downloaded_chapters, get_downloaded_chapters_by_ids, get_image_paths,
+        manager::{ExportTask, ExportTaskState},
         ComicExportLockGuard, ExportFormat,
     },
     extensions::{AppHandleExt, EyreReportToMessage},
@@ -42,7 +43,12 @@ impl Drop for CbzErrorEventGuard {
 #[allow(clippy::cast_possible_wrap)]
 #[allow(clippy::cast_possible_truncation)]
 #[instrument(level = "error", skip_all, fields(comic_id = comic.id, comic_title = comic.name))]
-pub fn cbz(app: &AppHandle, comic: &Comic) -> eyre::Result<()> {
+pub fn cbz(
+    app: &AppHandle,
+    comic: &Comic,
+    task: &Arc<ExportTask>,
+    skip_mode: ExportSkipMode,
+) -> eyre::Result<()> {
     let comic_id = comic.id;
     let comic_title = &comic.name;
     let export_lock = app.get_export_lock().inner().clone();
@@ -56,16 +62,21 @@ pub fn cbz(app: &AppHandle, comic: &Comic) -> eyre::Result<()> {
         comic_id,
     };
 
-    let skip_mode = app.get_config().read().export_skip_mode;
     let downloaded_chapters = get_downloaded_chapters(&comic.chapter_infos);
 
-    cbz_internal(app, comic, downloaded_chapters, skip_mode)
+    cbz_internal(app, comic, downloaded_chapters, task, skip_mode)
 }
 
 #[allow(clippy::cast_possible_wrap)]
 #[allow(clippy::cast_possible_truncation)]
 #[instrument(level = "error", skip_all, fields(comic_id = comic.id, comic_title = comic.name))]
-pub fn cbz_chapters(app: &AppHandle, comic: &Comic, chapter_ids: Vec<i64>) -> eyre::Result<()> {
+pub fn cbz_chapters(
+    app: &AppHandle,
+    comic: &Comic,
+    chapter_ids: Vec<i64>,
+    task: &Arc<ExportTask>,
+    skip_mode: ExportSkipMode,
+) -> eyre::Result<()> {
     let comic_id = comic.id;
     let comic_title = &comic.name;
     let export_lock = app.get_export_lock().inner().clone();
@@ -80,7 +91,7 @@ pub fn cbz_chapters(app: &AppHandle, comic: &Comic, chapter_ids: Vec<i64>) -> ey
     };
 
     let downloaded_chapters = get_downloaded_chapters_by_ids(&comic.chapter_infos, &chapter_ids);
-    cbz_internal(app, comic, downloaded_chapters, ExportSkipMode::None)
+    cbz_internal(app, comic, downloaded_chapters, task, skip_mode)
 }
 
 #[allow(clippy::cast_possible_wrap)]
@@ -91,14 +102,17 @@ fn cbz_internal(
     app: &AppHandle,
     comic: &Comic,
     downloaded_chapters: Vec<ChapterInfo>,
+    task: &Arc<ExportTask>,
     skip_mode: ExportSkipMode,
 ) -> eyre::Result<()> {
+    let total_chapters = u32::try_from(downloaded_chapters.len()).unwrap_or(u32::MAX);
     // 生成格式化的xml
     let cfg = yaserde::ser::Config {
         perform_indent: true,
         ..Default::default()
     };
-    let event_uuid = uuid::Uuid::new_v4().to_string();
+    let event_uuid = task.uuid.clone();
+    task.set_progress(0, total_chapters);
     // 发送开始导出cbz事件
     let _ = ExportCbzEvent::Start {
         uuid: event_uuid.clone(),
@@ -141,6 +155,11 @@ fn cbz_internal(
     let current_span = tracing::Span::current();
     let downloaded_chapters = downloaded_chapters.into_par_iter();
     downloaded_chapters.try_for_each(|mut chapter_info| -> eyre::Result<()> {
+        // 暂停/删除检查点：暂停或删除后不再开始新的章节（当前章节会做完）
+        if task.is_paused() || task.is_deleted() {
+            return Ok(());
+        }
+
         let _enter = current_span.enter();
         let span = tracing::error_span!(
             "export_cbz_rayon",
@@ -191,6 +210,7 @@ fn cbz_internal(
                 chapter_title: None,
             }
             .emit(app);
+            task.set_progress(current, total_chapters);
             return Ok(());
         }
 
@@ -262,11 +282,20 @@ fn cbz_internal(
             chapter_title: None,
         }
         .emit(app);
+        task.set_progress(current, total_chapters);
 
         Ok(())
     })?;
     // 标记为成功，后面drop时就不会发送Error事件
     error_event_guard.success = true;
+
+    // 被暂停或被删除：不发完成事件
+    if task.is_paused() || task.is_deleted() {
+        tracing::info!("导出任务已暂停或被删除");
+        return Ok(());
+    }
+
+    task.set_state(ExportTaskState::Completed);
     // 发送导出cbz完成事件
     let _ = ExportCbzEvent::End {
         uuid: event_uuid,

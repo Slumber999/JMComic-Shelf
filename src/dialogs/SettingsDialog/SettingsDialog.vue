@@ -9,6 +9,7 @@ import DownloadSettings from './components/DownloadSettings.vue'
 import NetworkSettings from './components/NetworkSettings.vue'
 import ExportSettings from './components/ExportSettings.vue'
 import StorageSettings from './components/StorageSettings.vue'
+import InterfaceSettings from './components/InterfaceSettings.vue'
 
 const store = useStore()
 
@@ -36,17 +37,20 @@ async function showConfigInFileManager() {
         -->
         <div class="max-h-[65vh] overflow-y-auto pr-1">
           <n-tabs v-model:value="currentTabName" type="line" size="small">
-            <n-tab-pane name="download_settings" tab="下载相关">
+            <n-tab-pane name="download_settings" tab="下载">
               <DownloadSettings />
             </n-tab-pane>
-            <n-tab-pane name="network_settings" tab="网络相关">
+            <n-tab-pane name="network_settings" tab="网络">
               <NetworkSettings />
             </n-tab-pane>
-            <n-tab-pane name="export_settings" tab="导出相关">
+            <n-tab-pane name="export_settings" tab="导出">
               <ExportSettings />
             </n-tab-pane>
             <n-tab-pane name="storage_settings" tab="空间">
               <StorageSettings />
+            </n-tab-pane>
+            <n-tab-pane name="interface_settings" tab="界面">
+              <InterfaceSettings />
             </n-tab-pane>
           </n-tabs>
         </div>

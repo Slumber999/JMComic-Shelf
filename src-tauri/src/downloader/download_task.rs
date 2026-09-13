@@ -33,7 +33,7 @@ pub struct DownloadTask {
     pub comic: Arc<Comic>,
     pub chapter_info: Arc<ChapterInfo>,
     pub state_sender: watch::Sender<DownloadTaskState>,
-    pub delete_sender: watch::Sender<()>,
+    pub delete_sender: watch::Sender<bool>,
     pub downloaded_img_count: Arc<AtomicU32>,
     pub total_img_count: Arc<AtomicU32>,
 }
@@ -48,7 +48,20 @@ impl DownloadTask {
             chapter_id = chapter_id
         )
     )]
-    pub fn new(app: AppHandle, mut comic: Comic, chapter_id: i64) -> eyre::Result<Arc<Self>> {
+    pub fn new(app: AppHandle, comic: Comic, chapter_id: i64) -> eyre::Result<Arc<Self>> {
+        Self::new_with_state(app, comic, chapter_id, DownloadTaskState::Pending, 0, 0)
+    }
+
+    /// 用指定状态和进度创建任务
+    /// - 启动时恢复上次没下完的任务用这个：状态传 Paused，等用户手动继续
+    pub fn new_with_state(
+        app: AppHandle,
+        mut comic: Comic,
+        chapter_id: i64,
+        state: DownloadTaskState,
+        downloaded_img_count: u32,
+        total_img_count: u32,
+    ) -> eyre::Result<Arc<Self>> {
         comic
             .ensure_download_dir_fields(&app)
             .wrap_err("更新下载目录字段失败")?;
@@ -60,8 +73,8 @@ impl DownloadTask {
             .cloned()
             .ok_or_eyre(format!("未找到章节ID为`{chapter_id}`的章节信息"))?;
 
-        let (state_sender, _) = watch::channel(DownloadTaskState::Pending);
-        let (delete_sender, _) = watch::channel(());
+        let (state_sender, _) = watch::channel(state);
+        let (delete_sender, _) = watch::channel(false);
 
         let task = Arc::new(Self {
             app,
@@ -69,8 +82,8 @@ impl DownloadTask {
             chapter_info: Arc::new(chapter_info),
             state_sender,
             delete_sender,
-            downloaded_img_count: Arc::new(AtomicU32::new(0)),
-            total_img_count: Arc::new(AtomicU32::new(0)),
+            downloaded_img_count: Arc::new(AtomicU32::new(downloaded_img_count)),
+            total_img_count: Arc::new(AtomicU32::new(total_img_count)),
         });
 
         tauri::async_runtime::spawn(task.clone().process());
@@ -126,7 +139,8 @@ impl DownloadTask {
                 }
 
                 _ = delete_receiver.changed() => {
-                    self.handle_delete_receiver_change(&mut permit).await;
+                    let delete_files = *delete_receiver.borrow();
+                    self.handle_delete_receiver_change(&mut permit, delete_files).await;
                     return;
                 }
             }
@@ -453,7 +467,11 @@ impl DownloadTask {
     }
 
     #[instrument(level = "error", skip_all)]
-    async fn handle_delete_receiver_change<'a>(&'a self, permit: &mut Option<SemaphorePermit<'a>>) {
+    async fn handle_delete_receiver_change<'a>(
+        &'a self,
+        permit: &mut Option<SemaphorePermit<'a>>,
+        delete_files: bool,
+    ) {
         let chapter_id = self.chapter_info.chapter_id;
 
         let _ = DownloadEvent::TaskDelete { chapter_id }.emit(&self.app);
@@ -462,7 +480,35 @@ impl DownloadTask {
             sleep(Duration::from_millis(100)).await;
         }
 
+        if delete_files {
+            self.delete_downloaded_files();
+        }
+
         tracing::debug!("下载任务已删除");
+    }
+
+    /// 删除这一话已下载的内容：临时目录 + 正式目录
+    fn delete_downloaded_files(&self) {
+        let mut dirs = Vec::new();
+        if let Ok(temp_download_dir) = self.chapter_info.get_temp_download_dir() {
+            dirs.push(temp_download_dir);
+        }
+        if let Some(chapter_download_dir) = self.chapter_info.chapter_download_dir.clone() {
+            dirs.push(chapter_download_dir);
+        }
+
+        for dir in dirs {
+            if !dir.exists() {
+                continue;
+            }
+            if let Err(err) = std::fs::remove_dir_all(&dir) {
+                tracing::error!(path = %dir.display(), message = %err, "删除已下载文件失败");
+            } else {
+                tracing::info!(path = %dir.display(), "已删除已下载文件");
+            }
+        }
+
+        crate::local_index::invalidate();
     }
 
     #[instrument(level = "error", skip_all)]
@@ -496,6 +542,9 @@ impl DownloadTask {
             let message = err.to_message();
             tracing::error!(err_title, message);
         }
+
+        // 状态变了就把任务记录写到磁盘，重启后能恢复
+        self.app.get_download_manager().save_tasks();
     }
 
     pub fn emit_download_task_update_event(&self) {
@@ -508,7 +557,7 @@ impl DownloadTask {
         .emit(&self.app);
     }
 
-    fn emit_download_task_create_event(&self) {
+    pub fn emit_download_task_create_event(&self) {
         let _ = DownloadEvent::TaskCreate {
             state: *self.state_sender.borrow(),
             comic: Box::new(self.comic.as_ref().clone()),

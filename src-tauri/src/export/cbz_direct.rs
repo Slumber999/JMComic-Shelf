@@ -20,6 +20,7 @@ use crate::{
     config::ExportSkipMode,
     downloader::download_img_task::{calculate_block_num, decode_and_encode_img},
     events::ExportCbzEvent,
+    export::manager::{ExportTask, ExportTaskKind, ExportTaskState},
     extensions::AppHandleExt,
     jm_client::IMAGE_DOMAIN,
     types::{ChapterInfo, Comic, ComicInfo, DownloadFormat},
@@ -94,15 +95,43 @@ pub async fn export_cbz_without_download(
             }
         };
 
-        if let Err(err) = export_comic_cbz(&app, &comic, img_concurrency).await {
+        // 每本漫画一个导出任务：暂停 / 继续 / 删除都是按这本漫画来的
+        let (export_dir, skip_mode) = {
+            let config = app.get_config();
+            let config = config.read();
+            (config.export_dir.clone(), config.export_skip_mode)
+        };
+        let comic_export_dir = export_dir.join(utils::filename_filter(&comic.name));
+        let total = u32::try_from(comic.chapter_infos.len()).unwrap_or(u32::MAX);
+        let task = app.get_export_manager().create_task(
+            uuid::Uuid::new_v4().to_string(),
+            comic.id,
+            comic.name.clone(),
+            ExportTaskKind::CbzDirect,
+            total,
+            comic_export_dir,
+        );
+
+        if let Err(err) = export_comic_cbz(&app, &comic, img_concurrency, &task, skip_mode).await {
             let err_title = format!("漫画`{}`导出cbz失败", comic.name);
             tracing::error!(err_title, message = format!("{err:?}"));
+            task.set_state(ExportTaskState::Failed);
         }
 
         sleep(Duration::from_secs(interval_sec)).await;
     }
 
     Ok(())
+}
+
+/// 继续一个被暂停的免下载直出任务（用「跳过已存在」重跑这本漫画）
+pub async fn resume_comic_cbz(
+    app: &AppHandle,
+    comic: &Comic,
+    task: &Arc<ExportTask>,
+) -> eyre::Result<()> {
+    let img_concurrency = app.get_config().read().img_concurrency;
+    export_comic_cbz(app, comic, img_concurrency, task, ExportSkipMode::SkipExisting).await
 }
 
 #[instrument(
@@ -114,15 +143,13 @@ async fn export_comic_cbz(
     app: &AppHandle,
     comic: &Comic,
     img_concurrency: usize,
+    task: &Arc<ExportTask>,
+    skip_mode: ExportSkipMode,
 ) -> eyre::Result<()> {
-    let (export_dir, skip_mode, download_format) = {
+    let (export_dir, download_format) = {
         let config = app.get_config();
         let config = config.read();
-        (
-            config.export_dir.clone(),
-            config.export_skip_mode,
-            config.download_format,
-        )
+        (config.export_dir.clone(), config.download_format)
     };
 
     let comic_export_dir = export_dir.join(utils::filename_filter(&comic.name));
@@ -137,8 +164,9 @@ async fn export_comic_cbz(
     // 导出目录内容变了，本地库索引（本地标签云等）要重建
     crate::local_index::invalidate();
 
-    let uuid = uuid::Uuid::new_v4().to_string();
+    let uuid = task.uuid.clone();
     let total = comic.chapter_infos.len();
+    task.set_progress(0, u32::try_from(total).unwrap_or(u32::MAX));
     let _ = ExportCbzEvent::Start {
         uuid: uuid.clone(),
         comic_title: comic.name.clone(),
@@ -161,6 +189,11 @@ async fn export_comic_cbz(
     let sem = Arc::new(Semaphore::new(img_concurrency.max(1)));
 
     for (index, chapter_info) in comic.chapter_infos.iter().enumerate() {
+        // 暂停/删除检查点：不再开始新的章节
+        if task.is_paused() || task.is_deleted() {
+            break;
+        }
+
         let chapter_title = &chapter_info.chapter_title;
         let cbz_path = cbz_dir.join(format!("{}.cbz", utils::filename_filter(chapter_title)));
 
@@ -173,6 +206,7 @@ async fn export_comic_cbz(
 
         if should_skip {
             emit_progress(app, &uuid, index + 1, None, None, Some(chapter_title));
+            task.set_progress(u32::try_from(index + 1).unwrap_or(u32::MAX), u32::try_from(total).unwrap_or(u32::MAX));
             continue;
         }
 
@@ -185,19 +219,40 @@ async fn export_comic_cbz(
             sem.clone(),
             &uuid,
             index,
+            task,
         )
         .await
         {
             Ok(()) => tracing::info!("章节`{chapter_title}`导出cbz成功"),
             Err(err) => {
-                let err_title = format!("章节`{chapter_title}`导出cbz失败");
-                tracing::error!(err_title, message = format!("{err:?}"));
-                emit_progress(app, &uuid, index + 1, None, None, Some(chapter_title));
+                if task.is_paused() || task.is_deleted() {
+                    // 被暂停或被删除，不算失败
+                    tracing::info!("章节`{chapter_title}`导出被中断");
+                } else {
+                    let err_title = format!("章节`{chapter_title}`导出cbz失败");
+                    tracing::error!(err_title, message = format!("{err:?}"));
+                    emit_progress(app, &uuid, index + 1, None, None, Some(chapter_title));
+                }
             }
         }
+
+        // 暂停/删除后不再开始新的章节
+        if task.is_paused() || task.is_deleted() {
+            break;
+        }
+
+        task.set_progress(u32::try_from(index + 1).unwrap_or(u32::MAX), u32::try_from(total).unwrap_or(u32::MAX));
     }
 
     error_event_guard.success = true;
+
+    // 被暂停或被删除：不发完成事件
+    if task.is_paused() || task.is_deleted() {
+        tracing::info!("导出任务已暂停或被删除");
+        return Ok(());
+    }
+
+    task.set_state(ExportTaskState::Completed);
 
     let _ = ExportCbzEvent::End {
         uuid,
@@ -224,6 +279,7 @@ async fn export_chapter_cbz(
     sem: Arc<Semaphore>,
     uuid: &str,
     chapters_done: usize,
+    task: &Arc<ExportTask>,
 ) -> eyre::Result<()> {
     let chapter_id = chapter_info.chapter_id;
     let jm_client = app.get_jm_client();
@@ -283,9 +339,15 @@ async fn export_chapter_cbz(
         let uuid = uuid.to_string();
         let img_done = img_done.clone();
         let chapter_title = chapter_title.clone();
+        let task = task.clone();
 
         join_set.spawn(async move {
             let _permit = sem.acquire_owned().await.map_err(eyre::Report::from)?;
+
+            // 暂停/删除检查点：这一章剩下的图片不再下载
+            if task.is_paused() || task.is_deleted() {
+                return Err(eyre!("导出已暂停"));
+            }
 
             let mut last_err = None;
             for attempt in 1..=IMG_RETRY_TIMES {
@@ -319,6 +381,11 @@ async fn export_chapter_cbz(
     while let Some(result) = join_set.join_next().await {
         let (index, ext, data) = result.map_err(eyre::Report::from)??;
         images.push((index, ext, data));
+    }
+
+    // 中途被暂停/删除：这一章不写文件，继续时会从头重新导
+    if task.is_paused() || task.is_deleted() {
+        return Err(eyre!("导出已暂停"));
     }
     images.sort_by_key(|(index, _, _)| *index);
 

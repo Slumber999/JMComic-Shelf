@@ -1,5 +1,5 @@
 use events::{
-    DownloadAllFavoritesEvent, DownloadEvent, ExportCbzEvent, ExportPdfEvent,
+    DownloadAllFavoritesEvent, DownloadEvent, ExportCbzEvent, ExportPdfEvent, ExportTaskEvent,
     ExportQuickReaderEvent, LogEvent, UpdateDownloadedComicsEvent,
 };
 use eyre::WrapErr;
@@ -11,6 +11,7 @@ use crate::commands::*;
 use crate::config::Config;
 use crate::downloader::download_manager::DownloadManager;
 use crate::errors::install_custom_eyre_handler;
+use crate::export::manager::ExportManager;
 use crate::export::ComicExportLock;
 use crate::jm_client::JmClient;
 use crate::reader::ReaderState;
@@ -69,6 +70,7 @@ pub fn run() {
             pause_download_task,
             resume_download_task,
             delete_download_task,
+            sync_download_tasks,
             download_comic,
             download_all_favorites,
             update_downloaded_comics,
@@ -83,6 +85,10 @@ pub fn run() {
             get_downloaded_comics,
             export_cbz,
             export_cbz_without_download,
+            pause_export_task,
+            resume_export_task,
+            delete_export_task,
+            sync_export_tasks,
             list_quick_reader_candidates,
             export_quick_reader,
             export_quick_reader_single_file,
@@ -108,6 +114,7 @@ pub fn run() {
             ExportCbzEvent,
             ExportPdfEvent,
             ExportQuickReaderEvent,
+            ExportTaskEvent,
             LogEvent,
         ]);
 
@@ -139,6 +146,17 @@ pub fn run() {
                 responder.respond(response);
             });
         })
+        .on_window_event(|window, event| {
+            // 关闭窗口时把所有没结束的下载任务设为暂停并落盘，下次启动由用户手动继续
+            if matches!(event, tauri::WindowEvent::CloseRequested { .. }) {
+                if let Some(download_manager) = window.try_state::<DownloadManager>() {
+                    download_manager.pause_all_tasks();
+                }
+                if let Some(export_manager) = window.try_state::<ExportManager>() {
+                    export_manager.pause_all_tasks();
+                }
+            }
+        })
         .invoke_handler(builder.invoke_handler())
         .setup(move |app| {
             builder.mount_events(app);
@@ -159,15 +177,20 @@ pub fn run() {
             let jm_client = JmClient::new(app.handle().clone());
             app.manage(jm_client);
 
-            let download_manager = DownloadManager::new(app.handle());
-            app.manage(download_manager);
+            app.manage(DownloadManager::new(app.handle()));
 
             let export_lock = ComicExportLock::new();
             app.manage(export_lock);
 
+            app.manage(ExportManager::new(app.handle()));
+
             app.manage(ReaderState::default());
 
             logger::init(app.handle())?;
+
+            // 恢复上次没做完的任务（全部恢复成暂停状态，由用户手动继续）
+            app.state::<DownloadManager>().restore_tasks();
+            app.state::<ExportManager>().restore_tasks();
 
             Ok(())
         })

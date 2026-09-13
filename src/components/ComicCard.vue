@@ -5,18 +5,24 @@ import { useStore } from '../store.ts'
 import IconButton from './IconButton.vue'
 import { localCoverUrl } from '../reader/protocol.ts'
 import { PhBookOpen, PhDownloadSimple, PhFileZip, PhFolderOpen } from '@phosphor-icons/vue'
+import { hoverCover, unhoverCover } from './coverPreview.ts'
+import { ComicLayout } from '../types.ts'
 
 const store = useStore()
 
-const props = defineProps<{
-  comicId: number
-  comicTitle: string
-  comicAuthor: string
-  comicCategory: CategoryRespData
-  comicCategorySub: CategorySubRespData
-  comicDownloaded: boolean
-  comicDownloadDir: string
-}>()
+const props = withDefaults(
+  defineProps<{
+    comicId: number
+    comicTitle: string
+    comicAuthor: string
+    comicCategory: CategoryRespData
+    comicCategorySub: CategorySubRespData
+    comicDownloaded: boolean
+    comicDownloadDir: string
+    layout?: ComicLayout
+  }>(),
+  { layout: 'list' },
+)
 
 async function pickComic() {
   const result = await commands.getComic(props.comicId)
@@ -61,29 +67,50 @@ async function showComicDownloadDirInFileManager() {
     console.error(result.error)
   }
 }
+
+/// 网格模式下封面已经够大，不需要悬停预览
+function onCoverPointerEnter(event: PointerEvent) {
+  if (props.layout !== 'list' || !store.coverPreview) {
+    return
+  }
+  hoverCover(event.currentTarget as HTMLElement)
+}
 </script>
 
 <template>
   <n-card content-style="padding: 0.25rem;" hoverable>
-    <div class="flex">
+    <div :class="layout === 'list' ? 'flex' : 'group flex flex-col'">
       <img
-        class="w-18 object-cover mr-3 cursor-pointer transition-transform duration-200 hover:scale-106"
+        :class="
+          layout === 'list'
+            ? 'w-18 object-cover mr-3 cursor-pointer transition-transform duration-200 hover:scale-106'
+            : 'w-full aspect-[3/4] object-cover rounded cursor-pointer transition-transform duration-200 group-hover:scale-105'
+        "
+        :data-cover-id="comicId"
+        :data-cover-dir="comicDownloadDir"
         loading="lazy"
         :src="localCoverUrl(comicId, comicDownloadDir)"
         alt=""
         referrerpolicy="no-referrer"
-        @click="pickComic" />
-      <div class="flex flex-col w-full justify-between">
+        @click="pickComic"
+        @pointerenter="onCoverPointerEnter"
+        @pointerleave="unhoverCover" />
+      <div :class="layout === 'list' ? 'flex flex-col w-full justify-between' : 'flex flex-col w-full'">
         <div class="flex flex-col">
           <span
-            class="font-bold text-base line-clamp-2 cursor-pointer transition-colors duration-200 hover:text-blue-5"
+            :class="[
+              'font-bold line-clamp-2 cursor-pointer transition-colors duration-200 hover:text-blue-5',
+              layout === 'list' ? 'text-base' : 'text-sm mt-1',
+            ]"
             @click="pickComic">
             {{ comicTitle }}
           </span>
-          <span class="text-xs text-red">作者：{{ comicAuthor }}</span>
-          <span class="text-xs text-gray">分类：{{ comicCategory.title }} {{ comicCategorySub.title }}</span>
+          <span class="text-xs text-red" :class="layout === 'list' ? '' : 'truncate'">作者：{{ comicAuthor }}</span>
+          <span v-if="layout === 'list'" class="text-xs text-gray">
+            分类：{{ comicCategory.title }} {{ comicCategorySub.title }}
+          </span>
         </div>
-        <div class="flex">
+        <div :class="layout === 'list' ? 'flex' : 'flex opacity-0 transition-opacity duration-150 group-hover:opacity-100'">
           <IconButton v-if="comicDownloaded" title="打开下载目录" @click="showComicDownloadDirInFileManager">
             <PhFolderOpen :size="20" />
           </IconButton>
