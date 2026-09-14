@@ -472,7 +472,8 @@ function resetFilters() {
         :comic-category="comicInSearch.category"
         :comic-category-sub="comicInSearch.categorySub"
         :comic-downloaded="comicInSearch.isDownloaded"
-        :comic-download-dir="comicInSearch.comicDownloadDir" />
+        :comic-download-dir="comicInSearch.comicDownloadDir"
+        :is-favorite="comicInSearch.isFavorite" />
     </div>
 
     <n-pagination

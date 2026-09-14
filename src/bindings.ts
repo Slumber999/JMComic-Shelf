@@ -35,6 +35,38 @@ async search(keyword: string, page: number, sort: SearchSort, year: number | nul
     else return { status: "error", error: e  as any };
 }
 },
+async getRanking(category: string, order: string, page: number) : Promise<Result<SearchResult, CommandError>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("get_ranking", { category, order, page }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+async toggleFavorite(comicId: number) : Promise<Result<null, CommandError>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("toggle_favorite", { comicId }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+async getFavoriteFolders() : Promise<Result<FavoriteFolderRespData[], CommandError>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("get_favorite_folders") };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+async moveFavoriteToFolder(comicId: number, folderId: string) : Promise<Result<null, CommandError>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("move_favorite_to_folder", { comicId, folderId }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
 /**
  * 官方分类树 + 常用标签分组
  */

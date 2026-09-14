@@ -85,6 +85,16 @@ async function getFavourite(folderId: number, page: number, sort: FavoriteSort) 
   store.getFavoriteResult = result.data
 }
 
+/// 收藏状态变化后刷新：保持当前收藏夹、排序与页码，别把用户踢回第一页
+async function refreshFavourite() {
+  await getFavourite(folderIdSelected.value, pageSelected.value, sortSelected.value)
+
+  // 本页最后一条被取消收藏时页码会越界，退回最后一页
+  if (favoritePageCount.value > 0 && pageSelected.value > favoritePageCount.value) {
+    await getFavourite(folderIdSelected.value, favoritePageCount.value, sortSelected.value)
+  }
+}
+
 async function syncFavoriteFolder() {
   const result = await commands.syncFavoriteFolder()
   if (result.status === 'error') {
@@ -289,7 +299,9 @@ async function exportCbz() {
           :comic-category="comicInFavorite.category"
           :comic-category-sub="comicInFavorite.categorySub"
           :comic-downloaded="comicInFavorite.isDownloaded"
-          :comic-download-dir="comicInFavorite.comicDownloadDir" />
+          :comic-download-dir="comicInFavorite.comicDownloadDir"
+        :is-favorite="true"
+        @favorite-changed="refreshFavourite()" />
       </div>
 
       <n-pagination

@@ -28,11 +28,11 @@ use crate::lines::{self, ApiLineProbeResult, ImageLineProbeResult};
 use crate::local_index;
 use crate::quick_reader::QuickReaderCandidate;
 use crate::reader::{ReaderComic, ReaderState};
-use crate::responses::{GetUserProfileRespData, GetWeeklyInfoRespData};
+use crate::responses::{FavoriteFolderRespData, GetUserProfileRespData, GetWeeklyInfoRespData};
 use crate::storage::{self, StorageStats};
 use crate::types::{
     CategoryResp, ChapterInfo, Comic, ComicInFavorite, ComicInSearch, ComicInWeekly, FavoriteSort,
-    GetFavoriteResult, GetWeeklyResult, LogMetadata, SearchResultVariant, SearchSort,
+    GetFavoriteResult, GetWeeklyResult, LogMetadata, SearchResult, SearchResultVariant, SearchSort,
 };
 use crate::{export, logger, utils};
 
@@ -289,6 +289,78 @@ pub async fn search(
         .map_err(|err| CommandError::from("搜索失败", err))?;
 
     Ok(search_result)
+}
+
+#[tauri::command]
+#[specta::specta]
+#[instrument(level = "error", skip_all, fields(comic_id = comic_id))]
+pub async fn toggle_favorite(app: AppHandle, comic_id: i64) -> CommandResult<()> {
+    let jm_client = app.get_jm_client();
+
+    jm_client
+        .toggle_favorite_comic(comic_id)
+        .await
+        .map_err(|err| CommandError::from("收藏/取消收藏失败", err))?;
+
+    Ok(())
+}
+
+#[tauri::command]
+#[specta::specta]
+#[instrument(level = "error", skip_all)]
+pub async fn get_favorite_folders(app: AppHandle) -> CommandResult<Vec<FavoriteFolderRespData>> {
+    let jm_client = app.get_jm_client();
+
+    let favorites = jm_client
+        .get_favorite_folder(0, 1, FavoriteSort::FavoriteTime)
+        .await
+        .map_err(|err| CommandError::from("获取收藏夹失败", err))?;
+
+    Ok(favorites.folder_list)
+}
+
+#[tauri::command]
+#[specta::specta]
+#[instrument(level = "error", skip_all, fields(comic_id = comic_id, folder_id = folder_id))]
+pub async fn move_favorite_to_folder(
+    app: AppHandle,
+    comic_id: i64,
+    folder_id: String,
+) -> CommandResult<()> {
+    let jm_client = app.get_jm_client();
+
+    jm_client
+        .move_favorite_to_folder(comic_id, &folder_id)
+        .await
+        .map_err(|err| CommandError::from("移动收藏夹失败", err))?;
+
+    Ok(())
+}
+
+#[tauri::command]
+#[specta::specta]
+#[instrument(
+    level = "error",
+    skip_all,
+    fields(category = category, order = order, page = page)
+)]
+pub async fn get_ranking(
+    app: AppHandle,
+    category: String,
+    order: String,
+    page: i64,
+) -> CommandResult<SearchResult> {
+    let jm_client = app.get_jm_client();
+
+    let ranking_resp_data = jm_client
+        .get_ranking(&category, &order, page)
+        .await
+        .map_err(|err| CommandError::from("获取排行榜失败", err))?;
+
+    let ranking_result = SearchResult::from_resp_data(&app, ranking_resp_data)
+        .map_err(|err| CommandError::from("获取排行榜失败", err))?;
+
+    Ok(ranking_result)
 }
 
 #[tauri::command]

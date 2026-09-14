@@ -12,7 +12,7 @@ import { PhGearSix, PhInfo, PhUser, PhBookmarkSimple, PhClockCounterClockwise } 
 import DownloadedPane from './panes/DownloadedPane/DownloadedPane.vue'
 import { useStore } from './store.ts'
 import LogDialog from './dialogs/LogDialog.vue'
-import WeeklyPane from './panes/WeeklyPane.vue'
+import RankingPane from './panes/RankingPane.vue'
 import ComicReader from './reader/ComicReader.vue'
 import DownloadStatusBar from './components/DownloadStatusBar.vue'
 import CoverPreview from './components/CoverPreview.vue'
@@ -222,8 +222,8 @@ onMounted(async () => {
       <n-tab-pane class="h-full overflow-auto p-0!" name="favorite" tab="收藏夹" display-directive="show">
         <FavoritePane />
       </n-tab-pane>
-      <n-tab-pane class="h-full overflow-auto p-0!" name="weekly" tab="每周必看" display-directive="show">
-        <WeeklyPane />
+      <n-tab-pane class="h-full overflow-auto p-0!" name="weekly" tab="排行榜" display-directive="show">
+        <RankingPane />
       </n-tab-pane>
       <n-tab-pane class="h-full overflow-auto p-0!" name="downloaded" tab="本地库存" display-directive="show">
         <DownloadedPane />

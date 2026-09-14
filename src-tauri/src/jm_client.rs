@@ -23,9 +23,9 @@ use crate::config::Config;
 use crate::extensions::AppHandleExt;
 use crate::lines;
 use crate::responses::{
-    GetChapterRespData, GetComicRespData, GetFavoriteRespData, GetUserProfileRespData,
-    GetWeeklyInfoRespData, GetWeeklyRespData, JmResp, RedirectRespData, SearchResp, SearchRespData,
-    ToggleFavoriteRespData,
+    FavoriteFolderActionRespData, GetChapterRespData, GetComicRespData, GetFavoriteRespData,
+    GetUserProfileRespData, GetWeeklyInfoRespData, GetWeeklyRespData, JmResp, RedirectRespData,
+    SearchResp, SearchRespData, ToggleFavoriteRespData,
 };
 use crate::types::{
     CategoryNode, CategoryResp, FavoriteSort, ProxyMode, SearchSort, SubCategoryNode, TagBlock,
@@ -54,6 +54,8 @@ enum ApiPath {
     GetWeeklyInfo,
     GetWeekly,
     GetCategories,
+    GetRanking,
+    ManageFavoriteFolder,
 }
 impl ApiPath {
     fn as_str(&self) -> &'static str {
@@ -70,6 +72,8 @@ impl ApiPath {
             ApiPath::GetWeeklyInfo => "/week",
             ApiPath::GetWeekly => "/week/filter",
             ApiPath::GetCategories => "/categories",
+            ApiPath::GetRanking => "/categories/filter/",
+            ApiPath::ManageFavoriteFolder => "/favorite_folder",
         }
     }
 }
@@ -310,6 +314,44 @@ impl JmClient {
         Err(eyre!(
             "将解密后的数据解析为SearchRespData或RedirectRespData失败: {data}"
         ))
+    }
+
+    #[instrument(
+        level = "error",
+        skip_all,
+        fields(category = category, order = order, page = page)
+    )]
+    pub async fn get_ranking(
+        &self,
+        category: &str,
+        order: &str,
+        page: i64,
+    ) -> eyre::Result<SearchRespData> {
+        let query = json!({
+            "c": category,
+            "o": order,
+            "page": page,
+        });
+        let ts = SystemTime::now().duration_since(UNIX_EPOCH)?.as_secs();
+        let http_resp = self.jm_get(ApiPath::GetRanking, Some(query), ts).await?;
+        let status = http_resp.status();
+        let body = http_resp.text().await?;
+        if status != reqwest::StatusCode::OK {
+            return Err(eyre!("获取排行榜失败，预料之外的状态码({status}): {body}"));
+        }
+        let jm_resp = serde_json::from_str::<JmResp>(&body)
+            .wrap_err(format!("将body解析为JmResp失败: {body}"))?;
+        if jm_resp.code != 200 {
+            return Err(eyre!("获取排行榜失败，预料之外的code: {jm_resp:?}"));
+        }
+        let data = jm_resp
+            .data
+            .as_str()
+            .ok_or_eyre(format!("获取排行榜失败，data字段不是字符串: {jm_resp:?}"))?;
+        let data = decrypt_data(ts, data)?;
+        let ranking_resp_data = serde_json::from_str::<SearchRespData>(&data)
+            .wrap_err(format!("将解密后的数据解析为SearchRespData失败: {data}"))?;
+        Ok(ranking_resp_data)
     }
 
     #[instrument(level = "error", skip_all, fields(aid = aid))]
@@ -570,6 +612,48 @@ impl JmClient {
                 "将解密后的data字段解析为ToggleFavoriteRespData失败: {data}"
             ))?;
         Ok(toggle_favorite_resp_data)
+    }
+
+    #[instrument(level = "error", skip_all, fields(aid = aid, folder_id = folder_id))]
+    pub async fn move_favorite_to_folder(&self, aid: i64, folder_id: &str) -> eyre::Result<()> {
+        let ts = SystemTime::now().duration_since(UNIX_EPOCH)?.as_secs();
+        let form = json!({
+            "type": "move",
+            "folder_id": folder_id,
+            "aid": aid,
+        });
+        let http_resp = self
+            .jm_post(ApiPath::ManageFavoriteFolder, None, Some(form), ts)
+            .await?;
+        let status = http_resp.status();
+        let body = http_resp.text().await?;
+        if status != reqwest::StatusCode::OK {
+            return Err(eyre!("移动收藏夹失败，预料之外的状态码({status}): {body}"));
+        }
+        let jm_resp = serde_json::from_str::<JmResp>(&body)
+            .wrap_err(format!("将body解析为JmResp失败: {body}"))?;
+        if jm_resp.code != 200 {
+            return Err(eyre!("移动收藏夹失败，预料之外的code: {jm_resp:?}"));
+        }
+        let data = jm_resp
+            .data
+            .as_str()
+            .ok_or_eyre(format!("移动收藏夹失败，data字段不是字符串: {jm_resp:?}"))?;
+        let data = decrypt_data(ts, data)?;
+        // 这个接口即使操作没生效也可能返回 code 200，要自己看 status
+        let action_resp_data: FavoriteFolderActionRespData =
+            serde_json::from_str(&data).unwrap_or_default();
+        if !action_resp_data.status.is_empty() && action_resp_data.status != "ok" {
+            return Err(eyre!(
+                "移动收藏夹失败: {}",
+                if action_resp_data.msg.is_empty() {
+                    action_resp_data.status.clone()
+                } else {
+                    action_resp_data.msg.clone()
+                }
+            ));
+        }
+        Ok(())
     }
 
     /// 官方分类树 + 常用标签分组
