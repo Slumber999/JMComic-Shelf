@@ -1,8 +1,10 @@
 <script setup lang="ts">
-import { computed, onMounted, ref, watch } from 'vue'
+import { computed, nextTick, onMounted, ref, watch } from 'vue'
 import { GetWeeklyInfoRespData, SearchResult, commands } from '../bindings.ts'
+import { scrollListToTop } from '../listScroll.ts'
 import { NPagination, NSelect, NTab, NTabs, SelectProps } from 'naive-ui'
 import ComicCard from '../components/ComicCard.vue'
+import { useGridColumns } from '../comicGrid.ts'
 import { useStore } from '../store.ts'
 
 const store = useStore()
@@ -28,6 +30,11 @@ const RANKING_PAGE_SIZE = 80
 const rankingOrder = ref('mv_w')
 const rankingCategory = ref('0')
 const rankingPage = ref(1)
+const listRef = ref<HTMLElement>()
+/// 网格列数跟着窗口宽度走；排行榜和每周必看是两个容器，各看各的
+const gridStyle = useGridColumns(listRef, () => store.gridItemWidth)
+const weeklyListRef = ref<HTMLElement>()
+const weeklyGridStyle = useGridColumns(weeklyListRef, () => store.gridItemWidth)
 const rankingResult = ref<SearchResult>()
 
 const rankingPageCount = computed(() =>
@@ -43,15 +50,19 @@ async function getRanking() {
   rankingResult.value = result.data
 }
 
-watch([rankingCategory, rankingOrder], () => {
+watch([rankingCategory, rankingOrder], async () => {
   rankingPage.value = 1
   rankingResult.value = undefined
-  getRanking()
+  await getRanking()
+  await nextTick()
+  scrollListToTop(listRef.value)
 })
 
-watch(rankingPage, () => {
+watch(rankingPage, async () => {
   rankingResult.value = undefined
-  getRanking()
+  await getRanking()
+  await nextTick()
+  scrollListToTop(listRef.value)
 })
 
 const weeklyInfo = ref<GetWeeklyInfoRespData>()
@@ -137,9 +148,11 @@ onMounted(async () => {
     </div>
 
     <div
+      ref="listRef"
       v-if="currentView === 'ranking' && rankingResult !== undefined"
       class="overflow-auto box-border px-2 pt-2"
-      :class="store.comicLayout === 'list' ? 'flex flex-col gap-row-2' : 'grid grid-cols-4 gap-2 content-start'">
+      :class="store.comicLayout === 'list' ? 'flex flex-col gap-row-2' : 'grid gap-2 content-start'"
+      :style="store.comicLayout === 'grid' ? gridStyle : undefined">
       <ComicCard
         v-for="comicInRanking in rankingResult.content"
         :key="comicInRanking.id"
@@ -162,9 +175,11 @@ onMounted(async () => {
       size="small" />
 
     <div
+      ref="weeklyListRef"
       v-if="currentView === 'weekly' && store.getWeeklyResult !== undefined"
       class="overflow-auto box-border px-2 pt-2"
-      :class="store.comicLayout === 'list' ? 'flex flex-col gap-row-2' : 'grid grid-cols-4 gap-2 content-start'">
+      :class="store.comicLayout === 'list' ? 'flex flex-col gap-row-2' : 'grid gap-2 content-start'"
+      :style="store.comicLayout === 'grid' ? weeklyGridStyle : undefined">
       <ComicCard
         v-for="comicInWeekly in store.getWeeklyResult.list"
         :key="comicInWeekly.id"

@@ -1,6 +1,7 @@
 <script setup lang="ts">
-import { computed, onMounted, ref, watch } from 'vue'
+import { computed, nextTick, onMounted, ref, watch } from 'vue'
 import { commands, LocalTag, SearchSort } from '../bindings.ts'
+import { scrollListToTop } from '../listScroll.ts'
 import {
   NButton,
   NDropdown,
@@ -13,6 +14,7 @@ import {
   useMessage,
 } from 'naive-ui'
 import ComicCard from '../components/ComicCard.vue'
+import { useGridColumns } from '../comicGrid.ts'
 import FloatLabelInput from '../components/FloatLabelInput.vue'
 import { PhClockCounterClockwise, PhMagnifyingGlass, PhTag } from '@phosphor-icons/vue'
 import { useStore } from '../store.ts'
@@ -34,6 +36,9 @@ const searchInput = ref<string>('')
 const searching = ref<boolean>(false)
 const sortSelected = ref<SearchSort>('Latest')
 const searchPage = ref<number>(1)
+const listRef = ref<HTMLElement>()
+/// 网格列数跟着窗口宽度走
+const gridStyle = useGridColumns(listRef, () => store.gridItemWidth)
 
 // 官方分类树 + 常用标签（/categories）
 const categoryResp = computed(() => store.categoryResp)
@@ -271,6 +276,8 @@ async function search(keyword: string, page: number, sort: SearchSort) {
       return
     }
     store.searchResult = respData
+    await nextTick()
+    scrollListToTop(listRef.value)
   } else if ('Comic' in searchResultVariant) {
     store.pickedComic = searchResultVariant.Comic
     store.currentTabName = 'chapter'
@@ -459,9 +466,11 @@ function resetFilters() {
     </div>
 
     <div
+      ref="listRef"
       v-if="store.searchResult !== undefined"
       class="overflow-auto box-border px-2"
-      :class="store.comicLayout === 'list' ? 'flex flex-col gap-row-2' : 'grid grid-cols-4 gap-2 content-start'">
+      :class="store.comicLayout === 'list' ? 'flex flex-col gap-row-2' : 'grid gap-2 content-start'"
+      :style="store.comicLayout === 'grid' ? gridStyle : undefined">
       <ComicCard
         v-for="comicInSearch in store.searchResult.content"
         :key="comicInSearch.id"

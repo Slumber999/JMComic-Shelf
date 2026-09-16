@@ -507,6 +507,20 @@ async openLogFile(path: string) : Promise<Result<LogMetadata[], CommandError>> {
     if(e instanceof Error) throw e;
     else return { status: "error", error: e  as any };
 }
+},
+async openReaderWindow(target: ReaderWindowTarget) : Promise<Result<null, CommandError>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("open_reader_window", { target }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+/**
+ * 阅读窗口启动时取初始目标（主窗口发事件时它可能还没注册监听）
+ */
+async getReaderWindowTarget() : Promise<ReaderWindowTarget | null> {
+    return await TAURI_INVOKE("get_reader_window_target");
 }
 }
 
@@ -583,7 +597,15 @@ export type ComicInFavorite = { id: number; author: string; description: string 
 export type ComicInSearch = { id: number; author: string; name: string; image: string; category: CategoryRespData; categorySub: CategorySubRespData; liked: boolean; isFavorite: boolean; updateAt: number; isDownloaded: boolean; comicDownloadDir: string }
 export type ComicInWeekly = { id: number; author: string; description: string; name: string; image: string; category: Category; category_sub: CategorySub; liked: boolean; is_favorite: boolean; update_at: number; is_downloaded: boolean; comic_download_dir: string }
 export type CommandError = { err_title: string; message: string }
-export type Config = { username: string; password: string; downloadDir: string; exportDir: string; downloadFormat: DownloadFormat; dirFmt: string; proxyMode: ProxyMode; proxyHost: string; proxyPort: number; enableFileLogger: boolean; chapterConcurrency: number; chapterDownloadIntervalSec: number; imgConcurrency: number; imgDownloadIntervalSec: number; downloadAllFavoritesIntervalSec: number; updateDownloadedComicsIntervalSec: number; apiDomainMode: ApiDomainMode; customApiDomain: string; shouldDownloadCover: boolean; createPdfConcurrency: number; enableMergePdf: boolean; 
+export type Config = { username: string; password: string; downloadDir: string; exportDir: string; downloadFormat: DownloadFormat; dirFmt: string; proxyMode: ProxyMode; proxyHost: string; proxyPort: number; enableFileLogger: boolean; chapterConcurrency: number; chapterDownloadIntervalSec: number; imgConcurrency: number; imgDownloadIntervalSec: number; downloadAllFavoritesIntervalSec: number; updateDownloadedComicsIntervalSec: number; apiDomainMode: ApiDomainMode; customApiDomain: string; shouldDownloadCover: boolean; 
+/**
+ * 阅读器是否拆分成独立窗口
+ */
+splitReader: boolean; 
+/**
+ * 主窗口尺寸：换网格档位、用户拉伸窗口时由前端更新
+ */
+windowWidth: number; windowHeight: number; createPdfConcurrency: number; enableMergePdf: boolean; 
 /**
  * 导出跳过模式
  */
@@ -707,6 +729,10 @@ pageCount: number;
  */
 online: boolean }
 export type ReaderComic = { title: string; chapters: ReaderChapter[] }
+/**
+ * 阅读窗口要显示的漫画：传 comic 表示本地库存，只传 comic_id 表示从网络读
+ */
+export type ReaderWindowTarget = { comic: Comic | null; comicId: number | null }
 export type RelatedListRespData = { id: string; author: string; name: string; image: string }
 export type SearchResult = { searchQuery: string; total: number; content: ComicInSearch[] }
 export type SearchResultVariant = { SearchResult: SearchResult } | { Comic: Comic }

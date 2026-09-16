@@ -15,6 +15,9 @@ use crate::export::manager::ExportManager;
 use crate::export::ComicExportLock;
 use crate::jm_client::JmClient;
 use crate::reader::ReaderState;
+use crate::reader_window::{
+    get_reader_window_target, open_reader_window, ReaderWindowTargetState, READER_WINDOW_LABEL,
+};
 
 mod commands;
 mod config;
@@ -26,6 +29,7 @@ mod export;
 mod extensions;
 mod jm_client;
 mod lines;
+mod reader_window;
 mod local_index;
 mod logger;
 mod quick_reader;
@@ -37,6 +41,24 @@ mod utils;
 
 fn generate_context() -> tauri::Context<Wry> {
     tauri::generate_context!()
+}
+
+/// 恢复主窗口上次的尺寸，比当前显示器还大就收回来
+fn restore_main_window_size(window: &tauri::WebviewWindow, width: u32, height: u32) {
+    let mut logical_width = f64::from(width);
+    let mut logical_height = f64::from(height);
+
+    if let Ok(Some(monitor)) = window.current_monitor() {
+        let scale_factor = monitor.scale_factor();
+        logical_width = logical_width.min(f64::from(monitor.size().width) / scale_factor);
+        // 给任务栏留一点，不然窗口会顶到屏幕外
+        logical_height = logical_height.min(f64::from(monitor.size().height) / scale_factor - 80.0);
+    }
+
+    let _ = window.set_size(tauri::LogicalSize::new(
+        logical_width.max(600.0),
+        logical_height.max(400.0),
+    ));
 }
 
 // TODO: 添加Panic Doc
@@ -110,6 +132,8 @@ pub fn run() {
             get_synced_comic_in_search,
             get_synced_comic_in_weekly,
             open_log_file,
+            open_reader_window,
+            get_reader_window_target,
         ])
         .events(tauri_specta::collect_events![
             DownloadEvent,
@@ -151,14 +175,47 @@ pub fn run() {
             });
         })
         .on_window_event(|window, event| {
-            // 关闭窗口时把所有没结束的下载任务设为暂停并落盘，下次启动由用户手动继续
-            if matches!(event, tauri::WindowEvent::CloseRequested { .. }) {
-                if let Some(download_manager) = window.try_state::<DownloadManager>() {
-                    download_manager.pause_all_tasks();
+            // 主窗口改尺寸时，阅读窗口跟着一样大
+            if window.label() == "main" {
+                if let tauri::WindowEvent::Resized(size) = event {
+                    if let Some(reader_window) =
+                        window.app_handle().get_webview_window(READER_WINDOW_LABEL)
+                    {
+                        let _ = reader_window.set_size(tauri::Size::Physical(*size));
+                    }
                 }
-                if let Some(export_manager) = window.try_state::<ExportManager>() {
-                    export_manager.pause_all_tasks();
+            }
+
+            // 阅读窗口关掉了就释放它的后端缓存
+            if matches!(event, tauri::WindowEvent::Destroyed) && window.label() == READER_WINDOW_LABEL {
+                if let Some(reader_state) = window.try_state::<ReaderState>() {
+                    crate::reader::close_reader(&reader_state);
                 }
+            }
+
+            if !matches!(event, tauri::WindowEvent::CloseRequested { .. }) {
+                return;
+            }
+
+            // 关掉主窗口就跟着关掉阅读窗口，避免只剩一个阅读窗口还开着
+            if window.label() == "main" {
+                if let Some(reader_window) = window.app_handle().get_webview_window(READER_WINDOW_LABEL)
+                {
+                    let _ = reader_window.close();
+                }
+            }
+
+            // 只有主窗口关闭才暂停任务：关阅读窗口不该影响下载/导出
+            if window.label() != "main" {
+                return;
+            }
+
+            // 关闭主窗口时把所有没结束的下载任务设为暂停并落盘，下次启动由用户手动继续
+            if let Some(download_manager) = window.try_state::<DownloadManager>() {
+                download_manager.pause_all_tasks();
+            }
+            if let Some(export_manager) = window.try_state::<ExportManager>() {
+                export_manager.pause_all_tasks();
             }
         })
         .invoke_handler(builder.invoke_handler())
@@ -176,6 +233,16 @@ pub fn run() {
             ))?;
 
             let config = RwLock::new(Config::new(app.handle())?);
+
+            // 主窗口用上次的尺寸（换网格档位、拉伸窗口时前端会把它写进配置）
+            if let Some(window) = app.get_webview_window("main") {
+                let (width, height) = {
+                    let saved = config.read();
+                    (saved.window_width, saved.window_height)
+                };
+                restore_main_window_size(&window, width, height);
+            }
+
             app.manage(config);
 
             let jm_client = JmClient::new(app.handle().clone());
@@ -189,6 +256,8 @@ pub fn run() {
             app.manage(ExportManager::new(app.handle()));
 
             app.manage(ReaderState::default());
+
+            app.manage(ReaderWindowTargetState::default());
 
             logger::init(app.handle())?;
 

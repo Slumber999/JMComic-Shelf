@@ -1,13 +1,10 @@
 import { ref } from 'vue'
 
 /// 阅读进度：存在 localStorage 的 `reader:<comicId>` 里
+/// - 只记多章漫画，而且只精确到章节：单章短篇每次都从头读，不记进度
 export interface ReaderProgress {
   /// 章节下标（从 0 开始）
   chapter: number
-  /// 页码下标（从 0 开始）
-  page: number
-  /// 当前章节的总页数
-  pageCount: number
   /// 当前章节名
   chapterTitle: string
   /// 漫画名
@@ -20,7 +17,7 @@ export interface ReaderProgress {
 
 const KEY_PREFIX = 'reader:'
 
-/// 模块级单例：所有组件共享同一份进度，读完一话后卡片上的进度会立刻刷新
+/// 模块级单例：所有组件共享同一份进度，换章后卡片上的进度会立刻刷新
 const progressMap = ref<Record<string, ReaderProgress>>({})
 
 function normalize(raw: unknown): ReaderProgress | undefined {
@@ -30,8 +27,6 @@ function normalize(raw: unknown): ReaderProgress | undefined {
   const data = raw as Record<string, unknown>
   return {
     chapter: Number(data.chapter) || 0,
-    page: Number(data.page) || 0,
-    pageCount: Number(data.pageCount) || 0,
     chapterTitle: String(data.chapterTitle ?? ''),
     comicTitle: String(data.comicTitle ?? ''),
     totalChapters: Number(data.totalChapters) || 0,
@@ -39,7 +34,8 @@ function normalize(raw: unknown): ReaderProgress | undefined {
   }
 }
 
-/// 扫描 localStorage，把已有进度都读进来（旧版本只存了 chapter/page，这里做兼容）
+/// 扫描 localStorage，把已有进度都读进来
+/// - 单章漫画的记录直接丢掉（旧版本不区分单章多章）
 export function loadAllProgress() {
   const map: Record<string, ReaderProgress> = {}
   try {
@@ -49,7 +45,7 @@ export function loadAllProgress() {
         continue
       }
       const progress = normalize(JSON.parse(localStorage.getItem(key) ?? 'null'))
-      if (progress !== undefined) {
+      if (progress !== undefined && progress.totalChapters > 1) {
         map[key.slice(KEY_PREFIX.length)] = progress
       }
     }
@@ -78,7 +74,13 @@ export function lastProgress(): { comicId: number; progress: ReaderProgress } | 
   return best
 }
 
+/// 记进度；单章漫画不记，顺手把可能残留的旧记录删掉
 export function saveProgress(comicId: number, progress: Omit<ReaderProgress, 'updatedAt'>) {
+  if (progress.totalChapters <= 1) {
+    clearProgress(comicId)
+    return
+  }
+
   const value: ReaderProgress = { ...progress, updatedAt: Date.now() }
   progressMap.value = { ...progressMap.value, [String(comicId)]: value }
   try {
@@ -88,13 +90,23 @@ export function saveProgress(comicId: number, progress: Omit<ReaderProgress, 'up
   }
 }
 
-/// 「读到第 3 话 12/24 页」
-export function progressLabel(progress: ReaderProgress): string {
-  const chapter = progress.chapter + 1
-  if (progress.pageCount <= 0) {
-    return `读到第 ${chapter} 话`
+function clearProgress(comicId: number) {
+  const key = String(comicId)
+  if (progressMap.value[key] !== undefined) {
+    const next = { ...progressMap.value }
+    delete next[key]
+    progressMap.value = next
   }
-  return `读到第 ${chapter} 话 ${progress.page + 1}/${progress.pageCount} 页`
+  try {
+    localStorage.removeItem(KEY_PREFIX + key)
+  } catch {
+    // 忽略 localStorage 删除失败
+  }
+}
+
+/// 「读到第 3 话」
+export function progressLabel(progress: ReaderProgress): string {
+  return `读到第 ${progress.chapter + 1} 话`
 }
 
 loadAllProgress()

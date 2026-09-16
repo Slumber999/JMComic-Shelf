@@ -3,6 +3,8 @@ import { DownloadEvent } from './bindings.ts'
 export type CurrentTabName = 'search' | 'favorite' | 'weekly' | 'downloaded' | 'chapter'
 export type ProgressesPaneTabName = 'uncompleted' | 'completed' | 'export'
 export type ComicLayout = 'list' | 'grid'
+/// 网格里漫画的大小档位
+export type GridSize = 'small' | 'medium' | 'large'
 
 export type ProgressData = Extract<DownloadEvent, { event: 'TaskCreate' }>['data'] & {
   percentage: number

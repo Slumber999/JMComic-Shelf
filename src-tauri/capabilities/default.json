@@ -1,13 +1,14 @@
 {
   "$schema": "../gen/schemas/desktop-schema.json",
   "identifier": "default",
-  "description": "Capability for the main window",
-  "windows": ["main"],
+  "description": "Capability for the main window and the reader window",
+  "windows": ["main", "reader"],
   "permissions": [
     "core:default",
     "core:window:allow-set-size",
     "core:window:allow-inner-size",
     "core:window:allow-scale-factor",
+    "core:window:allow-close",
     "opener:default",
     "dialog:allow-open"
   ]

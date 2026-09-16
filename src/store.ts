@@ -1,18 +1,20 @@
 import { defineStore } from 'pinia'
-import { ComicLayout, CurrentTabName, ProgressData, ProgressesPaneTabName } from './types.ts'
-import { CategoryResp, Comic, Config, GetFavoriteResult, GetUserProfileRespData, GetWeeklyResult, LocalLibrarySource, SearchResult } from './bindings.ts'
+import { ComicLayout, CurrentTabName, GridSize, ProgressData, ProgressesPaneTabName } from './types.ts'
+import { GRID_ITEM_WIDTHS, resizeMainWindowForGridSize } from './comicGrid.ts'
+import { CategoryResp, Comic, commands, Config, GetFavoriteResult, GetUserProfileRespData, GetWeeklyResult, LocalLibrarySource, SearchResult } from './bindings.ts'
 
 /// 本地库存读哪个目录：这是"看哪个目录"的视图偏好，存 localStorage，
 /// 不写进 config.json（切一下目录不该触发保存配置，也不该弹"保存配置成功"）
 const LOCAL_LIBRARY_SOURCE_KEY = 'local:librarySource'
 /// 漫画列表布局与封面悬停预览也是视图偏好，同样不写进 config.json
 const COMIC_LAYOUT_KEY = 'view:comicLayout'
+const GRID_SIZE_KEY = 'view:gridSize'
 const COVER_PREVIEW_KEY = 'view:coverPreview'
 /// 封面悬停预览的放大倍数范围（2 倍 ~ 3 倍）
 export const COVER_PREVIEW_SCALE_MIN = 2
 export const COVER_PREVIEW_SCALE_MAX = 3
 const COVER_PREVIEW_SCALE_KEY = 'view:coverPreviewScale'
-import { ref } from 'vue'
+import { computed, ref } from 'vue'
 
 export const useStore = defineStore('store', () => {
   const config = ref<Config>()
@@ -40,8 +42,20 @@ export const useStore = defineStore('store', () => {
   // 本地库存读「下载目录」还是「导出目录」
   const localLibrarySource = ref<LocalLibrarySource>('DownloadDir')
   const comicLayout = ref<ComicLayout>('list')
+  const gridSize = ref<GridSize>('small')
+  /// 网格列宽和主窗口尺寸都跟着它
+  const gridItemWidth = computed(() => GRID_ITEM_WIDTHS[gridSize.value])
   const coverPreview = ref<boolean>(true)
   const coverPreviewScale = ref<number>(COVER_PREVIEW_SCALE_MIN)
+
+  /// 打开阅读器：设置里开了「阅读器独立窗口」就开新窗口，否则用现在这种内嵌浮层
+  function openReader(target: { comic?: Comic; comicId?: number }) {
+    if (config.value?.splitReader === true) {
+      void commands.openReaderWindow({ comic: target.comic ?? null, comicId: target.comicId ?? null })
+      return
+    }
+    readerTarget.value = target
+  }
 
   function setLocalLibrarySource(source: LocalLibrarySource) {
     localLibrarySource.value = source
@@ -72,6 +86,21 @@ export const useStore = defineStore('store', () => {
     }
   }
 
+  function setGridSize(size: GridSize) {
+    if (size === gridSize.value) {
+      return
+    }
+    const previous = gridSize.value
+    gridSize.value = size
+    try {
+      localStorage.setItem(GRID_SIZE_KEY, size)
+    } catch {
+      // 忽略 localStorage 写入失败
+    }
+    // 主窗口大小跟着档位走
+    void resizeMainWindowForGridSize(previous, size)
+  }
+
   function setCoverPreview(enabled: boolean) {
     coverPreview.value = enabled
     try {
@@ -96,6 +125,10 @@ export const useStore = defineStore('store', () => {
       const layout = localStorage.getItem(COMIC_LAYOUT_KEY)
       if (layout === 'list' || layout === 'grid') {
         comicLayout.value = layout
+      }
+      const gridSizeSaved = localStorage.getItem(GRID_SIZE_KEY)
+      if (gridSizeSaved === 'small' || gridSizeSaved === 'medium' || gridSizeSaved === 'large') {
+        gridSize.value = gridSizeSaved
       }
       const preview = localStorage.getItem(COVER_PREVIEW_KEY)
       if (preview === '0' || preview === '1') {
@@ -127,11 +160,15 @@ export const useStore = defineStore('store', () => {
     getWeeklyResult,
     downloadedComics,
     readerTarget,
+    openReader,
     categoryResp,
     localLibrarySource,
     setLocalLibrarySource,
     comicLayout,
     setComicLayout,
+    gridSize,
+    gridItemWidth,
+    setGridSize,
     coverPreview,
     setCoverPreview,
     coverPreviewScale,

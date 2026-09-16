@@ -1,3 +1,4 @@
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
@@ -10,8 +11,10 @@ use bytes::Bytes;
 use eyre::{eyre, OptionExt, WrapErr};
 use image::ImageFormat;
 use parking_lot::RwLock;
-use reqwest::cookie::Jar;
+use reqwest::cookie::{CookieStore, Jar};
+use reqwest::header::{HeaderValue, SET_COOKIE};
 use reqwest::StatusCode;
+use reqwest::Url;
 use reqwest_middleware::ClientWithMiddleware;
 use reqwest_retry::policies::ExponentialBackoff;
 use reqwest_retry::{Jitter, RetryTransientMiddleware};
@@ -42,7 +45,77 @@ const APP_TOKEN_SECRET_2: &str = "18comicAPPContent";
 const APP_DATA_SECRET: &str = "185Hcomic3PAPP7R";
 const APP_VERSION: &str = "2.0.13";
 
-#[derive(Debug, Clone, PartialEq)]
+/// 自动重新登录失败后的冷却时间：这段时间内不再重登，免得请求一失败就反复登录
+const RELOGIN_COOLDOWN: Duration = Duration::from_secs(60);
+
+/// 登录态 AVS 自己拿着，其余 cookie 交给 reqwest 的 jar
+/// - 禁漫对任何未登录请求都会下发一个游客 AVS，名字、域、路径跟登录态完全一样，
+///   jar 正是按这几项存取，谁后到谁覆盖。所以登录成功后把 AVS 记在这里，
+///   取 cookie 时直接盖掉 jar 里的那份，游客 AVS 就顶不掉了
+#[derive(Default)]
+struct SessionCookieStore {
+    jar: Jar,
+    /// 登录态 AVS，None 表示还没登录
+    session: RwLock<Option<String>>,
+}
+
+impl SessionCookieStore {
+    fn set_session(&self, avs: String) {
+        *self.session.write() = Some(avs);
+    }
+
+    /// 拼请求要带的 cookie：jar 里的原样保留，只把 AVS 换成登录态的那份
+    fn cookies_text(&self, url: &Url) -> Option<String> {
+        let jar_cookies = self
+            .jar
+            .cookies(url)
+            .and_then(|value| value.to_str().ok().map(str::to_string));
+        let session = self.session.read();
+        let Some(avs) = session.as_ref() else {
+            return jar_cookies;
+        };
+
+        let mut parts = jar_cookies
+            .map(|text| {
+                text.split("; ")
+                    .filter(|part| !part.starts_with("AVS="))
+                    .map(str::to_string)
+                    .collect::<Vec<_>>()
+            })
+            .unwrap_or_default();
+        parts.push(format!("AVS={avs}"));
+        Some(parts.join("; "))
+    }
+}
+
+impl CookieStore for SessionCookieStore {
+    fn set_cookies(&self, cookie_headers: &mut dyn Iterator<Item = &HeaderValue>, url: &Url) {
+        self.jar.set_cookies(cookie_headers, url);
+    }
+
+    fn cookies(&self, url: &Url) -> Option<HeaderValue> {
+        HeaderValue::from_str(&self.cookies_text(url)?).ok()
+    }
+}
+
+/// 从 /login 的响应头里取出登录态 AVS；拿不到就返回 None，后面还是走 jar
+fn extract_session_avs(response: &reqwest::Response) -> Option<String> {
+    response
+        .headers()
+        .get_all(SET_COOKIE)
+        .iter()
+        .filter_map(|value| value.to_str().ok())
+        .find_map(|text| {
+            let (name, rest) = text.split_once('=')?;
+            if !name.trim().eq_ignore_ascii_case("AVS") {
+                return None;
+            }
+            let avs = rest.split(';').next()?.trim();
+            (!avs.is_empty()).then(|| avs.to_string())
+        })
+}
+
+#[derive(Debug, Clone, Copy, PartialEq)]
 enum ApiPath {
     Login,
     GetUserProfile,
@@ -82,30 +155,42 @@ impl ApiPath {
 pub struct JmClient {
     app: AppHandle,
     api_client: Arc<RwLock<ClientWithMiddleware>>,
-    api_jar: Arc<Jar>,
+    cookie_store: Arc<SessionCookieStore>,
     img_client: Arc<RwLock<ClientWithMiddleware>>,
+    /// 重新登录的锁：并发请求同时撞到 401 时只登一次
+    relogin_lock: Arc<tokio::sync::Mutex<()>>,
+    /// 每成功登录一次加一：等锁的请求靠它判断别人是不是已经登好了
+    session_generation: Arc<AtomicU64>,
+    /// 上次自动重登失败的时间
+    last_relogin_failure: Arc<RwLock<Option<Instant>>>,
 }
 
 impl JmClient {
     /// 创建客户端。不会失败：代理配置不合法时退化为直连（并记错误日志），
     /// 保证应用永远能启动
     pub fn new(app: AppHandle) -> Self {
-        let api_jar = Arc::new(Jar::default());
-        let api_client = Arc::new(RwLock::new(create_api_client_or_direct(&app, &api_jar)));
+        let cookie_store = Arc::new(SessionCookieStore::default());
+        let api_client = Arc::new(RwLock::new(create_api_client_or_direct(
+            &app,
+            &cookie_store,
+        )));
         let img_client = Arc::new(RwLock::new(create_img_client_or_direct(&app)));
 
         Self {
             app,
             api_client,
-            api_jar,
+            cookie_store,
             img_client,
+            relogin_lock: Arc::new(tokio::sync::Mutex::new(())),
+            session_generation: Arc::new(AtomicU64::new(0)),
+            last_relogin_failure: Arc::new(RwLock::new(None)),
         }
     }
 
     /// 重新加载网络客户端（改了代理之后调用）
     /// - 两个客户端都建成功了才替换，避免出现"一半新一半旧"
     pub fn reload_client(&self) -> eyre::Result<()> {
-        let api_client = create_api_client(&self.app, &self.api_jar)?;
+        let api_client = create_api_client(&self.app, &self.cookie_store)?;
         let img_client = create_img_client(&self.app)?;
 
         *self.api_client.write() = api_client;
@@ -113,12 +198,34 @@ impl JmClient {
         Ok(())
     }
 
+    /// 发请求；需要登录的接口回 401 就用保存的账号重新登录一次，然后重试
     async fn jm_request(
         &self,
         method: reqwest::Method,
         path: ApiPath,
         query: Option<serde_json::Value>,
         form: Option<serde_json::Value>,
+        ts: u64,
+    ) -> eyre::Result<reqwest::Response> {
+        let generation = self.session_generation.load(Ordering::Relaxed);
+        let http_resp = self
+            .send(&method, path, query.as_ref(), form.as_ref(), ts)
+            .await?;
+
+        if http_resp.status() != StatusCode::UNAUTHORIZED || !self.relogin(generation).await {
+            return Ok(http_resp);
+        }
+
+        self.send(&method, path, query.as_ref(), form.as_ref(), ts)
+            .await
+    }
+
+    async fn send(
+        &self,
+        method: &reqwest::Method,
+        path: ApiPath,
+        query: Option<&serde_json::Value>,
+        form: Option<&serde_json::Value>,
         ts: u64,
     ) -> eyre::Result<reqwest::Response> {
         let tokenparam = format!("{ts},{APP_VERSION}");
@@ -133,13 +240,13 @@ impl JmClient {
         let request = self
             .api_client
             .read()
-            .request(method, format!("https://{api_domain}{path}").as_str())
+            .request(method.clone(), format!("https://{api_domain}{path}").as_str())
             .header("token", token)
             .header("tokenparam", tokenparam)
             .header("user-agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36");
 
         let http_resp = match form {
-            Some(payload) => request.query(&query).form(&payload).send().await,
+            Some(payload) => request.query(&query).form(payload).send().await,
             None => request.query(&query).send().await,
         }
         .map_err(|e| {
@@ -185,10 +292,14 @@ impl JmClient {
             "username": username,
             "password": password,
         });
-        // 发送登录请求
-        let http_resp = self.jm_post(ApiPath::Login, None, Some(form), ts).await?;
+        // 发送登录请求。这里绕开 jm_request：登录本身就回 401 时不能再触发重登
+        let http_resp = self
+            .send(&reqwest::Method::POST, ApiPath::Login, None, Some(&form), ts)
+            .await?;
         // 检查http响应状态码
         let status = http_resp.status();
+        // 登录成功的响应头里带登录态 AVS，先把头读出来再读 body
+        let session_avs = extract_session_avs(&http_resp);
         let body = http_resp.text().await?;
         if status != reqwest::StatusCode::OK {
             return Err(eyre!(
@@ -214,7 +325,53 @@ impl JmClient {
         )?;
         user_profile.photo = format!("https://{IMAGE_DOMAIN}/media/users/{}", user_profile.photo);
 
+        if let Some(avs) = session_avs {
+            self.cookie_store.set_session(avs);
+        }
+        self.session_generation.fetch_add(1, Ordering::Relaxed);
+        *self.last_relogin_failure.write() = None;
+
         Ok(user_profile)
+    }
+
+    /// 登录态失效时用配置里的账号密码重新登录一次
+    /// - 返回 false 表示这次没登成（没存账号密码、冷却期内、或者登录又失败了）
+    async fn relogin(&self, generation: u64) -> bool {
+        // 等锁的这段时间里别的请求已经登好了，直接重试就行
+        if self.session_generation.load(Ordering::Relaxed) != generation {
+            return true;
+        }
+        if let Some(at) = *self.last_relogin_failure.read() {
+            if at.elapsed() < RELOGIN_COOLDOWN {
+                return false;
+            }
+        }
+
+        let _guard = self.relogin_lock.lock().await;
+        if self.session_generation.load(Ordering::Relaxed) != generation {
+            return true;
+        }
+
+        let (username, password) = {
+            let config = self.app.get_config();
+            let config = config.read();
+            (config.username.clone(), config.password.clone())
+        };
+        if username.is_empty() || password.is_empty() {
+            return false;
+        }
+
+        match self.login(&username, &password).await {
+            Ok(_) => {
+                tracing::info!("登录态已失效，已用保存的账号重新登录");
+                true
+            }
+            Err(err) => {
+                tracing::error!(message = %err, "自动重新登录失败");
+                *self.last_relogin_failure.write() = Some(Instant::now());
+                false
+            }
+        }
     }
 
     #[instrument(level = "error", skip_all)]
@@ -870,10 +1027,10 @@ fn apply_proxy(
 
 fn create_api_client_with_config(
     config: &Config,
-    jar: &Arc<Jar>,
+    cookie_store: &Arc<SessionCookieStore>,
 ) -> eyre::Result<ClientWithMiddleware> {
     let builder = apply_proxy(
-        reqwest::ClientBuilder::new().cookie_provider(jar.clone()),
+        reqwest::ClientBuilder::new().cookie_provider(cookie_store.clone()),
         config,
     )?;
 
@@ -908,12 +1065,12 @@ fn create_img_client_with_config(config: &Config) -> eyre::Result<ClientWithMidd
     )
 }
 
-pub fn create_api_client(
+fn create_api_client(
     app: &AppHandle,
-    jar: &Arc<Jar>,
+    cookie_store: &Arc<SessionCookieStore>,
 ) -> eyre::Result<ClientWithMiddleware> {
     let config = app.get_config().read().clone();
-    create_api_client_with_config(&config, jar)
+    create_api_client_with_config(&config, cookie_store)
 }
 
 pub fn create_img_client(app: &AppHandle) -> eyre::Result<ClientWithMiddleware> {
@@ -923,15 +1080,18 @@ pub fn create_img_client(app: &AppHandle) -> eyre::Result<ClientWithMiddleware> 
 
 /// 启动时建客户端：代理配置万一不合法（比如用户手改了 config.json），
 /// 也绝不能让应用起不来 —— 退化成直连并记一条错误日志
-fn create_api_client_or_direct(app: &AppHandle, jar: &Arc<Jar>) -> ClientWithMiddleware {
+fn create_api_client_or_direct(
+    app: &AppHandle,
+    cookie_store: &Arc<SessionCookieStore>,
+) -> ClientWithMiddleware {
     let config = app.get_config().read().clone();
-    match create_api_client_with_config(&config, jar) {
+    match create_api_client_with_config(&config, cookie_store) {
         Ok(client) => client,
         Err(err) => {
             tracing::error!(message = %err, "创建API客户端失败，本次退化为直连（请检查`配置`里的代理设置）");
             let mut fallback_config = config;
             fallback_config.proxy_mode = ProxyMode::NoProxy;
-            create_api_client_with_config(&fallback_config, jar).unwrap_or_else(|err| {
+            create_api_client_with_config(&fallback_config, cookie_store).unwrap_or_else(|err| {
                 tracing::error!(message = %err, "退化为直连仍然失败，使用不带重试的裸客户端");
                 reqwest_middleware::ClientBuilder::new(reqwest::Client::new()).build()
             })

@@ -7,16 +7,21 @@ import IconButton from '../../../components/IconButton.vue'
 import { computed } from 'vue'
 import { getProgress, progressLabel } from '../../../reader/progress.ts'
 import { localCoverUrl } from '../../../reader/protocol.ts'
+import { ComicLayout } from '../../../types.ts'
 
 const store = useStore()
 
-const props = defineProps<{
-  comic: Comic
-  fromExportDir?: boolean
-  checkboxChecked: (comic: Comic) => boolean
-  handleCheckboxClick: (comic: Comic) => void
-  handleContextMenu: (comic: Comic) => void
-}>()
+const props = withDefaults(
+  defineProps<{
+    comic: Comic
+    fromExportDir?: boolean
+    checkboxChecked: (comic: Comic) => boolean
+    handleCheckboxClick: (comic: Comic) => void
+    handleContextMenu: (comic: Comic) => void
+    layout?: ComicLayout
+  }>(),
+  { layout: 'list' },
+)
 
 const emit = defineEmits<{ read: [comic: Comic] }>()
 
@@ -67,28 +72,48 @@ async function showComicDownloadDirInFileManager() {
     console.error(result.error)
   }
 }
+
+/// 网格模式下封面是主入口，和列表模式点标题一致
+function onCoverClick() {
+  if (props.layout !== 'list') {
+    pickComic()
+  }
+}
 </script>
 
 <template>
-  <div class="flex relative border border-solid rounded-md border-gray-2 p-1" @contextmenu="handleContextMenu(comic)">
+  <div
+    :class="[
+      'relative border border-solid rounded-md border-gray-2 p-1',
+      layout === 'list' ? 'flex' : 'group flex flex-col',
+    ]"
+    @contextmenu="handleContextMenu(comic)">
     <n-checkbox
       class="absolute top-2 left-2 z-1"
       :checked="checkboxChecked(comic)"
       @click="handleCheckboxClick(comic)" />
     <img
-      class="w-18 h-24 shrink-0 rounded object-cover mr-3"
+      :class="
+        layout === 'list'
+          ? 'w-18 h-24 shrink-0 rounded object-cover mr-3'
+          : 'w-full aspect-[3/4] object-cover rounded cursor-pointer transition-transform duration-200 group-hover:scale-105'
+      "
       loading="lazy"
       :src="localCoverUrl(comic.id, comic.comicDownloadDir)"
       alt=""
       :draggable="false"
-      referrerpolicy="no-referrer" />
+      referrerpolicy="no-referrer"
+      @click="onCoverClick" />
     <div class="flex flex-col w-full">
       <span
-        class="font-bold text-base line-clamp-2 cursor-pointer transition-colors duration-200 hover:text-blue-5"
+        :class="[
+          'font-bold line-clamp-2 cursor-pointer transition-colors duration-200 hover:text-blue-5',
+          layout === 'list' ? 'text-base' : 'text-sm mt-1',
+        ]"
         @click="pickComic">
         {{ comic.name }}
       </span>
-      <span class="text-xs text-red">作者：{{ comic.author }}</span>
+      <span class="text-xs text-red" :class="layout === 'list' ? '' : 'truncate'">作者：{{ comic.author }}</span>
       <div
         v-if="progressText !== ''"
         class="flex items-center gap-1 text-xs text-blue-5 cursor-pointer hover:text-blue-6"
@@ -97,7 +122,12 @@ async function showComicDownloadDirInFileManager() {
         <PhBookmarkSimple :size="14" />
         {{ progressText }}
       </div>
-      <div class="flex mt-auto gap-col-2">
+      <div
+        :class="
+          layout === 'list'
+            ? 'flex mt-auto gap-col-2'
+            : 'flex mt-auto gap-col-2 opacity-0 transition-opacity duration-150 group-hover:opacity-100'
+        ">
         <IconButton :title="fromExportDir ? '打开导出目录' : '打开下载目录'" @click="showComicDownloadDirInFileManager">
           <PhFolderOpen :size="20" />
         </IconButton>

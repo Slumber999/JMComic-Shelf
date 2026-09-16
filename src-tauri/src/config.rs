@@ -44,6 +44,11 @@ pub struct Config {
     pub api_domain_mode: ApiDomainMode,
     pub custom_api_domain: String,
     pub should_download_cover: bool,
+    /// 阅读器是否拆分成独立窗口
+    pub split_reader: bool,
+    /// 主窗口尺寸：换网格档位、用户拉伸窗口时由前端更新
+    pub window_width: u32,
+    pub window_height: u32,
     pub create_pdf_concurrency: usize,
     pub enable_merge_pdf: bool,
     /// 导出跳过模式
@@ -137,6 +142,9 @@ impl Config {
             api_domain_mode: ApiDomainMode::Domain2,
             custom_api_domain: API_DOMAIN_2.to_string(),
             should_download_cover: true,
+            split_reader: false,
+            window_width: 600,
+            window_height: 720,
             create_pdf_concurrency: cpu_core_num,
             enable_merge_pdf: true,
             export_skip_mode: ExportSkipMode::default(),

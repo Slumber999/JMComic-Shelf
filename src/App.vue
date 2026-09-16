@@ -2,6 +2,8 @@
 // This starter template is using Vue 3 <script setup> SFCs
 // Check out https://vuejs.org/api/sfc-script-setup.html#script-setup
 import AppContent from './AppContent.vue'
+import ReaderWindow from './reader/ReaderWindow.vue'
+import { getCurrentWindow } from '@tauri-apps/api/window'
 import {
   GlobalThemeOverrides,
   NConfigProvider,
@@ -10,6 +12,9 @@ import {
   NModalProvider,
   NNotificationProvider,
 } from 'naive-ui'
+
+/// 阅读器独立窗口只渲染阅读页，其余窗口渲染主界面
+const isReaderWindow = getCurrentWindow().label === 'reader'
 
 const themeOverrides: GlobalThemeOverrides = {
   common: {
@@ -45,7 +50,8 @@ const themeOverrides: GlobalThemeOverrides = {
       <n-notification-provider placement="bottom-right" :max="3">
         <n-message-provider>
           <n-dialog-provider>
-            <app-content />
+            <reader-window v-if="isReaderWindow" />
+            <app-content v-else />
           </n-dialog-provider>
         </n-message-provider>
       </n-notification-provider>

@@ -3,12 +3,12 @@ import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { Comic, commands, ReaderComic } from '../bindings.ts'
 import { NButton, NIcon, NSelect, NSlider, SelectProps, useMessage } from 'naive-ui'
 import { PhCaretDoubleLeft, PhCaretDoubleRight, PhCaretLeft, PhCaretRight, PhX } from '@phosphor-icons/vue'
-import { getCurrentWindow, LogicalSize } from '@tauri-apps/api/window'
 import { getProgress, saveProgress as saveReaderProgress } from './progress.ts'
 import { readerPageUrl } from './protocol.ts'
+import FavoriteButton from '../components/FavoriteButton.vue'
 
 // 传 comic 表示本地库存（本地优先），只传 comicId 表示可以从网络读
-const props = defineProps<{ comic?: Comic; comicId?: number }>()
+const props = defineProps<{ comic?: Comic; comicId?: number; keepSessionOnUnmount?: boolean }>()
 const showing = defineModel<boolean>('showing', { required: true })
 
 const message = useMessage()
@@ -23,11 +23,9 @@ const readingMode = ref<ReadingMode>('scroll')
 const opening = ref<boolean>(false)
 const imageLoading = ref<boolean>(false)
 const preparing = ref<boolean>(false)
+/// 阅读器的收藏按钮只用来取初始状态，后续状态由 FavoriteButton 自己维护
+const isFavorite = ref<boolean>(false)
 
-/// 进入阅读器就把窗口宽度收到下限（与 tauri.conf.json 的 minWidth 保持一致）
-const READER_WINDOW_WIDTH = 600
-let widthBeforeReader: number | undefined
-let resizingWindow = false
 let closed = true
 
 const scrollContainer = ref<HTMLElement>()
@@ -115,18 +113,28 @@ async function open() {
   readerComic.value = result.data
   restoreProgress()
 
+  // 收藏状态：本地库存的 comic 自带；只传 comicId 时后台查一次，别挡住章节加载
+  if (props.comic !== undefined) {
+    isFavorite.value = props.comic.is_favorite
+  } else {
+    void commands.getComic(comicId.value).then((comicResult) => {
+      if (comicResult.status === 'ok') {
+        isFavorite.value = comicResult.data.is_favorite
+      }
+    })
+  }
+
   // 在线章节要先取页数（会产生一次请求）
   await ensureChapterReady(chapterIndex.value)
+  saveProgress()
   opening.value = false
 
   await nextTick()
   preloadAround()
   scrollToCurrentPage()
-  // 进入阅读就把窗口收窄到下限
-  await narrowWindowForReading()
 }
 
-/// 退出阅读：还原窗口宽度 + 释放后端缓存
+/// 退出阅读：释放后端缓存
 /// 可能被 watcher 和 onBeforeUnmount 同时触发，用 closed 保证只执行一次
 async function close() {
   if (closed) {
@@ -134,13 +142,14 @@ async function close() {
   }
   closed = true
 
-  await restoreWindowWidth()
-
   readerComic.value = undefined
   preloaded = []
   chapterIndex.value = 0
   pageIndex.value = 0
-  await commands.closeReader()
+  // 阅读窗口里换漫画会重建组件：新会话不能被旧实例的卸载清掉
+  if (props.keepSessionOnUnmount !== true) {
+    await commands.closeReader()
+  }
 }
 
 /// 在线章节：打开时才去请求图片地址，避免打开阅读器时一次性请求所有章节
@@ -167,87 +176,23 @@ async function ensureChapterReady(index: number): Promise<boolean> {
   return true
 }
 
-/// 进入阅读模式：记住当前宽度，然后把窗口收到下限
-async function narrowWindowForReading() {
-  if (resizingWindow) {
+/// 恢复进度：单章短篇不记进度，多章漫画也只恢复到章节开头
+function restoreProgress() {
+  if (chapters.value.length <= 1) {
     return
   }
-  resizingWindow = true
 
-  try {
-    const appWindow = getCurrentWindow()
-    const [size, scaleFactor] = await Promise.all([
-      appWindow.innerSize(),
-      appWindow.scaleFactor(),
-    ])
-    const logical = size.toLogical(scaleFactor)
-    const currentWidth = Math.round(logical.width)
-
-    // 只记第一次，避免反复收窄时把下限当成"原宽度"
-    if (widthBeforeReader === undefined) {
-      widthBeforeReader = currentWidth
-    }
-
-    if (currentWidth !== READER_WINDOW_WIDTH) {
-      await appWindow.setSize(new LogicalSize(READER_WINDOW_WIDTH, logical.height))
-    }
-  } catch (error) {
-    console.warn('收窄窗口失败', error)
-  } finally {
-    resizingWindow = false
-  }
-}
-
-/// 退出阅读：把窗口宽度还原成进入前的宽度
-async function restoreWindowWidth() {
-  if (widthBeforeReader === undefined || resizingWindow) {
-    return
-  }
-  resizingWindow = true
-
-  try {
-    const appWindow = getCurrentWindow()
-    const [size, scaleFactor] = await Promise.all([
-      appWindow.innerSize(),
-      appWindow.scaleFactor(),
-    ])
-    const logical = size.toLogical(scaleFactor)
-    const restoreWidth = widthBeforeReader
-    widthBeforeReader = undefined
-
-    if (Math.round(logical.width) !== restoreWidth) {
-      await appWindow.setSize(new LogicalSize(restoreWidth, logical.height))
-    }
-  } catch (error) {
-    console.warn('还原窗口宽度失败', error)
-  } finally {
-    resizingWindow = false
-  }
-}
-
-function readSaved(): { chapter: number; page: number } | undefined {
   const progress = getProgress(comicId.value)
   if (progress === undefined) {
-    return { chapter: 0, page: 0 }
-  }
-  return { chapter: progress.chapter, page: progress.page }
-}
-
-function restoreProgress() {
-  const saved = readSaved()
-  if (saved === undefined) {
     return
   }
-  chapterIndex.value = Math.min(Math.max(saved.chapter, 0), Math.max(chapters.value.length - 1, 0))
-  pageIndex.value = Math.min(Math.max(saved.page, 0), Math.max(pageCount.value - 1, 0))
+  chapterIndex.value = Math.min(Math.max(progress.chapter, 0), chapters.value.length - 1)
 }
 
+/// 记进度：只记到章节，单章漫画由 progress.ts 直接忽略
 function saveProgress() {
-  // 除了翻到哪一页，也把章节名/总页数存下来，本地库存的卡片上就能直接显示进度
   saveReaderProgress(comicId.value, {
     chapter: chapterIndex.value,
-    page: pageIndex.value,
-    pageCount: pageCount.value,
     chapterTitle: currentChapter.value?.title ?? '',
     comicTitle: comicTitle.value,
     totalChapters: chapters.value.length,
@@ -269,7 +214,6 @@ function goToPage(index: number) {
 
   pageIndex.value = next
   imageLoading.value = true
-  saveProgress()
   preloadAround()
 
   nextTick(() => {
@@ -408,10 +352,7 @@ function onScroll() {
       }
     }
 
-    if (current !== pageIndex.value) {
-      pageIndex.value = current
-      saveProgress()
-    }
+    pageIndex.value = current
   })
 }
 
@@ -459,7 +400,6 @@ function onKeydown(event: KeyboardEvent) {
     case 'm':
     case 'M':
       readingMode.value = isPaged ? 'scroll' : 'paged'
-      saveProgress()
       nextTick(scrollToCurrentPage)
       break
     default:
@@ -476,7 +416,6 @@ function onImageLoad() {
 /// 切换阅读方式：窗口宽度不变（进入阅读时已经收到下限）
 function setReadingMode(mode: ReadingMode) {
   readingMode.value = mode
-  saveProgress()
   nextTick(scrollToCurrentPage)
 }
 
@@ -486,7 +425,7 @@ onMounted(() => {
 
 onBeforeUnmount(() => {
   window.removeEventListener('keydown', onKeydown)
-  // 组件卸载（例如上层把 v-if 关掉）也要还原窗口宽度、释放缓存
+  // 组件卸载（例如上层把 v-if 关掉）也要释放缓存
   void close()
 })
 </script>
@@ -563,6 +502,8 @@ onBeforeUnmount(() => {
           @click="setReadingMode('paged')">
           左右翻页
         </n-button>
+
+        <FavoriteButton :comic-id="comicId" :is-favorite="isFavorite" variant="button" />
       </div>
     </div>
 
@@ -602,6 +543,7 @@ onBeforeUnmount(() => {
           style="content-visibility: auto; contain-intrinsic-size: auto 1000px">
           <img
             :src="url"
+            :fetchpriority="index === pageIndex ? 'high' : 'low'"
             class="block w-full h-auto"
             :draggable="false"
             loading="lazy"

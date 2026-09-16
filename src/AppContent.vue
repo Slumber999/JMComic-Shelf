@@ -11,6 +11,7 @@ import AboutDialog from './dialogs/AboutDialog.vue'
 import { PhGearSix, PhInfo, PhUser, PhBookmarkSimple, PhClockCounterClockwise } from '@phosphor-icons/vue'
 import DownloadedPane from './panes/DownloadedPane/DownloadedPane.vue'
 import { useStore } from './store.ts'
+import { getCurrentWindow } from '@tauri-apps/api/window'
 import LogDialog from './dialogs/LogDialog.vue'
 import RankingPane from './panes/RankingPane.vue'
 import ComicReader from './reader/ComicReader.vue'
@@ -73,7 +74,7 @@ async function continueReading() {
     }
     const comic = comics.find((item) => item.id === last.comicId)
     // 本地没有（比如换过目录）就用漫画id从网上读
-    store.readerTarget = comic !== undefined ? { comic } : { comicId: last.comicId }
+    store.openReader(comic !== undefined ? { comic } : { comicId: last.comicId })
   } finally {
     resuming.value = false
   }
@@ -129,6 +130,15 @@ watch(
   { deep: true },
 )
 
+/// 主窗口尺寸记进配置：换网格档位时窗口会跟着缩放，下次启动也用这个尺寸
+function rememberWindowSize() {
+  if (store.config === undefined) {
+    return
+  }
+  store.config.windowWidth = window.innerWidth
+  store.config.windowHeight = window.innerHeight
+}
+
 onMounted(async () => {
   // 屏蔽浏览器右键菜单
   document.oncontextmenu = (event) => {
@@ -137,6 +147,9 @@ onMounted(async () => {
   // 获取配置（记下来，避免这次赋值又触发一次"没变化"的保存）
   store.config = await commands.getConfig()
   lastSavedConfig = JSON.stringify(store.config)
+
+  // 主窗口尺寸跟着配置走
+  void getCurrentWindow().onResized(rememberWindowSize)
   // 如果username和password不为空，尝试登录
   if (store.config.username !== '' && store.config.password !== '') {
     const result = await commands.login(store.config.username, store.config.password)

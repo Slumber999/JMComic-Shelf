@@ -57,7 +57,7 @@ function readComic() {
   if (comic === undefined) {
     return
   }
-  store.readerTarget = { comicId: comic.id }
+  store.openReader({ comicId: comic.id })
 }
 
 async function showComicDownloadDirInFileManager() {

@@ -1,6 +1,7 @@
 <script setup lang="ts">
-import { computed, h, ref, watch } from 'vue'
+import { computed, h, nextTick, ref, watch } from 'vue'
 import { commands, ComicInFavorite, FavoriteSort } from '../bindings.ts'
+import { scrollListToTop } from '../listScroll.ts'
 import {
   DropdownOption,
   NButton,
@@ -12,6 +13,7 @@ import {
   useMessage,
 } from 'naive-ui'
 import ComicCard from '../components/ComicCard.vue'
+import { useGridColumns } from '../comicGrid.ts'
 import { localCoverUrl } from '../reader/protocol.ts'
 import { useStore } from '../store.ts'
 import DownloadAllFavoriteButton from '../components/DownloadAllFavoriteButton.vue'
@@ -29,6 +31,9 @@ const sortOptions: SelectProps['options'] = [
 const sortSelected = ref<FavoriteSort>('FavoriteTime')
 const pageSelected = ref<number>(1)
 const folderIdSelected = ref<number>(0)
+const listRef = ref<HTMLElement>()
+/// 网格列数跟着窗口宽度走
+const gridStyle = useGridColumns(listRef, () => store.gridItemWidth)
 
 // 多选：选中集合与分页无关，跨页保留
 const selectedIds = ref<Set<number>>(new Set())
@@ -85,6 +90,19 @@ async function getFavourite(folderId: number, page: number, sort: FavoriteSort) 
   store.getFavoriteResult = result.data
 }
 
+/// 换页/换筛选：取完数据后把列表滚回顶部
+async function changePage(page: number) {
+  await getFavourite(folderIdSelected.value, page, sortSelected.value)
+  await nextTick()
+  scrollListToTop(listRef.value)
+}
+
+async function changeFilter(folderId: number, sort: FavoriteSort) {
+  await getFavourite(folderId, 1, sort)
+  await nextTick()
+  scrollListToTop(listRef.value)
+}
+
 /// 收藏状态变化后刷新：保持当前收藏夹、排序与页码，别把用户踢回第一页
 async function refreshFavourite() {
   await getFavourite(folderIdSelected.value, pageSelected.value, sortSelected.value)
@@ -101,7 +119,7 @@ async function syncFavoriteFolder() {
     console.error(result.error)
     return
   }
-  await getFavourite(0, 1, 'FavoriteTime')
+  await changeFilter(0, 'FavoriteTime')
   message.success('收藏夹已同步')
 }
 
@@ -251,13 +269,13 @@ async function exportCbz() {
         :options="folderOptions"
         :show-checkmark="false"
         size="small"
-        @update-value="getFavourite($event, 1, sortSelected)" />
+        @update-value="changeFilter($event, sortSelected)" />
       <n-select
         v-model:value="sortSelected"
         :options="sortOptions"
         :show-checkmark="false"
         size="small"
-        @update-value="getFavourite(folderIdSelected, 1, $event)" />
+        @update-value="changeFilter(folderIdSelected, $event)" />
       <n-button size="small" type="primary" secondary @click="syncFavoriteFolder">同步收藏夹</n-button>
       <download-all-favorite-button />
     </div>
@@ -286,9 +304,11 @@ async function exportCbz() {
 
     <template v-if="!listMode">
       <div
+        ref="listRef"
         v-if="store.getFavoriteResult !== undefined"
         class="overflow-auto box-border px-2"
-        :class="store.comicLayout === 'list' ? 'flex flex-col gap-row-2' : 'grid grid-cols-4 gap-2 content-start'">
+        :class="store.comicLayout === 'list' ? 'flex flex-col gap-row-2' : 'grid gap-2 content-start'"
+        :style="store.comicLayout === 'grid' ? gridStyle : undefined">
         <ComicCard
           v-for="comicInFavorite in store.getFavoriteResult?.list"
           :key="comicInFavorite.id"
@@ -308,7 +328,7 @@ async function exportCbz() {
         class="box-border p-2 pt-0 mt-auto"
         :page-count="favoritePageCount"
         :page="pageSelected"
-        @update:page="getFavourite(folderIdSelected, $event, sortSelected)" />
+        @update:page="changePage($event)" />
     </template>
 
     <div v-else class="flex flex-col overflow-auto box-border px-2 pb-2">

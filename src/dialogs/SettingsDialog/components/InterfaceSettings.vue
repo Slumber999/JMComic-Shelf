@@ -10,8 +10,20 @@ function onLayoutChange(value: string | number) {
   }
 }
 
+function onGridSizeChange(value: string | number) {
+  if (value === 'small' || value === 'medium' || value === 'large') {
+    store.setGridSize(value)
+  }
+}
+
 function onCoverPreviewChange(value: boolean) {
   store.setCoverPreview(value)
+}
+
+function onSplitReaderChange(value: boolean) {
+  if (store.config !== undefined) {
+    store.config.splitReader = value
+  }
 }
 
 function onScaleChange(value: number) {
@@ -27,7 +39,25 @@ function onScaleChange(value: number) {
       <n-radio value="grid">网格模式</n-radio>
     </n-radio-group>
 
+    <div class="flex flex-col mt-2">
+      <span class="font-bold">网格大小</span>
+      <n-radio-group
+        :value="store.gridSize"
+        :disabled="store.comicLayout !== 'grid'"
+        @update:value="onGridSizeChange">
+        <n-radio value="small">小</n-radio>
+        <n-radio value="medium">中</n-radio>
+        <n-radio value="large">大</n-radio>
+      </n-radio-group>
+      <span class="text-xs text-gray-500">切换档位时主窗口会跟着一起缩放</span>
+    </div>
+
     <div class="flex items-center gap-2 mt-5">
+      <span class="font-bold">阅读器独立窗口</span>
+      <n-switch :value="store.config?.splitReader ?? false" @update:value="onSplitReaderChange" />
+    </div>
+
+    <div class="flex items-center gap-2 mt-3">
       <span class="font-bold">封面悬停预览</span>
       <n-switch :value="store.coverPreview" @update:value="onCoverPreviewChange" />
     </div>

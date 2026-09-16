@@ -5,6 +5,7 @@ import DownloadedComicCard from './components/DownloadedComicCard.vue'
 import { open } from '@tauri-apps/plugin-dialog'
 import { PhFolderOpen } from '@phosphor-icons/vue'
 import { useStore } from '../../store.ts'
+import { useGridColumns } from '../../comicGrid.ts'
 import {
   DropdownOption,
   NButton,
@@ -29,6 +30,10 @@ const selectionOptions: PartialSelectionOptions = {
   features: { deselectOnBlur: true },
   boundaries: '.downloaded-pane-selection-container',
 }
+/// 网格列数跟着窗口宽度走
+const listRef = ref<HTMLElement>()
+const gridStyle = useGridColumns(listRef, () => store.gridItemWidth)
+
 const selectedIds = ref<Set<number>>(new Set())
 const checkedIds = ref<Set<number>>(new Set())
 const { dropdownX, dropdownY, dropdownShowing, dropdownOptions, showDropdown } = useDropdown()
@@ -124,7 +129,7 @@ const localLibrarySource = computed({
 
 // 阅读器（本地库存传 comic，本地优先读）
 function openReader(comic: Comic) {
-  store.readerTarget = { comic }
+  store.openReader({ comic })
 }
 
 // 连点切换来源时会有多个请求在飞，只认最后一次的结果
@@ -399,14 +404,24 @@ function useDropdown() {
     </div>
     <SelectionArea ref="selectionAreaRef" :options="selectionOptions" @move="updateSelectedIds" @start="unselectAll" />
     <div
-      class="flex flex-col overflow-auto box-border px-2 downloaded-pane-selection-container mb-2"
+      ref="listRef"
+      :class="[
+        'overflow-auto box-border px-2 downloaded-pane-selection-container mb-2',
+        store.comicLayout === 'list' ? 'flex flex-col' : 'grid gap-2 content-start',
+      ]"
+      :style="store.comicLayout === 'grid' ? gridStyle : undefined"
       @contextmenu="showDropdown">
       <DownloadedComicCard
         v-for="comic in currentPageComics"
         :key="comic.id"
         :data-key="comic.id"
-        :class="['selectable mb-2', selectedIds.has(comic.id) ? 'selected shadow-md' : 'hover:bg-gray-1']"
+        :class="[
+          'selectable',
+          store.comicLayout === 'list' ? 'mb-2' : '',
+          selectedIds.has(comic.id) ? 'selected shadow-md' : 'hover:bg-gray-1',
+        ]"
         :comic="comic"
+        :layout="store.comicLayout"
         :from-export-dir="fromExportDir"
         :checkbox-checked="checkboxChecked"
         :handle-checkbox-click="handleCheckboxClick"
