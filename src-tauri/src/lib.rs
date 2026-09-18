@@ -100,6 +100,7 @@ pub fn run() {
             download_comic,
             download_all_favorites,
             update_downloaded_comics,
+            update_exported_comics,
             show_path_in_file_manager,
             sync_favorite_folder,
             open_comic_reader,
@@ -108,6 +109,7 @@ pub fn run() {
             close_reader,
             get_local_comics,
             get_local_tags,
+            get_local_tags_all,
             get_downloaded_comics,
             export_cbz,
             export_cbz_without_download,
@@ -202,6 +204,19 @@ pub fn run() {
                 if let Some(reader_window) = window.app_handle().get_webview_window(READER_WINDOW_LABEL)
                 {
                     let _ = reader_window.close();
+                }
+
+                // 关窗时再记一次尺寸，免得刚拉完窗口就退出、前端那次防抖保存还没落盘
+                if let (Some(config), Ok(size)) =
+                    (window.try_state::<RwLock<Config>>(), window.inner_size())
+                {
+                    let scale_factor = window.scale_factor().unwrap_or(1.0);
+                    let mut config = config.write();
+                    config.window_width = (f64::from(size.width) / scale_factor).round() as u32;
+                    config.window_height = (f64::from(size.height) / scale_factor).round() as u32;
+                    if let Err(err) = config.save(window.app_handle()) {
+                        tracing::error!(message = %err, "退出时保存窗口尺寸失败");
+                    }
                 }
             }
 

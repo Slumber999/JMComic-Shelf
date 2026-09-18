@@ -5,6 +5,7 @@ import { scrollListToTop } from '../listScroll.ts'
 import { NPagination, NSelect, NTab, NTabs, SelectProps } from 'naive-ui'
 import ComicCard from '../components/ComicCard.vue'
 import { useGridColumns } from '../comicGrid.ts'
+import LoadingSpinner from '../components/LoadingSpinner.vue'
 import { useStore } from '../store.ts'
 
 const store = useStore()
@@ -41,8 +42,16 @@ const rankingPageCount = computed(() =>
   rankingResult.value === undefined ? 1 : Math.max(1, Math.ceil(rankingResult.value.total / RANKING_PAGE_SIZE)),
 )
 
+const rankingLoading = ref<boolean>(false)
+const weeklyLoading = ref<boolean>(false)
+const loading = computed(() =>
+  currentView.value === 'ranking' ? rankingLoading.value : weeklyLoading.value,
+)
+
 async function getRanking() {
+  rankingLoading.value = true
   const result = await commands.getRanking(rankingCategory.value, rankingOrder.value, rankingPage.value)
+  rankingLoading.value = false
   if (result.status === 'error') {
     console.error(result.error)
     return
@@ -86,7 +95,9 @@ watch(
 )
 
 async function getWeekly() {
+  weeklyLoading.value = true
   const result = await commands.getWeekly(selectedCategoryId.value, currentWeeklyTypeId.value)
+  weeklyLoading.value = false
   if (result.status === 'error') {
     console.error(result.error)
     return
@@ -147,9 +158,14 @@ onMounted(async () => {
       </template>
     </div>
 
+    <div v-if="loading" class="flex flex-col items-center gap-3 py-16 text-orange">
+      <loading-spinner :size="14" />
+      <span class="text-sm text-gray-500">正在加载…</span>
+    </div>
+
     <div
       ref="listRef"
-      v-if="currentView === 'ranking' && rankingResult !== undefined"
+      v-if="!loading && currentView === 'ranking' && rankingResult !== undefined"
       class="overflow-auto box-border px-2 pt-2"
       :class="store.comicLayout === 'list' ? 'flex flex-col gap-row-2' : 'grid gap-2 content-start'"
       :style="store.comicLayout === 'grid' ? gridStyle : undefined">
@@ -167,16 +183,20 @@ onMounted(async () => {
         :is-favorite="comicInRanking.isFavorite" />
     </div>
 
-    <n-pagination
-      v-if="currentView === 'ranking' && rankingPageCount > 1"
-      class="box-border p-2 pt-0"
-      v-model:page="rankingPage"
-      :page-count="rankingPageCount"
-      size="small" />
+    <div
+      v-if="currentView === 'ranking' && rankingResult !== undefined"
+      class="flex items-center justify-center gap-3 box-border p-2 pt-0">
+      <span class="text-xs text-gray-500">共 {{ rankingResult?.total ?? 0 }} 条</span>
+      <n-pagination
+        v-if="rankingPageCount > 1"
+        v-model:page="rankingPage"
+        :page-count="rankingPageCount"
+        size="small" />
+    </div>
 
     <div
       ref="weeklyListRef"
-      v-if="currentView === 'weekly' && store.getWeeklyResult !== undefined"
+      v-if="!loading && currentView === 'weekly' && store.getWeeklyResult !== undefined"
       class="overflow-auto box-border px-2 pt-2"
       :class="store.comicLayout === 'list' ? 'flex flex-col gap-row-2' : 'grid gap-2 content-start'"
       :style="store.comicLayout === 'grid' ? weeklyGridStyle : undefined">

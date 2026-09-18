@@ -21,6 +21,8 @@ export const useStore = defineStore('store', () => {
   const userProfile = ref<GetUserProfileRespData>()
   const pickedComic = ref<Comic>()
   const currentTabName = ref<CurrentTabName>('search')
+  /// 待搜索的关键词：别的页面点作者名时写进来，搜索页看到就去搜
+  const pendingSearch = ref<string>()
   const progresses = ref<Map<number, ProgressData>>(new Map())
   const getFavoriteResult = ref<GetFavoriteResult>()
   const searchResult = ref<SearchResult>()
@@ -47,6 +49,12 @@ export const useStore = defineStore('store', () => {
   const gridItemWidth = computed(() => GRID_ITEM_WIDTHS[gridSize.value])
   const coverPreview = ref<boolean>(true)
   const coverPreviewScale = ref<number>(COVER_PREVIEW_SCALE_MIN)
+
+  /// 跳到搜索页搜这个关键词（点作者名用）
+  function searchByKeyword(keyword: string) {
+    pendingSearch.value = keyword
+    currentTabName.value = 'search'
+  }
 
   /// 打开阅读器：设置里开了「阅读器独立窗口」就开新窗口，否则用现在这种内嵌浮层
   function openReader(target: { comic?: Comic; comicId?: number }) {
@@ -151,6 +159,8 @@ export const useStore = defineStore('store', () => {
     userProfile,
     pickedComic,
     currentTabName,
+    pendingSearch,
+    searchByKeyword,
     progresses,
     getFavoriteResult,
     searchResult,

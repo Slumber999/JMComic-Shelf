@@ -11,9 +11,9 @@ type State = DownloadTaskState | 'Idle'
 
 const store = useStore()
 
-// 注意：这里是 `<script setup lang="tsx">`，不能写 `defineProps<{...}>()` 这种"对象字面量泛型调用"——
-// vue-jsx 插件会用 isTSX 解析脚本块，`<{` 会被当成 JSX 标签直接报错（transform 500，整个页面挂掉）。
-// 运行时对象写法不仅类型一致，也不会踩这个坑。
+// 注意：这个组件的脚本块是 tsx，props 只能用运行时对象写法：
+// 泛型写法里的尖括号会被 vue-jsx 当成 JSX 标签，导致整个模块 transform 失败。
+// 运行时写法类型一致，也不会踩这个坑。
 const props = defineProps({
   reload: { type: Function as PropType<() => void>, required: true },
 })

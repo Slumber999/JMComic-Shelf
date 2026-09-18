@@ -219,6 +219,18 @@ async updateDownloadedComics() : Promise<Result<null, CommandError>> {
     else return { status: "error", error: e  as any };
 }
 },
+/**
+ * 导出目录的「更新库存」：去接口拉每本导出漫画的最新章节，只补导还没导出过的那些
+ * - 返回补导了几本漫画
+ */
+async updateExportedComics() : Promise<Result<number, CommandError>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("update_exported_comics") };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
 async showPathInFileManager(path: string) : Promise<Result<null, CommandError>> {
     try {
     return { status: "ok", data: await TAURI_INVOKE("show_path_in_file_manager", { path }) };
@@ -283,6 +295,12 @@ async getLocalComics(source: LocalLibrarySource) : Promise<Comic[]> {
  */
 async getLocalTags(source: LocalLibrarySource) : Promise<LocalTag[]> {
     return await TAURI_INVOKE("get_local_tags", { source });
+},
+/**
+ * 标签云：下载目录 + 导出目录共用的一份标签统计
+ */
+async getLocalTagsAll() : Promise<LocalTag[]> {
+    return await TAURI_INVOKE("get_local_tags_all");
 },
 async getDownloadedComics() : Promise<Comic[]> {
     return await TAURI_INVOKE("get_downloaded_comics");
@@ -458,11 +476,11 @@ async cleanStorageLogs() : Promise<Result<number, CommandError>> {
 }
 },
 /**
- * 删除一本已下载漫画的目录（只删下载目录里的），返回释放的字节数
+ * 删除一本漫画在下载目录或导出目录里的文件夹，返回释放的字节数
  */
-async deleteLocalComic(comicId: number) : Promise<Result<number, CommandError>> {
+async deleteLocalComic(comicId: number, source: LocalLibrarySource) : Promise<Result<number, CommandError>> {
     try {
-    return { status: "ok", data: await TAURI_INVOKE("delete_local_comic", { comicId }) };
+    return { status: "ok", data: await TAURI_INVOKE("delete_local_comic", { comicId, source }) };
 } catch (e) {
     if(e instanceof Error) throw e;
     else return { status: "error", error: e  as any };
@@ -752,7 +770,11 @@ export type StorageEntry = { name: string; path: string; bytes: number;
 /**
  * 漫画ID（只有"占用最大的漫画"有）
  */
-comicId: number | null }
+comicId: number | null; 
+/**
+ * 来自下载目录还是导出目录（只有"占用最大的漫画"有）
+ */
+source: LocalLibrarySource | null }
 export type StorageStats = { download: SizeStat; export: SizeStat; logs: SizeStat; 
 /**
  * 快速阅读器分享包（下载目录 + 导出目录里的）

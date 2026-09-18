@@ -4,6 +4,7 @@ import { commands } from '../../bindings.ts'
 import { useStore } from '../../store.ts'
 import { PhBookOpen, PhFolderOpen } from '@phosphor-icons/vue'
 import IconButton from '../../components/IconButton.vue'
+import AuthorLinks from '../../components/AuthorLinks.vue'
 import ChapterDownloadPanel from './components/ChapterDownloadPanel.vue'
 import ChapterExportPanel from './components/ChapterExportPanel.vue'
 import { NButton, NEmpty, NIcon } from 'naive-ui'
@@ -82,13 +83,7 @@ async function showComicDownloadDirInFileManager() {
   <div class="h-full flex flex-col box-border">
     <n-empty v-if="store.pickedComic === undefined" description="请先选择漫画(搜索、收藏夹、每周必看、本地库存)" />
     <template v-else>
-      <ChapterDownloadPanel
-        v-if="chapterPaneMode === 'download'"
-        v-model:chapter-pane-mode="chapterPaneMode"
-        :reload="reloadPickedComic" />
-      <ChapterExportPanel v-else v-model:chapter-pane-mode="chapterPaneMode" :reload="reloadPickedComic" />
-
-      <div class="flex p-2 pt-0">
+      <div class="flex p-2 shrink-0">
         <img
           class="w-24 mr-4 object-cover"
           :src="localCoverUrl(store.pickedComic.id, store.pickedComic.comicDownloadDir)"
@@ -96,8 +91,8 @@ async function showComicDownloadDirInFileManager() {
           referrerpolicy="no-referrer" />
         <div class="flex flex-col w-full">
           <span class="font-bold text-lg line-clamp-2">{{ store.pickedComic.name }}</span>
-          <span class="text-red">作者：{{ store.pickedComic.author }}</span>
-          <span class="text-gray">标签：{{ store.pickedComic.tags }}</span>
+          <author-links class="text-red" :author="store.pickedComic.author" />
+          <span class="text-gray">标签：{{ store.pickedComic.tags.join(' / ') }}</span>
           <div class="flex items-center gap-2 mt-auto">
             <n-button size="small" type="primary" secondary :title="readTitle" @click="readComic">
               <template #icon>
@@ -118,6 +113,17 @@ async function showComicDownloadDirInFileManager() {
           </div>
         </div>
       </div>
+
+      <ChapterDownloadPanel
+        v-if="chapterPaneMode === 'download'"
+        class="min-h-0"
+        v-model:chapter-pane-mode="chapterPaneMode"
+        :reload="reloadPickedComic" />
+      <ChapterExportPanel
+        v-else
+        class="min-h-0"
+        v-model:chapter-pane-mode="chapterPaneMode"
+        :reload="reloadPickedComic" />
     </template>
   </div>
 </template>

@@ -15,6 +15,7 @@ import {
 } from 'naive-ui'
 import ComicCard from '../components/ComicCard.vue'
 import { useGridColumns } from '../comicGrid.ts'
+import LoadingSpinner from '../components/LoadingSpinner.vue'
 import FloatLabelInput from '../components/FloatLabelInput.vue'
 import { PhClockCounterClockwise, PhMagnifyingGlass, PhTag } from '@phosphor-icons/vue'
 import { useStore } from '../store.ts'
@@ -66,6 +67,7 @@ const history = ref<string[]>([])
 
 // 本地标签云：只跟后端要「标签 + 次数」，不再为了标签云把整库漫画都拉下来
 // （以前进搜索页会触发一次全库扫描 + 全量反序列化）
+// 下载目录和导出目录共用同一份，切换来源时不变
 const LOCAL_TAG_PREVIEW_COUNT = 30
 const localTagsExpanded = ref<boolean>(false)
 const localTags = ref<LocalTag[]>([])
@@ -84,17 +86,30 @@ const tagsHeaderText = computed(() => {
 })
 
 async function loadLocalTags() {
-  localTags.value = await commands.getLocalTags(store.localLibrarySource)
+  localTags.value = await commands.getLocalTagsAll()
 }
 
-// 每次回到搜索页、或切换库存来源时刷新一次（后端索引里已有缓存，代价很小）
+// 每次回到搜索页时刷新一次（后端索引里已有缓存，代价很小）
 watch(
-  () => [store.currentTabName, store.localLibrarySource],
+  () => store.currentTabName,
   () => {
     if (store.currentTabName !== 'search') {
       return
     }
     void loadLocalTags()
+  },
+)
+
+// 别的页面点了作者名：填进搜索框并直接搜
+watch(
+  () => store.pendingSearch,
+  (keyword) => {
+    if (keyword === undefined) {
+      return
+    }
+    store.pendingSearch = undefined
+    searchInput.value = keyword
+    void search(keyword, 1, sortSelected.value)
   },
 )
 
@@ -441,7 +456,7 @@ function resetFilters() {
           </div>
         </div>
 
-        <!-- 本地标签云：来自已下载漫画的元数据，样式和官方标签一致，点一下就是按这个标签搜索 -->
+        <!-- 本地标签云：来自已下载 / 已导出漫画的元数据，样式和官方标签一致，点一下就是按这个标签搜索 -->
         <div v-if="localTagStats.length > 0" class="flex items-start gap-1">
           <span class="text-xs text-gray-400 shrink-0 w-18 text-right pt-0.5">本地</span>
           <div class="flex flex-wrap items-center gap-1">
@@ -465,9 +480,14 @@ function resetFilters() {
       </div>
     </div>
 
+    <div v-if="searching" class="flex flex-col items-center gap-3 py-16 text-orange">
+      <loading-spinner :size="14" />
+      <span class="text-sm text-gray-500">正在搜索…</span>
+    </div>
+
     <div
       ref="listRef"
-      v-if="store.searchResult !== undefined"
+      v-if="!searching && store.searchResult !== undefined"
       class="overflow-auto box-border px-2"
       :class="store.comicLayout === 'list' ? 'flex flex-col gap-row-2' : 'grid gap-2 content-start'"
       :style="store.comicLayout === 'grid' ? gridStyle : undefined">
@@ -485,11 +505,12 @@ function resetFilters() {
         :is-favorite="comicInSearch.isFavorite" />
     </div>
 
-    <n-pagination
-      v-if="searchPageCount > 0"
-      class="box-border p-2 pt-0 mt-auto"
-      :page-count="searchPageCount"
-      :page="searchPage"
-      @update:page="search(searchInput.trim(), $event, sortSelected)" />
+    <div v-if="searchPageCount > 0" class="flex items-center justify-center gap-3 box-border p-2 pt-0 mt-auto">
+      <span class="text-xs text-gray-500">共 {{ store.searchResult?.total ?? 0 }} 条</span>
+      <n-pagination
+        :page-count="searchPageCount"
+        :page="searchPage"
+        @update:page="search(searchInput.trim(), $event, sortSelected)" />
+    </div>
   </div>
 </template>

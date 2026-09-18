@@ -14,6 +14,8 @@ import {
 } from 'naive-ui'
 import ComicCard from '../components/ComicCard.vue'
 import { useGridColumns } from '../comicGrid.ts'
+import LoadingSpinner from '../components/LoadingSpinner.vue'
+import AuthorLinks from '../components/AuthorLinks.vue'
 import { localCoverUrl } from '../reader/protocol.ts'
 import { useStore } from '../store.ts'
 import DownloadAllFavoriteButton from '../components/DownloadAllFavoriteButton.vue'
@@ -75,6 +77,8 @@ watch(
   { immediate: true },
 )
 
+const loading = ref<boolean>(false)
+
 async function getFavourite(folderId: number, page: number, sort: FavoriteSort) {
   console.log(folderId, page, sort)
   folderIdSelected.value = folderId
@@ -82,7 +86,9 @@ async function getFavourite(folderId: number, page: number, sort: FavoriteSort) 
   pageSelected.value = page
   // 切换文件夹/排序后，长列表缓存失效
   allComics.value = []
+  loading.value = true
   const result = await commands.getFavoriteFolder(folderId, page, sort)
+  loading.value = false
   if (result.status === 'error') {
     console.error(result.error)
     return
@@ -303,9 +309,14 @@ async function exportCbz() {
     </div>
 
     <template v-if="!listMode">
+      <div v-if="loading" class="flex flex-col items-center gap-3 py-16 text-orange">
+        <loading-spinner :size="14" />
+        <span class="text-sm text-gray-500">正在加载收藏夹…</span>
+      </div>
+
       <div
         ref="listRef"
-        v-if="store.getFavoriteResult !== undefined"
+        v-if="!loading && store.getFavoriteResult !== undefined"
         class="overflow-auto box-border px-2"
         :class="store.comicLayout === 'list' ? 'flex flex-col gap-row-2' : 'grid gap-2 content-start'"
         :style="store.comicLayout === 'grid' ? gridStyle : undefined">
@@ -324,11 +335,13 @@ async function exportCbz() {
         @favorite-changed="refreshFavourite()" />
       </div>
 
-      <n-pagination
-        class="box-border p-2 pt-0 mt-auto"
-        :page-count="favoritePageCount"
-        :page="pageSelected"
-        @update:page="changePage($event)" />
+      <div class="flex items-center justify-center gap-3 box-border p-2 pt-0 mt-auto">
+        <span class="text-xs text-gray-500">共 {{ store.getFavoriteResult?.total ?? 0 }} 条</span>
+        <n-pagination
+          :page-count="favoritePageCount"
+          :page="pageSelected"
+          @update:page="changePage($event)" />
+      </div>
     </template>
 
     <div v-else class="flex flex-col overflow-auto box-border px-2 pb-2">
@@ -354,7 +367,10 @@ async function exportCbz() {
           :draggable="false" />
         <div class="flex flex-col overflow-hidden">
           <span class="line-clamp-1">{{ comic.name }}</span>
-          <span class="text-xs text-gray-500 line-clamp-1">{{ comic.author }}</span>
+          <author-links
+            class="text-xs text-gray-500 line-clamp-1"
+            :author="comic.author"
+            :prefix="false" />
         </div>
         <span v-if="comic.isDownloaded" class="ml-auto text-xs text-green-6 shrink-0">已下载</span>
       </div>

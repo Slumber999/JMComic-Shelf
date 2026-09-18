@@ -6,6 +6,7 @@ import { PhCaretDoubleLeft, PhCaretDoubleRight, PhCaretLeft, PhCaretRight, PhX }
 import { getProgress, saveProgress as saveReaderProgress } from './progress.ts'
 import { readerPageUrl } from './protocol.ts'
 import FavoriteButton from '../components/FavoriteButton.vue'
+import LoadingSpinner from '../components/LoadingSpinner.vue'
 
 // 传 comic 表示本地库存（本地优先），只传 comicId 表示可以从网络读
 const props = defineProps<{ comic?: Comic; comicId?: number; keepSessionOnUnmount?: boolean }>()
@@ -40,6 +41,8 @@ const pageUrl = readerPageUrl
 const chapters = computed(() => readerComic.value?.chapters ?? [])
 const currentChapter = computed(() => chapters.value[chapterIndex.value])
 const pageCount = computed(() => currentChapter.value?.pageCount ?? 0)
+/// 打开 + 准备章节都算加载中：这段里 pageCount 还是 0，不能当成"没有图片"
+const loadingChapter = computed(() => opening.value || preparing.value)
 
 const chapterOptions = computed<SelectProps['options']>(() =>
   chapters.value.map((chapter, index) => ({
@@ -514,7 +517,10 @@ onBeforeUnmount(() => {
       :class="readingMode === 'paged' ? 'flex items-center justify-center' : 'flex flex-col items-center'"
       @wheel="onWheel"
       @scroll="onScroll">
-      <div v-if="preparing" class="text-gray-400 py-20">正在加载章节…</div>
+      <div v-if="loadingChapter" class="flex flex-col items-center gap-5 py-20 text-white">
+        <loading-spinner :size="14" />
+        <span class="text-gray-400">{{ preparing ? '正在加载章节…' : '正在打开…' }}</span>
+      </div>
       <div v-else-if="pageCount === 0" class="text-gray-500 py-20">没有可显示的图片</div>
 
       <!-- 左右翻页：只渲染当前页 -->

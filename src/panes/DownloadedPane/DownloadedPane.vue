@@ -1,11 +1,12 @@
 <script setup lang="tsx">
-import { Comic, commands } from '../../bindings.ts'
-import { computed, nextTick, ref, watch, watchEffect, useTemplateRef } from 'vue'
+import { Comic, LocalTag, commands } from '../../bindings.ts'
+import { computed, nextTick, ref, watch, watchEffect } from 'vue'
 import DownloadedComicCard from './components/DownloadedComicCard.vue'
 import { open } from '@tauri-apps/plugin-dialog'
 import { PhFolderOpen } from '@phosphor-icons/vue'
 import { useStore } from '../../store.ts'
 import { useGridColumns } from '../../comicGrid.ts'
+import LoadingSpinner from '../../components/LoadingSpinner.vue'
 import {
   DropdownOption,
   NButton,
@@ -19,43 +20,31 @@ import {
   NRadioGroup,
   NTag,
 } from 'naive-ui'
-import { PartialSelectionOptions, SelectionArea, SelectionEvent } from '@viselect/vue'
-import { PhChecks, PhCheck, PhTag, PhX } from '@phosphor-icons/vue'
+import { PhChecks, PhTag, PhX } from '@phosphor-icons/vue'
 import UpdateDownloadedComicsButton from './components/UpdateDownloadedComicsButton.vue'
+import UpdateExportedComicsButton from './components/UpdateExportedComicsButton.vue'
 
 const store = useStore()
 
-const selectionOptions: PartialSelectionOptions = {
-  selectables: '.selectable',
-  features: { deselectOnBlur: true },
-  boundaries: '.downloaded-pane-selection-container',
-}
 /// 网格列数跟着窗口宽度走
 const listRef = ref<HTMLElement>()
 const gridStyle = useGridColumns(listRef, () => store.gridItemWidth)
 
-const selectedIds = ref<Set<number>>(new Set())
+/// 勾选的漫画：Ctrl+左键加选，批量导出按钮作用于它们
 const checkedIds = ref<Set<number>>(new Set())
 const { dropdownX, dropdownY, dropdownShowing, dropdownOptions, showDropdown } = useDropdown()
-const selectionAreaRef = useTemplateRef('selectionAreaRef')
 
-// 标签云：聚合本地库存里所有漫画的标签，按出现次数排序（离线可用，和官方的"常用标签"互补）
+// 标签云：下载目录 + 导出目录共用一份（同一本两个目录都有也只算一次），按出现次数排序
 const selectedTags = ref<string[]>([])
 const tagsExpanded = ref<boolean>(false)
 const tagsShowAll = ref<boolean>(false)
 const TAG_PREVIEW_COUNT = 30
 
-const tagStats = computed(() => {
-  const counter = new Map<string, number>()
-  for (const comic of store.downloadedComics) {
-    for (const tag of comic.tags ?? []) {
-      counter.set(tag, (counter.get(tag) ?? 0) + 1)
-    }
-  }
-  return [...counter.entries()]
-    .map(([name, count]) => ({ name, count }))
-    .sort((a, b) => b.count - a.count || a.name.localeCompare(b.name))
-})
+const tagStats = ref<LocalTag[]>([])
+
+async function reloadTags() {
+  tagStats.value = await commands.getLocalTagsAll()
+}
 
 const visibleTags = computed(() =>
   tagsShowAll.value ? tagStats.value : tagStats.value.slice(0, TAG_PREVIEW_COUNT),
@@ -113,10 +102,8 @@ watchEffect(() => {
 })
 
 watch(currentPage, () => {
-  selectedIds.value.clear()
   checkedIds.value.clear()
-  selectionAreaRef.value?.selection?.clearSelection()
-  selectionAreaRef.value?.$el.scrollTo({ top: 0, behavior: 'instant' })
+  listRef.value?.scrollTo({ top: 0, behavior: 'instant' })
 })
 
 // 当前库存来源：下载目录 / 导出目录（视图偏好，存在 localStorage 里）
@@ -135,18 +122,23 @@ function openReader(comic: Comic) {
 // 连点切换来源时会有多个请求在飞，只认最后一次的结果
 let reloadSeq = 0
 
+/// 扫盘期间盖住列表：全库扫描可能要几秒，不给反馈会以为是空的
+const loading = ref<boolean>(false)
+
 async function reloadComics() {
   const seq = ++reloadSeq
   // 显式把当前来源传给后端：后端配置是异步写的，这里再去读会读到旧的
   const source = store.localLibrarySource
+  loading.value = true
   const comics = await commands.getLocalComics(source)
   if (seq !== reloadSeq) {
     return
   }
+  loading.value = false
   store.downloadedComics = comics
-  selectedIds.value.clear()
   checkedIds.value.clear()
   currentPage.value = 1
+  void reloadTags()
 }
 
 // 监听标签页变化，更新漫画列表
@@ -195,27 +187,33 @@ async function showExportDirInFileManager() {
   }
 }
 
-function extractIds(elements: Element[]): number[] {
-  return elements
-    .map((element) => element.getAttribute('data-key'))
-    .filter(Boolean)
-    .map(Number)
-}
-
-function updateSelectedIds({
-  store: {
-    changed: { added, removed },
-  },
-}: SelectionEvent) {
-  extractIds(added).forEach((id) => selectedIds.value.add(id))
-  extractIds(removed).forEach((id) => selectedIds.value.delete(id))
-}
-
-function unselectAll({ event, selection }: SelectionEvent) {
-  if (!event?.ctrlKey && !event?.metaKey) {
-    selection.clearSelection()
-    selectedIds.value.clear()
+/// 左键单击：Ctrl/⌘ 加选，普通点击只选中这一本（和 Windows 资源管理器一致）
+function handleCardClick(comic: Comic, event: MouseEvent) {
+  // 先拦住冒泡：列表容器的点击是"点空白处取消勾选"，卡片上的点击不该触发它
+  event.stopPropagation()
+  // 按钮有自己的动作，不要顺带改勾选；但按住 Ctrl 时，整张卡片都只做勾选
+  if (
+    !(event.ctrlKey || event.metaKey) &&
+    (event.target as HTMLElement).closest('.icon-button') !== null
+  ) {
+    return
   }
+
+  if (event.ctrlKey || event.metaKey) {
+    handleCheckboxClick(comic)
+    return
+  }
+
+  const wasOnlyThis = checkedIds.value.size === 1 && checkedIds.value.has(comic.id)
+  checkedIds.value.clear()
+  if (!wasOnlyThis) {
+    checkedIds.value.add(comic.id)
+  }
+}
+
+/// 点空白处取消全部勾选
+function clearChecked() {
+  checkedIds.value.clear()
 }
 
 function checkboxChecked(comic: Comic): boolean {
@@ -228,15 +226,6 @@ function handleCheckboxClick(comic: Comic) {
   } else {
     checkedIds.value.add(comic.id)
   }
-}
-
-function handleContextMenu(comic: Comic) {
-  if (selectedIds.value.has(comic.id)) {
-    return
-  }
-
-  selectedIds.value.clear()
-  selectedIds.value.add(comic.id)
 }
 
 async function exportCbz() {
@@ -277,38 +266,8 @@ function useDropdown() {
   const dropdownShowing = ref<boolean>(false)
   const dropdownOptions: DropdownOption[] = [
     {
-      label: '勾选',
-      key: 'check',
-      icon: () => (
-        <NIcon size="20">
-          <PhCheck />
-        </NIcon>
-      ),
-      props: {
-        onClick: () => {
-          selectedIds.value.forEach((id) => checkedIds.value.add(id))
-          dropdownShowing.value = false
-        },
-      },
-    },
-    {
-      label: '取消勾选',
-      key: 'uncheck',
-      icon: () => (
-        <NIcon size="20">
-          <PhX />
-        </NIcon>
-      ),
-      props: {
-        onClick: () => {
-          selectedIds.value.forEach((id) => checkedIds.value.delete(id))
-          dropdownShowing.value = false
-        },
-      },
-    },
-    {
       label: '全选',
-      key: 'select-all',
+      key: 'check-all',
       icon: () => (
         <NIcon size="20">
           <PhChecks />
@@ -316,7 +275,22 @@ function useDropdown() {
       ),
       props: {
         onClick: () => {
-          currentPageComics.value.forEach((comic) => selectedIds.value.add(comic.id))
+          currentPageComics.value.forEach((comic) => checkedIds.value.add(comic.id))
+          dropdownShowing.value = false
+        },
+      },
+    },
+    {
+      label: '取消全选',
+      key: 'uncheck-all',
+      icon: () => (
+        <NIcon size="20">
+          <PhX />
+        </NIcon>
+      ),
+      props: {
+        onClick: () => {
+          checkedIds.value.clear()
           dropdownShowing.value = false
         },
       },
@@ -324,6 +298,11 @@ function useDropdown() {
   ]
 
   async function showDropdown(e: MouseEvent) {
+    // 导出目录没有勾选/批量导出，右键菜单不弹
+    if (fromExportDir.value) {
+      return
+    }
+
     dropdownShowing.value = false
     await nextTick()
     dropdownShowing.value = true
@@ -360,9 +339,11 @@ function useDropdown() {
         </n-button>
       </n-input-group>
       <update-downloaded-comics-button v-if="!fromExportDir" />
+      <update-exported-comics-button v-else />
     </div>
     <!-- 标签云：聚合本地库存的标签，点标签筛选 -->
     <div class="flex gap-2 items-center px-2 pt-1 select-none">
+      <span class="text-xs text-gray-500">标签云来自下载目录 + 导出目录</span>
       <n-button class="ml-auto" size="small" quaternary @click="tagsExpanded = !tagsExpanded">
         <template #icon>
           <n-icon>
@@ -394,7 +375,7 @@ function useDropdown() {
     </div>
     <div class="flex gap-2 items-center px-2 select-none">
       <div v-if="!fromExportDir" class="animate-pulse text-sm text-red flex flex-col">
-        <div>左键拖动进行框选，右键打开菜单</div>
+        <div>Ctrl+左键单击多选，右键打开菜单</div>
         <div>右边的按钮作用于勾选项</div>
       </div>
       <template v-if="!fromExportDir">
@@ -402,38 +383,42 @@ function useDropdown() {
         <n-button type="primary" size="small" @click="exportPdf">导出pdf</n-button>
       </template>
     </div>
-    <SelectionArea ref="selectionAreaRef" :options="selectionOptions" @move="updateSelectedIds" @start="unselectAll" />
+    <div v-if="loading" class="flex flex-col items-center gap-3 py-16 text-orange">
+      <loading-spinner :size="14" />
+      <span class="text-sm text-gray-500">正在扫描本地库…</span>
+    </div>
+
     <div
       ref="listRef"
+      v-show="!loading"
       :class="[
-        'overflow-auto box-border px-2 downloaded-pane-selection-container mb-2',
+        'overflow-auto box-border px-2 downloaded-pane-list mb-2',
         store.comicLayout === 'list' ? 'flex flex-col' : 'grid gap-2 content-start',
       ]"
       :style="store.comicLayout === 'grid' ? gridStyle : undefined"
+      @click="clearChecked"
       @contextmenu="showDropdown">
       <DownloadedComicCard
         v-for="comic in currentPageComics"
         :key="comic.id"
         :data-key="comic.id"
         :class="[
-          'selectable',
           store.comicLayout === 'list' ? 'mb-2' : '',
-          selectedIds.has(comic.id) ? 'selected shadow-md' : 'hover:bg-gray-1',
+          checkedIds.has(comic.id) ? 'selected shadow-md' : 'hover:bg-gray-1',
         ]"
         :comic="comic"
         :layout="store.comicLayout"
         :from-export-dir="fromExportDir"
         :checkbox-checked="checkboxChecked"
         :handle-checkbox-click="handleCheckboxClick"
-        :handle-context-menu="handleContextMenu"
+        :handle-click="handleCardClick"
         @read="openReader" />
     </div>
 
-    <n-pagination
-      class="box-border p-2 pt-0 mt-auto"
-      :page-count="pageCount"
-      :page="currentPage"
-      @update:page="currentPage = $event" />
+    <div class="flex items-center justify-center gap-3 box-border p-2 pt-0 mt-auto">
+      <span class="text-xs text-gray-500">共 {{ filteredComics.length }} 本</span>
+      <n-pagination :page-count="pageCount" :page="currentPage" @update:page="currentPage = $event" />
+    </div>
 
     <n-dropdown
       placement="bottom-start"
@@ -447,11 +432,11 @@ function useDropdown() {
 </template>
 
 <style scoped>
-.downloaded-pane-selection-container {
+.downloaded-pane-list {
   @apply select-none overflow-auto;
 }
 
-.downloaded-pane-selection-container .selected {
+.downloaded-pane-list .selected {
   @apply bg-[rgb(204,232,255)];
 }
 </style>

@@ -19,6 +19,7 @@ import DownloadStatusBar from './components/DownloadStatusBar.vue'
 import CoverPreview from './components/CoverPreview.vue'
 import SettingsDialog from './dialogs/SettingsDialog/SettingsDialog.vue'
 import { lastProgress, progressLabel } from './reader/progress.ts'
+import LoadingSpinner from './components/LoadingSpinner.vue'
 
 const store = useStore()
 
@@ -164,7 +165,10 @@ onMounted(async () => {
 </script>
 
 <template>
-  <div v-if="store.config !== undefined" class="h-screen flex flex-col overflow-hidden">
+  <div v-if="store.config === undefined" class="h-screen flex items-center justify-center text-orange">
+    <loading-spinner :size="16" />
+  </div>
+  <div v-else class="h-screen flex flex-col overflow-hidden">
     <!-- 全局工具条 -->
     <div class="flex items-center gap-1 px-2 py-1 shrink-0 border-b border-gray-2">
       <n-button type="primary" size="small" @click="loginDialogShowing = true">

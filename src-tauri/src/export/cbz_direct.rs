@@ -124,6 +124,46 @@ pub async fn export_cbz_without_download(
     Ok(())
 }
 
+/// 导出目录的「更新库存」：把最新章节里还没导出过的补上
+/// - 用 SkipExisting 跑一遍，已存在的 cbz 会自动跳过，所以只会真的导新章节
+/// - 返回是否补导了内容（没有缺的章节就什么都不做）
+pub async fn export_missing_chapters(app: &AppHandle, comic: &Comic) -> eyre::Result<bool> {
+    if !has_missing_chapter(app, comic) {
+        return Ok(false);
+    }
+
+    let (img_concurrency, export_dir) = {
+        let config = app.get_config();
+        let config = config.read();
+        (config.img_concurrency, config.export_dir.clone())
+    };
+    let comic_export_dir = export_dir.join(utils::filename_filter(&comic.name));
+    let total = u32::try_from(comic.chapter_infos.len()).unwrap_or(u32::MAX);
+    let task = app.get_export_manager().create_task(
+        uuid::Uuid::new_v4().to_string(),
+        comic.id,
+        comic.name.clone(),
+        ExportTaskKind::CbzDirect,
+        total,
+        comic_export_dir,
+    );
+
+    export_comic_cbz(app, comic, img_concurrency, &task, ExportSkipMode::SkipExisting).await?;
+    Ok(true)
+}
+
+/// 最新章节表里有没有还没导出成 cbz 的章节
+fn has_missing_chapter(app: &AppHandle, comic: &Comic) -> bool {
+    let export_dir = app.get_config().read().export_dir.clone();
+    let cbz_dir = export_dir.join(utils::filename_filter(&comic.name)).join("cbz");
+
+    comic.chapter_infos.iter().any(|chapter| {
+        !cbz_dir
+            .join(format!("{}.cbz", utils::filename_filter(&chapter.chapter_title)))
+            .exists()
+    })
+}
+
 /// 继续一个被暂停的免下载直出任务（用「跳过已存在」重跑这本漫画）
 pub async fn resume_comic_cbz(
     app: &AppHandle,

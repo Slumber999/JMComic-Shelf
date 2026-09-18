@@ -4,7 +4,7 @@
 //! - **下载残留**：`.下载中-*`（下载中断留下的临时章节目录）
 //! - **快速阅读器分享包**：带 `index.html` + `使用说明.txt` 的目录（图片是复制出来的，很占地方）
 //! - **旧日志**：只保留最近 24 小时内的（正在写的那份永远保留）
-//! - **占用最大的漫画**：可以单独删掉某一本（只删下载目录里的）
+//! - **占用最大的漫画**：下载目录和导出目录分开列，可以单独删掉某一本
 //!
 //! 所有删除操作都会先确认目标确实在配置的下载/导出目录之内，避免误删。
 
@@ -20,11 +20,12 @@ use specta::Type;
 use tauri::AppHandle;
 use walkdir::WalkDir;
 
+use crate::config::LocalLibrarySource;
 use crate::extensions::{AppHandleExt, WalkDirEntryExt};
 use crate::{local_index, logger};
 
-/// 「占用最大的漫画」最多列这么多本
-const BIGGEST_COMIC_COUNT: usize = 30;
+/// 「占用最大的漫画」只列这么多本（页面标题会跟着这个数显示）
+const BIGGEST_COMIC_COUNT: usize = 3;
 /// 日志最多保留这么久
 const LOG_KEEP_DURATION: Duration = Duration::from_secs(24 * 60 * 60);
 /// 下载中断留下的临时目录前缀（见 chapter_info.rs）
@@ -51,6 +52,8 @@ pub struct StorageEntry {
     pub bytes: u64,
     /// 漫画ID（只有"占用最大的漫画"有）
     pub comic_id: Option<i64>,
+    /// 来自下载目录还是导出目录（只有"占用最大的漫画"有）
+    pub source: Option<LocalLibrarySource>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Type)]
@@ -83,9 +86,11 @@ pub fn stats(app: &AppHandle) -> eyre::Result<StorageStats> {
     let comics = local_index::download_comics(app);
     let comic_dirs: Vec<PathBuf> = comics.iter().map(|(_, _, dir)| dir.clone()).collect();
 
+    let export_comics = local_index::export_comics(app);
+    let export_comic_dirs: Vec<PathBuf> = export_comics.iter().map(|(_, _, dir)| dir.clone()).collect();
+
     let download_scan = scan_tree(&download_dir, &comic_dirs);
-    // 导出目录里的"漫画目录"不进索引，这里不做归属统计，只统计总大小和清理项
-    let export_scan = scan_tree(&export_dir, &[]);
+    let export_scan = scan_tree(&export_dir, &export_comic_dirs);
 
     // 快速阅读器可能两个目录里都有，按路径去重
     let mut quick_readers = download_scan.quick_readers.clone();
@@ -95,6 +100,7 @@ pub fn stats(app: &AppHandle) -> eyre::Result<StorageStats> {
         }
     }
 
+    // 下载和导出分开列：同一本两边都有就是两行，删的时候各删各的
     let mut biggest_comics: Vec<StorageEntry> = comics
         .iter()
         .map(|(id, name, dir)| StorageEntry {
@@ -102,7 +108,15 @@ pub fn stats(app: &AppHandle) -> eyre::Result<StorageStats> {
             path: dir.to_string_lossy().to_string(),
             bytes: download_scan.size_by_comic.get(dir).copied().unwrap_or(0),
             comic_id: Some(*id),
+            source: Some(LocalLibrarySource::DownloadDir),
         })
+        .chain(export_comics.iter().map(|(id, name, dir)| StorageEntry {
+            name: name.clone(),
+            path: dir.to_string_lossy().to_string(),
+            bytes: export_scan.size_by_comic.get(dir).copied().unwrap_or(0),
+            comic_id: Some(*id),
+            source: Some(LocalLibrarySource::ExportDir),
+        }))
         .collect();
     biggest_comics.sort_by(|a, b| b.bytes.cmp(&a.bytes));
     biggest_comics.truncate(BIGGEST_COMIC_COUNT);
@@ -248,15 +262,28 @@ pub fn clean_logs(app: &AppHandle) -> eyre::Result<u64> {
     Ok(freed)
 }
 
-/// 删除一本已下载漫画的目录，返回释放的字节数
-pub fn delete_comic_dir(app: &AppHandle, comic_id: i64) -> eyre::Result<u64> {
-    let (download_dir, _) = dirs(app);
+/// 删除一本漫画在某个目录里的文件夹，返回释放的字节数
+pub fn delete_comic_dir(
+    app: &AppHandle,
+    comic_id: i64,
+    source: LocalLibrarySource,
+) -> eyre::Result<u64> {
+    let (download_dir, export_dir) = dirs(app);
 
-    let Some((comic_dir, name)) = local_index::comic_dir_and_name(app, comic_id) else {
+    let (found, root) = match source {
+        LocalLibrarySource::DownloadDir => {
+            (local_index::comic_dir_and_name(app, comic_id), download_dir)
+        }
+        LocalLibrarySource::ExportDir => {
+            (local_index::export_comic_dir_and_name(app, comic_id), export_dir)
+        }
+    };
+
+    let Some((comic_dir, name)) = found else {
         return Err(eyre!("本地没有这本漫画（ID: {comic_id}）"));
     };
-    if !is_inside(&download_dir, &comic_dir) {
-        return Err(eyre!("拒绝删除：`{}` 不在下载目录内", comic_dir.display()));
+    if !is_inside(&root, &comic_dir) {
+        return Err(eyre!("拒绝删除：`{}` 不在配置的目录内", comic_dir.display()));
     }
 
     let bytes = dir_size(&comic_dir);
@@ -289,6 +316,7 @@ fn scan_tree(root: &Path, comic_dirs: &[PathBuf]) -> TreeScan {
                     path: entry.path().to_string_lossy().to_string(),
                     bytes: dir_size(entry.path()),
                     comic_id: None,
+                    source: None,
                 });
             } else if is_quick_reader_dir(entry.path()) {
                 scan.quick_readers.push(StorageEntry {
@@ -296,6 +324,7 @@ fn scan_tree(root: &Path, comic_dirs: &[PathBuf]) -> TreeScan {
                     path: entry.path().to_string_lossy().to_string(),
                     bytes: dir_size(entry.path()),
                     comic_id: None,
+                    source: None,
                 });
             }
             continue;

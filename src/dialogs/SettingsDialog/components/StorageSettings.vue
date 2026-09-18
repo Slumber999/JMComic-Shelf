@@ -108,12 +108,13 @@ async function cleanLogs() {
 
 async function deleteComic(entry: StorageEntry) {
   const comicId = entry.comicId
-  if (comicId === null) {
+  const source = entry.source
+  if (comicId === null || source === null) {
     return
   }
-  cleaning.value = `comic-${comicId}`
+  cleaning.value = `comic-${comicId}-${source}`
   try {
-    handleCleanResult(await commands.deleteLocalComic(comicId), '漫画')
+    handleCleanResult(await commands.deleteLocalComic(comicId, source), '漫画')
   } finally {
     cleaning.value = undefined
   }
@@ -260,15 +261,18 @@ onMounted(refresh)
 
       <!-- 占用最大的漫画 -->
       <div class="flex flex-col gap-1 border border-gray-2 rounded p-2">
-        <span class="font-bold text-sm">占用最大的漫画（可单独删除）</span>
+        <span class="font-bold text-sm">占用最大的 {{ stats.biggestComics.length }} 本漫画（可单独删除）</span>
         <span v-if="stats.biggestComics.length === 0" class="text-xs text-gray-500">
-          下载目录里还没有漫画
+          下载目录和导出目录里都还没有漫画
         </span>
         <div
           v-for="item in stats.biggestComics"
           :key="item.path"
           class="flex items-center gap-2 text-sm">
-          <span class="flex-1 truncate" :title="item.name">{{ item.name }}</span>
+          <span class="flex-1 truncate" :title="item.name">
+            {{ item.name }}
+            <span v-if="item.source === 'ExportDir'" class="text-xs text-gray-500">（导出）</span>
+          </span>
           <span class="w-20 shrink-0 text-right">{{ formatBytes(item.bytes) }}</span>
           <n-button size="tiny" quaternary @click="openDir(item.path)">
             <template #icon>
@@ -281,14 +285,16 @@ onMounted(refresh)
                 size="tiny"
                 quaternary
                 type="error"
-                :loading="cleaning === `comic-${item.comicId}`">
+                :loading="cleaning === `comic-${item.comicId}-${item.source}`">
                 <template #icon>
                   <n-icon><PhTrash /></n-icon>
                 </template>
               </n-button>
             </template>
-            确认删除《{{ item.name }}》的本地文件（{{ formatBytes(item.bytes) }}）？<br />
-            文件会被直接删除、不进回收站；导出目录里的 cbz 不受影响。
+            确认删除《{{ item.name }}》的{{ item.source === 'ExportDir' ? '导出文件' : '下载文件' }}（{{
+              formatBytes(item.bytes)
+            }}）？<br />
+            文件会被直接删除、不进回收站。
           </n-popconfirm>
         </div>
       </div>

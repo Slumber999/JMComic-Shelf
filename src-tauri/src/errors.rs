@@ -20,10 +20,16 @@ impl CommandError {
         E: Into<eyre::Report>,
     {
         let message = format!("{:?}", err.into());
+        // 日志里保留完整调用链，界面上只给第一层原因（不然一屏全是 Location/SpanTrace）
         tracing::error!(err_title, message);
+        let brief = message
+            .lines()
+            .find_map(|line| line.trim().strip_prefix("0: "))
+            .unwrap_or(&message)
+            .to_string();
         Self {
             err_title: err_title.to_string(),
-            message,
+            message: brief,
         }
     }
 }

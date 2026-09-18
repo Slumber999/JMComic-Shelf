@@ -242,6 +242,14 @@ pub fn get_local_tags(app: AppHandle, source: LocalLibrarySource) -> Vec<local_i
     local_index::local_tags(&app, source)
 }
 
+/// 标签云：下载目录 + 导出目录共用的一份标签统计
+#[tauri::command]
+#[specta::specta]
+#[instrument(level = "error", skip_all)]
+pub fn get_local_tags_all(app: AppHandle) -> Vec<local_index::LocalTag> {
+    local_index::all_local_tags(&app)
+}
+
 /// 当前正在使用的图片线路（失败会自动切换）
 #[tauri::command]
 #[specta::specta]
@@ -765,6 +773,46 @@ pub async fn update_downloaded_comics(app: AppHandle) -> CommandResult<()> {
     let _ = UpdateDownloadedComicsEvent::GetComicEnd.emit(&app);
 
     Ok(())
+}
+
+/// 导出目录的「更新库存」：去接口拉每本导出漫画的最新章节，只补导还没导出过的那些
+/// - 返回补导了几本漫画
+#[tauri::command(async)]
+#[specta::specta]
+#[instrument(level = "error", skip_all)]
+pub async fn update_exported_comics(app: AppHandle) -> CommandResult<u32> {
+    let interval_sec = app.get_config().read().update_downloaded_comics_interval_sec;
+    let exported_comics = local_index::export_comics(&app);
+    if exported_comics.is_empty() {
+        return Ok(0);
+    }
+
+    let mut updated = 0;
+    for (comic_id, comic_title, _) in exported_comics {
+        let comic = match utils::get_comic(app.clone(), comic_id).await {
+            Ok(comic) => comic,
+            Err(err) => {
+                let err_title = format!("更新导出目录过程中，获取漫画`{comic_title}`失败，已跳过");
+                let err = err.wrap_err("可能是频率太高，请手动去`配置`里调整`更新库存时，每处理完一个已下载的漫画后休息`");
+                tracing::error!(err_title, message = err.to_message());
+                sleep(Duration::from_secs(interval_sec)).await;
+                continue;
+            }
+        };
+
+        match export::export_missing_chapters(&app, &comic).await {
+            Ok(true) => updated += 1,
+            Ok(false) => {}
+            Err(err) => {
+                let err_title = format!("漫画`{comic_title}`补导章节失败");
+                tracing::error!(err_title, message = format!("{err:?}"));
+            }
+        }
+
+        sleep(Duration::from_secs(interval_sec)).await;
+    }
+
+    Ok(updated)
 }
 
 #[allow(clippy::needless_pass_by_value)]
@@ -1475,12 +1523,16 @@ pub fn clean_storage_logs(app: AppHandle) -> CommandResult<u64> {
     storage::clean_logs(&app).map_err(|err| CommandError::from("清理旧日志失败", err))
 }
 
-/// 删除一本已下载漫画的目录（只删下载目录里的），返回释放的字节数
+/// 删除一本漫画在下载目录或导出目录里的文件夹，返回释放的字节数
 #[tauri::command(async)]
 #[specta::specta]
 #[instrument(level = "error", skip_all, fields(comic_id = comic_id))]
-pub fn delete_local_comic(app: AppHandle, comic_id: i64) -> CommandResult<u64> {
-    storage::delete_comic_dir(&app, comic_id)
+pub fn delete_local_comic(
+    app: AppHandle,
+    comic_id: i64,
+    source: LocalLibrarySource,
+) -> CommandResult<u64> {
+    storage::delete_comic_dir(&app, comic_id, source)
         .map_err(|err| CommandError::from("删除本地漫画失败", err))
 }
 

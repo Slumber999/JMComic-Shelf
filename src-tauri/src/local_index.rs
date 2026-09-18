@@ -45,8 +45,12 @@ struct Snapshot {
     download_metadata: Vec<(PathBuf, SystemTime)>,
     /// 漫画ID -> (漫画目录, 漫画名)
     dir_by_id: HashMap<i64, (PathBuf, String)>,
+    /// 导出目录里同样建一份：空间统计要按漫画归属算占用
+    export_dir_by_id: HashMap<i64, (PathBuf, String)>,
     download_tags: Vec<LocalTag>,
     export_tags: Vec<LocalTag>,
+    /// 下载目录 + 导出目录合并去重后的标签：标签云两个目录共用这一份
+    all_tags: Vec<LocalTag>,
 }
 
 static SNAPSHOT: LazyLock<RwLock<Option<Arc<Snapshot>>>> = LazyLock::new(|| RwLock::new(None));
@@ -106,13 +110,26 @@ fn build_snapshot(download_dir: &Path, export_dir: &Path) -> Snapshot {
         download_tags.entry(lite.id).or_insert(lite.tags);
     }
 
-    // 导出目录只用来统计标签，同样按漫画ID去重
+    // 导出目录：统计标签，同时记住每本漫画的目录（按漫画ID去重）
     let mut export_tags: HashMap<i64, Vec<String>> = HashMap::new();
+    let mut export_dir_by_id: HashMap<i64, (PathBuf, String)> = HashMap::new();
     for (path, _) in collect_metadata_files(export_dir) {
         let Some(lite) = parse_metadata_lite(&path) else {
             continue;
         };
+        let Some(dir) = path.parent() else {
+            continue;
+        };
+        export_dir_by_id
+            .entry(lite.id)
+            .or_insert_with(|| (dir.to_path_buf(), lite.name.clone()));
         export_tags.entry(lite.id).or_insert(lite.tags);
+    }
+
+    // 标签云两个目录共用：按漫画ID合并，同一本两个目录都有也只算一次
+    let mut all_tags = export_tags.clone();
+    for (id, tags) in &download_tags {
+        all_tags.entry(*id).or_insert_with(|| tags.clone());
     }
 
     Snapshot {
@@ -121,8 +138,10 @@ fn build_snapshot(download_dir: &Path, export_dir: &Path) -> Snapshot {
         built_at: Instant::now(),
         download_metadata,
         dir_by_id,
+        export_dir_by_id,
         download_tags: count_tags(download_tags),
         export_tags: count_tags(export_tags),
+        all_tags: count_tags(all_tags),
     }
 }
 
@@ -192,6 +211,20 @@ pub fn comic_dir_and_name(app: &AppHandle, comic_id: i64) -> Option<(PathBuf, St
     snapshot(app).dir_by_id.get(&comic_id).cloned()
 }
 
+/// 导出目录里的漫画：(ID, 漫画名, 漫画目录)
+pub fn export_comics(app: &AppHandle) -> Vec<(i64, String, PathBuf)> {
+    snapshot(app)
+        .export_dir_by_id
+        .iter()
+        .map(|(id, (dir, name))| (*id, name.clone(), dir.clone()))
+        .collect()
+}
+
+/// 漫画ID -> (漫画导出目录, 漫画名)
+pub fn export_comic_dir_and_name(app: &AppHandle, comic_id: i64) -> Option<(PathBuf, String)> {
+    snapshot(app).export_dir_by_id.get(&comic_id).cloned()
+}
+
 /// 本地库存里的标签统计
 pub fn local_tags(app: &AppHandle, source: LocalLibrarySource) -> Vec<LocalTag> {
     let snapshot = snapshot(app);
@@ -199,6 +232,11 @@ pub fn local_tags(app: &AppHandle, source: LocalLibrarySource) -> Vec<LocalTag> 
         LocalLibrarySource::DownloadDir => snapshot.download_tags.clone(),
         LocalLibrarySource::ExportDir => snapshot.export_tags.clone(),
     }
+}
+
+/// 下载目录 + 导出目录共用的一份标签统计（标签云用）
+pub fn all_local_tags(app: &AppHandle) -> Vec<LocalTag> {
+    snapshot(app).all_tags.clone()
 }
 
 /// 下载目录里的元数据文件列表（get_downloaded_comics 复用，省掉一次 WalkDir）

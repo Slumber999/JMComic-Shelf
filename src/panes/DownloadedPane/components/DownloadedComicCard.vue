@@ -2,14 +2,17 @@
 import { Comic, commands } from '../../../bindings.ts'
 import { useStore } from '../../../store.ts'
 import { PhBookOpen, PhBookmarkSimple, PhFilePdf, PhFileZip, PhFolderOpen } from '@phosphor-icons/vue'
-import { NCheckbox } from 'naive-ui'
+import { NCheckbox, useDialog, useMessage } from 'naive-ui'
 import IconButton from '../../../components/IconButton.vue'
+import AuthorLinks from '../../../components/AuthorLinks.vue'
 import { computed } from 'vue'
 import { getProgress, progressLabel } from '../../../reader/progress.ts'
 import { localCoverUrl } from '../../../reader/protocol.ts'
 import { ComicLayout } from '../../../types.ts'
 
 const store = useStore()
+const message = useMessage()
+const dialog = useDialog()
 
 const props = withDefaults(
   defineProps<{
@@ -17,7 +20,7 @@ const props = withDefaults(
     fromExportDir?: boolean
     checkboxChecked: (comic: Comic) => boolean
     handleCheckboxClick: (comic: Comic) => void
-    handleContextMenu: (comic: Comic) => void
+    handleClick: (comic: Comic, event: MouseEvent) => void
     layout?: ComicLayout
   }>(),
   { layout: 'list' },
@@ -37,21 +40,44 @@ function pickComic() {
   store.currentTabName = 'chapter'
 }
 
-async function exportCbz() {
+function exportCbz() {
+  confirmWholeComic(startExportCbz)
+}
+
+function exportPdf() {
+  confirmWholeComic(startExportPdf)
+}
+
+/// 整本导出前先确认：一本多话量级不小，单章直接导出
+function confirmWholeComic(run: () => Promise<void>) {
+  const chapterCount = props.comic.chapterInfos.length
+  if (chapterCount <= 1) {
+    void run()
+    return
+  }
+
+  dialog.warning({
+    title: '整本导出',
+    content: `《${props.comic.name}》共 ${chapterCount} 话，确定全部导出吗？`,
+    positiveText: '确定',
+    negativeText: '取消',
+    onPositiveClick: () => void run(),
+  })
+}
+
+async function startExportCbz() {
   store.showProgressesTab('export')
   const result = await commands.exportCbz(props.comic)
   if (result.status === 'error') {
-    console.error(result.error)
-    return
+    message.error(result.error.message, { duration: 8000 })
   }
 }
 
-async function exportPdf() {
+async function startExportPdf() {
   store.showProgressesTab('export')
   const result = await commands.exportPdf(props.comic)
   if (result.status === 'error') {
-    console.error(result.error)
-    return
+    message.error(result.error.message, { duration: 8000 })
   }
 }
 
@@ -73,11 +99,24 @@ async function showComicDownloadDirInFileManager() {
   }
 }
 
-/// 网格模式下封面是主入口，和列表模式点标题一致
-function onCoverClick() {
-  if (props.layout !== 'list') {
-    pickComic()
+/// 按住 Ctrl/⌘ 时，整张卡片上的点击都只用来勾选：
+/// 既不执行原本的动作，也不 stop，让点击冒泡到卡片根节点去做勾选
+function runAction(event: MouseEvent, action: () => void) {
+  if (event.ctrlKey || event.metaKey) {
+    return
   }
+  event.stopPropagation()
+  action()
+}
+
+/// 网格模式下封面是主入口，和列表模式点标题一致；
+/// 列表模式、以及按住 Ctrl 时，封面都不做事，让点击冒泡到卡片去改勾选
+function onCoverClick(event: MouseEvent) {
+  if (props.layout === 'list' || event.ctrlKey || event.metaKey) {
+    return
+  }
+  event.stopPropagation()
+  pickComic()
 }
 </script>
 
@@ -87,11 +126,13 @@ function onCoverClick() {
       'relative border border-solid rounded-md border-gray-2 p-1',
       layout === 'list' ? 'flex' : 'group flex flex-col',
     ]"
-    @contextmenu="handleContextMenu(comic)">
+    @click="handleClick(comic, $event)">
+    <!-- 导出目录没有批量操作，选择框没用 -->
     <n-checkbox
+      v-if="!fromExportDir"
       class="absolute top-2 left-2 z-1"
       :checked="checkboxChecked(comic)"
-      @click="handleCheckboxClick(comic)" />
+      @click.stop="handleCheckboxClick(comic)" />
     <img
       :class="
         layout === 'list'
@@ -110,15 +151,19 @@ function onCoverClick() {
           'font-bold line-clamp-2 cursor-pointer transition-colors duration-200 hover:text-blue-5',
           layout === 'list' ? 'text-base' : 'text-sm mt-1',
         ]"
-        @click="pickComic">
+        @click="(event) => runAction(event, pickComic)">
         {{ comic.name }}
       </span>
-      <span class="text-xs text-red" :class="layout === 'list' ? '' : 'truncate'">作者：{{ comic.author }}</span>
+      <author-links
+        class="text-xs text-red"
+        :class="layout === 'list' ? '' : 'truncate'"
+        :author="comic.author"
+        ctrl-selects />
       <div
         v-if="progressText !== ''"
         class="flex items-center gap-1 text-xs text-blue-5 cursor-pointer hover:text-blue-6"
         :title="progressTitle"
-        @click="emit('read', comic)">
+        @click="(event) => runAction(event, () => emit('read', comic))">
         <PhBookmarkSimple :size="14" />
         {{ progressText }}
       </div>
@@ -128,22 +173,24 @@ function onCoverClick() {
             ? 'flex mt-auto gap-col-2'
             : 'flex mt-auto gap-col-2 opacity-0 transition-opacity duration-150 group-hover:opacity-100'
         ">
-        <IconButton :title="fromExportDir ? '打开导出目录' : '打开下载目录'" @click="showComicDownloadDirInFileManager">
+        <IconButton
+          :title="fromExportDir ? '打开导出目录' : '打开下载目录'"
+          @click="(event) => runAction(event, showComicDownloadDirInFileManager)">
           <PhFolderOpen :size="20" />
         </IconButton>
 
         <template v-if="!fromExportDir">
-          <IconButton class="ml-auto" title="导出cbz" @click="exportCbz">
+          <IconButton class="ml-auto" title="导出cbz" @click="(event) => runAction(event, exportCbz)">
             <PhFileZip :size="20" />
           </IconButton>
 
-          <IconButton title="导出pdf" @click="exportPdf">
+          <IconButton title="导出pdf" @click="(event) => runAction(event, exportPdf)">
             <PhFilePdf :size="20" />
           </IconButton>
         </template>
 
         <!-- 右下角：直接阅读（下载目录读图片，导出目录读cbz） -->
-        <IconButton class="ml-auto" title="阅读" @click="emit('read', comic)">
+        <IconButton class="ml-auto" title="阅读" @click="(event) => runAction(event, () => emit('read', comic))">
           <PhBookOpen :size="20" />
         </IconButton>
       </div>

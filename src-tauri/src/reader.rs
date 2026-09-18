@@ -160,22 +160,31 @@ impl ChapterSource {
         let prepared = prepared.as_ref().ok_or_eyre("章节内容还没准备好")?;
         let url = prepared.urls.get(index).ok_or_eyre("页码超出范围")?.clone();
         let block_num = prepared.block_nums.get(index).copied().unwrap_or(0);
-        let download_format = app.get_config().read().download_format;
 
         // 这里跑在自定义协议的独立线程上（不在 tokio runtime 里），所以可以 block_on
-        let jm_client = app.get_jm_client();
-        let (img_data, src_format) =
-            tauri::async_runtime::block_on(jm_client.get_img_data_and_format(&url))?;
-        let encoded = decode_and_encode_img(&img_data, src_format, block_num, download_format)?;
-
-        let content_type = if src_format == image::ImageFormat::Gif {
-            "image/gif"
-        } else {
-            content_type_of(download_format.extension())
-        };
-
-        Ok((Bytes::from(encoded), content_type))
+        tauri::async_runtime::block_on(fetch_remote_page(app, &url, block_num))
     }
+}
+
+/// 在线页的完整处理链：下载 → 还原拼图 → 按配置格式编码
+/// - 协议线程用 block_on 调；prepare_chapter 直接用 await 调（那边在 tokio runtime 上，不能再 block_on）
+async fn fetch_remote_page(
+    app: &AppHandle,
+    url: &str,
+    block_num: u32,
+) -> eyre::Result<(Bytes, &'static str)> {
+    let download_format = app.get_config().read().download_format;
+    let jm_client = app.get_jm_client();
+    let (img_data, src_format) = jm_client.get_img_data_and_format(url).await?;
+    let encoded = decode_and_encode_img(&img_data, src_format, block_num, download_format)?;
+
+    let content_type = if src_format == image::ImageFormat::Gif {
+        "image/gif"
+    } else {
+        content_type_of(download_format.extension())
+    };
+
+    Ok((Bytes::from(encoded), content_type))
 }
 
 /// 自然排序：让 第2话 < 第10话、0009.jpg < 0010.jpg
@@ -471,9 +480,20 @@ pub async fn prepare_chapter(
     }
 
     let count = urls.len();
+    let first_page = urls.first().cloned().zip(block_nums.first().copied());
     if let Some(source) = catalog.chapters.write().get_mut(&token) {
         if let ChapterSource::Remote { prepared, .. } = source {
             *prepared = Some(RemotePages { urls, block_nums });
+        }
+    }
+
+    // 顺手把第一页也下好塞进缓存：前端拿到页数马上就回来取第 1 页，
+    // 提前取掉能省下"章节准备好了、图还在路上"的那几秒空白。
+    // 取不到就算了，前端自己还会再请求一次
+    if let Some((url, block_num)) = first_page {
+        match fetch_remote_page(app, &url, block_num).await {
+            Ok(page) => catalog.page_cache.lock().insert((token, 0), page),
+            Err(err) => tracing::warn!(message = %err, "预热第一页失败"),
         }
     }
 

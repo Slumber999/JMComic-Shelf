@@ -1,15 +1,18 @@
 <script setup lang="ts">
-import { NCard } from 'naive-ui'
+import { NCard, useDialog, useMessage } from 'naive-ui'
 import { CategoryRespData, CategorySubRespData, commands } from '../bindings.ts'
 import { useStore } from '../store.ts'
 import IconButton from './IconButton.vue'
 import FavoriteButton from './FavoriteButton.vue'
+import AuthorLinks from './AuthorLinks.vue'
 import { localCoverUrl } from '../reader/protocol.ts'
 import { PhBookOpen, PhDownloadSimple, PhFileZip, PhFolderOpen } from '@phosphor-icons/vue'
 import { hoverCover, unhoverCover } from './coverPreview.ts'
 import { ComicLayout } from '../types.ts'
 
 const store = useStore()
+const message = useMessage()
+const dialog = useDialog()
 
 const props = withDefaults(
   defineProps<{
@@ -42,22 +45,54 @@ async function pickComic() {
   store.currentTabName = 'chapter'
 }
 
-async function downloadComic() {
-  const result = await commands.downloadComic(props.comicId)
-  if (result.status === 'error') {
-    console.error(result.error)
-    return
-  }
+function downloadComic() {
+  confirmWholeComic('下载', startDownload)
 }
 
 /// 免下载直出 cbz：图片在内存里取回、还原后直接打包，不落下载目录
-async function exportCbzWithoutDownload() {
+function exportCbzWithoutDownload() {
+  confirmWholeComic('导出', startExportCbz)
+}
+
+/// 整本下载/导出前先确认：一本多话量级不小，单章直接执行
+async function confirmWholeComic(verb: string, run: () => Promise<void>) {
+  const detail = await commands.getComic(props.comicId)
+  if (detail.status === 'error') {
+    message.error(detail.error.message, { duration: 8000 })
+    return
+  }
+
+  const chapterCount = detail.data.chapterInfos.length
+  if (chapterCount <= 1) {
+    await run()
+    return
+  }
+
+  dialog.warning({
+    title: `整本${verb}`,
+    content: `《${detail.data.name}》共 ${chapterCount} 话，确定全部${verb}吗？`,
+    positiveText: '确定',
+    negativeText: '取消',
+    onPositiveClick: () => void run(),
+  })
+}
+
+async function startDownload() {
+  const result = await commands.downloadComic(props.comicId)
+  if (result.status === 'error') {
+    message.error(result.error.message, { duration: 8000 })
+    return
+  }
+  store.showProgressesTab('uncompleted')
+}
+
+async function startExportCbz() {
   // 让底部抽屉切到「导出进度」，方便看进度
   store.showProgressesTab('export')
 
   const result = await commands.exportCbzWithoutDownload([props.comicId])
   if (result.status === 'error') {
-    console.error(result.error)
+    message.error(result.error.message, { duration: 8000 })
   }
 }
 
@@ -113,7 +148,10 @@ function onCoverPointerEnter(event: PointerEvent) {
             @click="pickComic">
             {{ comicTitle }}
           </span>
-          <span class="text-xs text-red" :class="layout === 'list' ? '' : 'truncate'">作者：{{ comicAuthor }}</span>
+          <author-links
+            class="text-xs text-red"
+            :class="layout === 'list' ? '' : 'truncate'"
+            :author="comicAuthor" />
           <span v-if="layout === 'list'" class="text-xs text-gray">
             分类：{{ comicCategory.title }} {{ comicCategorySub.title }}
           </span>
