@@ -1448,9 +1448,10 @@ pub async fn get_all_favorite_comics(
 
     let id_to_dir_map = utils::create_id_to_dir_map(&app)
         .map_err(|err| CommandError::from("获取收藏夹失败", err))?;
+    let exported_ids = local_index::exported_id_set(&app);
     let comics = comic_resp_datas
         .into_iter()
-        .map(|comic| ComicInFavorite::from_resp_data(comic, &id_to_dir_map))
+        .map(|comic| ComicInFavorite::from_resp_data(comic, &id_to_dir_map, &exported_ids))
         .collect::<eyre::Result<Vec<_>>>()
         .map_err(|err| CommandError::from("获取收藏夹失败", err))?;
 
@@ -1561,8 +1562,9 @@ pub fn get_synced_comic_in_favorite(
 ) -> CommandResult<ComicInFavorite> {
     let id_to_dir_map = utils::create_id_to_dir_map(&app)
         .map_err(|err| CommandError::from("同步ComicInFavorite字段失败", err))?;
+    let exported_ids = local_index::exported_id_set(&app);
 
-    comic.update_fields(&id_to_dir_map);
+    comic.update_fields(&id_to_dir_map, &exported_ids);
 
     Ok(comic)
 }

@@ -12,8 +12,9 @@ const store = useStore()
 
 const currentView = ref<'ranking' | 'weekly'>('ranking')
 
-/// 官方排行榜：周榜 / 月榜
+/// 官方排行榜：总榜 / 周榜 / 月榜
 const rankingOrders = [
+  { value: 'mv', label: '总榜' },
   { value: 'mv_w', label: '周榜' },
   { value: 'mv_m', label: '月榜' },
 ]

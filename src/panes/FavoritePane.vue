@@ -372,7 +372,21 @@ async function exportCbz() {
             :author="comic.author"
             :prefix="false" />
         </div>
-        <span v-if="comic.isDownloaded" class="ml-auto text-xs text-green-6 shrink-0">已下载</span>
+        <!-- 用图标标记，别占漫画名的宽度 -->
+        <div class="ml-auto flex items-center gap-1 shrink-0">
+          <span
+            v-if="comic.isDownloaded"
+            class="flex items-center justify-center w-5 h-5 rounded bg-green-1 text-green-6"
+            title="已下载">
+            <PhDownloadSimple :size="12" />
+          </span>
+          <span
+            v-if="comic.isExported"
+            class="flex items-center justify-center w-5 h-5 rounded bg-blue-1 text-blue-6"
+            title="已导出">
+            <PhFileZip :size="12" />
+          </span>
+        </div>
       </div>
     </div>
   </div>

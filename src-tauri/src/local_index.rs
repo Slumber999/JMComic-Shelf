@@ -6,7 +6,7 @@
 //! 这里把结果做成带 TTL 的快照，命中时零 IO。
 
 use std::{
-    collections::HashMap,
+    collections::{HashMap, HashSet},
     path::{Path, PathBuf},
     sync::{Arc, LazyLock},
     time::{Duration, Instant, SystemTime},
@@ -223,6 +223,11 @@ pub fn export_comics(app: &AppHandle) -> Vec<(i64, String, PathBuf)> {
 /// 漫画ID -> (漫画导出目录, 漫画名)
 pub fn export_comic_dir_and_name(app: &AppHandle, comic_id: i64) -> Option<(PathBuf, String)> {
     snapshot(app).export_dir_by_id.get(&comic_id).cloned()
+}
+
+/// 导出目录里的漫画ID集合，用来判断"这本是否已经导出过"
+pub fn exported_id_set(app: &AppHandle) -> HashSet<i64> {
+    snapshot(app).export_dir_by_id.keys().copied().collect()
 }
 
 /// 本地库存里的标签统计

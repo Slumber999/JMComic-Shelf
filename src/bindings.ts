@@ -611,7 +611,11 @@ isPdfExported: boolean;
  */
 isCbzExported: boolean; isDownloaded?: boolean | null; chapterDownloadDir?: string | null }
 export type Comic = { id: number; name: string; addtime: string; description: string; total_views: string; likes: string; chapterInfos: ChapterInfo[]; series_id: string; comment_total: string; author: string[]; tags: string[]; works: string[]; actors: string[]; related_list: RelatedListRespData[]; liked: boolean; is_favorite: boolean; is_aids: boolean; isDownloaded?: boolean | null; comicDownloadDir?: string | null }
-export type ComicInFavorite = { id: number; author: string; description: string | null; name: string; latestEp: string | null; latestEpAid: string | null; image: string; category: CategoryRespData; categorySub: CategorySubRespData; isDownloaded: boolean; comicDownloadDir: string }
+export type ComicInFavorite = { id: number; author: string; description: string | null; name: string; latestEp: string | null; latestEpAid: string | null; image: string; category: CategoryRespData; categorySub: CategorySubRespData; isDownloaded: boolean; 
+/**
+ * 导出目录里有没有这本（"列出全部漫画"里标记已导出）
+ */
+isExported: boolean; comicDownloadDir: string }
 export type ComicInSearch = { id: number; author: string; name: string; image: string; category: CategoryRespData; categorySub: CategorySubRespData; liked: boolean; isFavorite: boolean; updateAt: number; isDownloaded: boolean; comicDownloadDir: string }
 export type ComicInWeekly = { id: number; author: string; description: string; name: string; image: string; category: Category; category_sub: CategorySub; liked: boolean; is_favorite: boolean; update_at: number; is_downloaded: boolean; comic_download_dir: string }
 export type CommandError = { err_title: string; message: string }
