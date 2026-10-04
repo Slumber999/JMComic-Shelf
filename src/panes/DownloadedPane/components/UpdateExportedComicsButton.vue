@@ -12,7 +12,7 @@ const busy = ref<boolean>(false)
 async function update() {
   busy.value = true
   // 补导章节的进度走底部的「导出」抽屉
-  store.showProgressesTab('export')
+  store.showProgressesTab('uncompleted')
   try {
     const result = await commands.updateExportedComics()
     if (result.status === 'error') {

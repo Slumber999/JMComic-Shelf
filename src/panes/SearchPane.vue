@@ -10,7 +10,6 @@ import {
   NPagination,
   NSelect,
   SelectProps,
-  NTooltip,
   useMessage,
 } from 'naive-ui'
 import ComicCard from '../components/ComicCard.vue'
@@ -44,6 +43,9 @@ const gridStyle = useGridColumns(listRef, () => store.gridItemWidth)
 // 官方分类树 + 常用标签（/categories）
 const categoryResp = computed(() => store.categoryResp)
 const categorySelected = ref<string | null>(null)
+/// 正在浏览的官方分类（slug）：为 null 表示普通关键词搜索
+const browsingCategorySlug = ref<string | null>(null)
+const browsingCategoryName = ref<string>('')
 const tagsExpanded = ref<boolean>(true)
 
 // 年月筛选
@@ -121,10 +123,21 @@ const searchPageCount = computed(() => {
   return Math.ceil(store.searchResult.total / PAGE_SIZE)
 })
 
+/// 官方分类接口的全部漫画（「最新A漫」这个空节点的等价物）
+const ALL_CATEGORY_SLUG = '0'
+
 // 分类条目：每项有唯一 key（同名子分类如「汉化」在多个主分类下重复，不能拿名字当 value）
+// - 顶层分类带 categorySlug，走官方分类浏览接口 /categories/filter?c=<slug>
+// - 「最新A漫」在官方接口里是空节点（slug 为空、没有子分类），等价于「全部漫画」
 const categoryEntries = computed(() => {
   const categories = categoryResp.value?.categories ?? []
-  const entries: { key: string; keyword: string; groupLabel: string; label: string }[] = []
+  const entries: {
+    key: string
+    keyword: string
+    groupLabel: string
+    label: string
+    categorySlug?: string
+  }[] = []
 
   for (const category of categories) {
     if (category.name === '') {
@@ -132,12 +145,15 @@ const categoryEntries = computed(() => {
     }
     const groupLabel =
       category.totalAlbums > 0 ? `${category.name}(${category.totalAlbums})` : category.name
+    // 空 slug 的节点（最新A漫）用 c=0，也就是全部漫画
+    const categorySlug = category.slug === '' ? ALL_CATEGORY_SLUG : category.slug
 
     entries.push({
       key: `c:${category.id}`,
       keyword: category.name,
       groupLabel,
-      label: `${category.name}(整个分类)`,
+      label: category.slug === '' ? `${category.name}（全部漫画）` : `${category.name}(整个分类)`,
+      categorySlug,
     })
 
     for (const sub of category.subCategories) {
@@ -153,8 +169,8 @@ const categoryEntries = computed(() => {
   return entries
 })
 
-const categoryKeyToKeyword = computed(
-  () => new Map(categoryEntries.value.map((entry) => [entry.key, entry.keyword])),
+const categoryEntryByKey = computed(
+  () => new Map(categoryEntries.value.map((entry) => [entry.key, entry])),
 )
 
 const categoryOptions = computed<SelectProps['options']>(() => {
@@ -244,6 +260,9 @@ function onHistorySelect(key: string) {
 
 async function search(keyword: string, page: number, sort: SearchSort) {
   const trimmed = keyword.trim()
+  // 关键词搜索和分类浏览互斥
+  browsingCategorySlug.value = null
+  browsingCategoryName.value = ''
 
   // 关键词为空：直接回到「未搜索」状态，不发请求、也不提示"没搜到"
   if (trimmed === '') {
@@ -301,21 +320,92 @@ async function search(keyword: string, page: number, sort: SearchSort) {
   searching.value = false
 }
 
-/// 点击分类：官方 App 接口没有分类浏览，这里按分类名做关键词搜索
+/// 搜索排序 → 官方分类接口的排序参数（实测 mr/mp/tf/mv 都通用）
+function sortToOrder(sort: SearchSort): string {
+  switch (sort) {
+    case 'Latest':
+      return 'mr'
+    case 'View':
+      return 'mv'
+    case 'Picture':
+      return 'mp'
+    case 'Like':
+      return 'tf'
+  }
+}
+
+/// 分类浏览：走官方 /categories/filter 接口按 slug 拉列表
+/// - 官方接口不吃年月筛选，切分类浏览时年月不参与
+async function browseCategory(slug: string, page: number, sort: SearchSort) {
+  if (searching.value) {
+    message.warning('有加载正在进行，请稍后再试')
+    return
+  }
+
+  tagsExpanded.value = false
+  searching.value = true
+  searchPage.value = page
+
+  const result = await commands.getRanking(slug, sortToOrder(sort), page)
+
+  if (result.status === 'error') {
+    console.error(result.error)
+    message.error(result.error.message, { duration: 6000 })
+    searching.value = false
+    return
+  }
+
+  if (result.data.content.length === 0) {
+    message.warning('这个分类下什么都没有')
+    searching.value = false
+    return
+  }
+
+  store.searchResult = result.data
+  await nextTick()
+  scrollListToTop(listRef.value)
+  searching.value = false
+}
+
+/// 点击分类：
+/// - 顶层分类走官方分类接口（关键词搜索搜不到分类本身，比如"最新A漫"）
+/// - 子分类官方接口没有对应参数（sub/tag/CID 都无效），仍然按名字搜
 function onCategorySelect(key: string | null) {
   categorySelected.value = key
 
   if (key === null || key === '') {
+    browsingCategorySlug.value = null
+    browsingCategoryName.value = ''
     return
   }
 
-  const keyword = categoryKeyToKeyword.value.get(key)
-  if (keyword === undefined) {
+  const entry = categoryEntryByKey.value.get(key)
+  if (entry === undefined) {
     return
   }
 
-  searchInput.value = keyword
-  void search(keyword, 1, sortSelected.value)
+  if (entry.categorySlug !== undefined) {
+    browsingCategorySlug.value = entry.categorySlug
+    browsingCategoryName.value = entry.keyword
+    searchInput.value = ''
+    void browseCategory(entry.categorySlug, 1, sortSelected.value)
+    return
+  }
+
+  browsingCategorySlug.value = null
+  browsingCategoryName.value = ''
+  searchInput.value = entry.keyword
+  void search(entry.keyword, 1, sortSelected.value)
+}
+
+/// 翻页：分类浏览和关键词搜索走不同接口
+function loadPage(page: number) {
+  if (browsingCategorySlug.value !== null) {
+    void browseCategory(browsingCategorySlug.value, page, sortSelected.value)
+    return
+  }
+
+  void search(searchInput.value.trim(), page, sortSelected.value)
 }
 
 /// 当前搜索词里的所有词（空格分隔），用来高亮已经加进搜索词的标签
@@ -347,6 +437,8 @@ function onMonthChange(value: number) {
 
 function resetFilters() {
   categorySelected.value = null
+  browsingCategorySlug.value = null
+  browsingCategoryName.value = ''
   yearSelected.value = 0
   monthSelected.value = 0
 }
@@ -384,21 +476,15 @@ function resetFilters() {
 
     <!-- 筛选：分类 / 年月 / 历史 -->
     <div class="flex items-center gap-1 box-border px-2">
-      <n-tooltip placement="bottom" trigger="hover" :width="360">
-        <div>官方分类树（来自 /categories 接口）</div>
-        <div class="text-orange-4">官方 App 接口没有分类浏览，这里按分类名做关键词搜索</div>
-        <template #trigger>
-          <n-select
-            class="w-40%"
-            size="small"
-            clearable
-            placeholder="分类"
-            :value="categorySelected"
-            :options="categoryOptions"
-            :show-checkmark="false"
-            @update:value="onCategorySelect" />
-        </template>
-      </n-tooltip>
+      <n-select
+        class="w-40%"
+        size="small"
+        clearable
+        placeholder="分类"
+        :value="categorySelected"
+        :options="categoryOptions"
+        :show-checkmark="false"
+        @update:value="onCategorySelect" />
 
       <n-select
         class="w-24%"
@@ -438,7 +524,6 @@ function resetFilters() {
         </n-icon>
         <span>{{ tagsHeaderText }}</span>
         <span class="text-gray-4">{{ tagsExpanded ? '收起' : '展开' }}</span>
-        <span class="text-gray-4">· 点标签累加到搜索词（再点一次取消），按搜索或回车开始搜</span>
       </div>
       <div v-if="tagsExpanded" class="flex flex-col gap-1">
         <div v-for="block in categoryResp.blocks" :key="block.title" class="flex items-start gap-1">
@@ -506,11 +591,11 @@ function resetFilters() {
     </div>
 
     <div v-if="searchPageCount > 0" class="flex items-center justify-center gap-3 box-border p-2 pt-0 mt-auto">
-      <span class="text-xs text-gray-500">共 {{ store.searchResult?.total ?? 0 }} 条</span>
-      <n-pagination
-        :page-count="searchPageCount"
-        :page="searchPage"
-        @update:page="search(searchInput.trim(), $event, sortSelected)" />
+      <span class="text-xs text-gray-500">
+        {{ browsingCategoryName === '' ? '' : `分类「${browsingCategoryName}」 · ` }}共
+        {{ store.searchResult?.total ?? 0 }} 条
+      </span>
+      <n-pagination :page-count="searchPageCount" :page="searchPage" @update:page="loadPage" />
     </div>
   </div>
 </template>

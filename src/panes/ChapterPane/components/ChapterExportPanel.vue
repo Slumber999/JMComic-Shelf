@@ -1,8 +1,9 @@
 <script setup lang="tsx">
-import { PartialSelectionOptions, SelectionArea, SelectionEvent } from '@viselect/vue'
-import { computed, defineComponent, nextTick, PropType, ref, watch, watchEffect, useTemplateRef } from 'vue'
+import { SelectionArea } from '@viselect/vue'
+import { computed, defineComponent, nextTick, PropType, ref, watch, watchEffect } from 'vue'
 import { ChapterInfo, commands, DownloadTaskState } from '../../../bindings.ts'
 import { useStore } from '../../../store.ts'
+import { useMarqueeSelection } from '../../../marqueeSelection.ts'
 import { DropdownOption, NButton, NCheckbox, NDropdown, NIcon, NPopover, NRadioButton, NRadioGroup } from 'naive-ui'
 import { ChapterPaneMode } from '../ChapterPane.vue'
 import { PhPalette } from '@phosphor-icons/vue'
@@ -20,22 +21,19 @@ const props = defineProps({
 
 const chapterPaneMode = defineModel<ChapterPaneMode>('chapterPaneMode', { required: true })
 
-const selectionOptions: PartialSelectionOptions = {
-  selectables: '.selectable',
-  features: { deselectOnBlur: true },
-  boundaries: '.chapter-export-pane-selection-container',
-}
-
 const chapterInfos = computed<ChapterInfo[]>(() => store.pickedComic?.chapterInfos ?? [])
 const checkedIds = ref<Set<number>>(new Set())
-const selectedIds = ref<Set<number>>(new Set())
 const exportingChapterIds = ref<Set<number>>(new Set())
-const selectionAreaRef = useTemplateRef('selectionAreaRef')
+/// 拖拽框选：只认 chapterInfos 里真实存在的章节
+const { selectedIds, selectionOptions, updateSelectedIds, unselectAll, clearSelection } =
+  useMarqueeSelection<number>({
+    boundary: '.chapter-export-pane-selection-container',
+    accept: (id) => chapterInfos.value.some((chapter) => chapter.chapterId === id),
+  })
 
 function clearCheckedAndSelected() {
   checkedIds.value.clear()
-  selectedIds.value.clear()
-  selectionAreaRef.value?.selection?.clearSelection()
+  clearSelection()
 }
 
 watch(
@@ -67,30 +65,6 @@ watchEffect(() => {
     }
   }
 })
-
-function extractIds(elements: Element[]): number[] {
-  return elements
-    .map((element) => element.getAttribute('data-key'))
-    .filter(Boolean)
-    .map(Number)
-    .filter((id) => chapterInfos.value.find((chapter) => chapter.chapterId === id) !== undefined)
-}
-
-function unselectAll({ event, selection }: SelectionEvent) {
-  if (!event?.ctrlKey && !event?.metaKey) {
-    selection.clearSelection()
-    selectedIds.value.clear()
-  }
-}
-
-function updateSelectedIds({
-  store: {
-    changed: { added, removed },
-  },
-}: SelectionEvent) {
-  extractIds(added).forEach((id) => selectedIds.value.add(id))
-  extractIds(removed).forEach((id) => selectedIds.value.delete(id))
-}
 
 const dropdownX = ref<number>(0)
 const dropdownY = ref<number>(0)
@@ -160,7 +134,7 @@ async function exportPdf() {
     return
   }
 
-  store.showProgressesTab('export')
+  store.showProgressesTab('uncompleted')
   chapterIds.forEach((id) => exportingChapterIds.value.add(id))
 
   const result = await commands.exportPdfChapters(store.pickedComic, chapterIds)
@@ -186,7 +160,7 @@ async function exportCbz() {
     return
   }
 
-  store.showProgressesTab('export')
+  store.showProgressesTab('uncompleted')
   chapterIds.forEach((id) => exportingChapterIds.value.add(id))
 
   const result = await commands.exportCbzChapters(store.pickedComic, chapterIds)

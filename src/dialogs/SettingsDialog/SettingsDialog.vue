@@ -32,28 +32,36 @@ async function showConfigInFileManager() {
     <n-dialog class="w-140!" :showIcon="false" @close="showing = false">
       <div class="flex flex-col">
         <!--
-          只在这里限高 + 滚动：naive 的 modal 容器不滚动，内容一多弹窗就会顶出页面。
-          注意别用 flex:1/min-h-0 那一套去撑，弹窗高度是 auto，整条 flex 链会塌成 0 高、弹窗变成空白。
+          页签栏固定在顶部，只有每个页签的内容滚动：
+          - 页签不再跟着内容滚走
+          - 滚动条在页签栏下方，不会顶到右上角的关闭按钮（所以不需要额外的顶部留白）
+          高度限制放在每个页签内部的滚动容器上（max-h-[50vh]）；别用 flex:1/min-h-0
+          去撑弹窗高度——弹窗高度是 auto，整条 flex 链会塌成 0 高、内容变空白。
         -->
-        <div class="max-h-[65vh] overflow-y-auto pr-1">
-          <n-tabs v-model:value="currentTabName" type="line" size="small">
-            <n-tab-pane name="download_settings" tab="下载">
+        <n-tabs v-model:value="currentTabName" type="line" size="small">
+          <n-tab-pane name="download_settings" tab="下载 / 导出">
+            <div class="max-h-[50vh] overflow-y-auto pr-1">
               <DownloadSettings />
-            </n-tab-pane>
-            <n-tab-pane name="network_settings" tab="网络">
-              <NetworkSettings />
-            </n-tab-pane>
-            <n-tab-pane name="export_settings" tab="导出">
+              <div class="my-4 h-px w-full bg-gray-200" />
               <ExportSettings />
-            </n-tab-pane>
-            <n-tab-pane name="storage_settings" tab="空间">
+            </div>
+          </n-tab-pane>
+          <n-tab-pane name="network_settings" tab="网络">
+            <div class="max-h-[50vh] overflow-y-auto pr-1">
+              <NetworkSettings />
+            </div>
+          </n-tab-pane>
+          <n-tab-pane name="storage_settings" tab="空间">
+            <div class="max-h-[50vh] overflow-y-auto pr-1">
               <StorageSettings />
-            </n-tab-pane>
-            <n-tab-pane name="interface_settings" tab="界面">
+            </div>
+          </n-tab-pane>
+          <n-tab-pane name="interface_settings" tab="界面">
+            <div class="max-h-[50vh] overflow-y-auto pr-1">
               <InterfaceSettings />
-            </n-tab-pane>
-          </n-tabs>
-        </div>
+            </div>
+          </n-tab-pane>
+        </n-tabs>
 
         <n-button class="ml-auto mt-2" size="small" @click="showConfigInFileManager">打开配置目录</n-button>
       </div>

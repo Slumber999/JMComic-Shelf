@@ -1,11 +1,54 @@
 <script setup lang="ts">
 import { ref, watch } from 'vue'
+import { open } from '@tauri-apps/plugin-dialog'
+import { path } from '@tauri-apps/api'
+import { appDataDir } from '@tauri-apps/api/path'
 import { useStore } from '../../../store.ts'
-import { NCheckbox, NInput, NRadio, NRadioGroup, NTooltip, useMessage } from 'naive-ui'
+import { commands } from '../../../bindings.ts'
+import { NButton, NCheckbox, NIcon, NInput, NRadio, NRadioGroup, NTooltip, useMessage } from 'naive-ui'
+import { PhFolderOpen } from '@phosphor-icons/vue'
 
 const store = useStore()
 
 const message = useMessage()
+
+/// 下载目录只能在这里改（进度抽屉、本地库存页都改成只读展示了）
+async function selectDownloadDir() {
+  if (store.config === undefined) {
+    return
+  }
+
+  const selectedDirPath = await open({ directory: true })
+  if (selectedDirPath === null) {
+    return
+  }
+
+  store.config.downloadDir = selectedDirPath
+}
+
+async function showDownloadDirInFileManager() {
+  if (store.config === undefined) {
+    return
+  }
+  const result = await commands.showPathInFileManager(store.config.downloadDir)
+  if (result.status === 'error') {
+    console.error(result.error)
+  }
+}
+
+/// 默认目录名和 src-tauri/src/config.rs 里 Config::default 保持一致
+const DEFAULT_DOWNLOAD_DIR_NAME = '漫画下载'
+
+/// 把下载目录恢复成默认位置（只改路径，磁盘上的文件不动）
+async function resetDownloadDir() {
+  if (store.config === undefined) {
+    return
+  }
+
+  const appDataDirPath = await appDataDir()
+  store.config.downloadDir = await path.join(appDataDirPath, DEFAULT_DOWNLOAD_DIR_NAME)
+  message.success('下载目录已恢复默认，已经下载的文件不会被移动')
+}
 
 const dirFmt = ref<string>(store.config?.dirFmt ?? '')
 
@@ -16,6 +59,35 @@ watch([() => store.config?.apiDomainMode, () => store.config?.customApiDomain], 
 
 <template>
   <div v-if="store.config !== undefined" class="flex flex-col">
+    <div class="mt-2 flex items-center gap-2">
+      <span class="font-bold">下载目录</span>
+      <n-button
+        class="ml-auto shrink-0"
+        size="tiny"
+        quaternary
+        title="恢复成默认的下载目录（只改路径，已下载的文件不移动）"
+        @click="resetDownloadDir">
+        恢复默认
+      </n-button>
+    </div>
+    <div class="mt-1 flex items-center gap-1">
+      <!-- 点这一条就是改目录 -->
+      <n-input
+        class="flex-1 min-w-0 cursor-pointer"
+        :value="store.config.downloadDir"
+        size="small"
+        readonly
+        title="点击选择下载目录"
+        @click="selectDownloadDir" />
+      <n-button class="shrink-0" size="small" title="在资源管理器里打开" @click="showDownloadDirInFileManager">
+        <template #icon>
+          <n-icon size="18">
+            <PhFolderOpen />
+          </n-icon>
+        </template>
+      </n-button>
+    </div>
+
     <span class="font-bold mt-2">下载格式</span>
     <n-radio-group v-model:value="store.config.downloadFormat">
       <n-tooltip placement="top" trigger="hover">

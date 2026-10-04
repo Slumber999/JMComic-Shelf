@@ -72,7 +72,6 @@ pub fn run() {
 
     let builder = tauri_specta::Builder::<Wry>::new()
         .commands(tauri_specta::collect_commands![
-            greet,
             get_config,
             save_config,
             login,
@@ -108,7 +107,6 @@ pub fn run() {
             prepare_reader_chapter,
             close_reader,
             get_local_comics,
-            get_local_tags,
             get_local_tags_all,
             get_downloaded_comics,
             export_cbz,

@@ -1,12 +1,68 @@
 <script setup lang="ts">
 import { ref } from 'vue'
+import { open } from '@tauri-apps/plugin-dialog'
+import { path } from '@tauri-apps/api'
+import { appDataDir } from '@tauri-apps/api/path'
 import { useStore } from '../../../store.ts'
-import { NButton, NCheckbox, NInputGroup, NInputGroupLabel, NInputNumber, NSelect, NTooltip } from 'naive-ui'
+import { commands } from '../../../bindings.ts'
+import {
+  NButton,
+  NCheckbox,
+  NIcon,
+  NInput,
+  NInputGroup,
+  NInputGroupLabel,
+  NInputNumber,
+  NSelect,
+  NTooltip,
+  useMessage,
+} from 'naive-ui'
+import { PhFolderOpen } from '@phosphor-icons/vue'
 import QuickReaderExportDialog from './QuickReaderExportDialog.vue'
 
 const store = useStore()
 
 const quickReaderDialogShowing = ref<boolean>(false)
+
+const message = useMessage()
+
+/// 导出目录只能在这里改（本地库存页改成只读展示了）
+async function selectExportDir() {
+  if (store.config === undefined) {
+    return
+  }
+
+  const selectedDirPath = await open({ directory: true })
+  if (selectedDirPath === null) {
+    return
+  }
+
+  store.config.exportDir = selectedDirPath
+}
+
+async function showExportDirInFileManager() {
+  if (store.config === undefined) {
+    return
+  }
+  const result = await commands.showPathInFileManager(store.config.exportDir)
+  if (result.status === 'error') {
+    console.error(result.error)
+  }
+}
+
+/// 默认目录名和 src-tauri/src/config.rs 里 Config::default 保持一致
+const DEFAULT_EXPORT_DIR_NAME = '漫画导出'
+
+/// 把导出目录恢复成默认位置（只改路径，磁盘上的文件不动）
+async function resetExportDir() {
+  if (store.config === undefined) {
+    return
+  }
+
+  const appDataDirPath = await appDataDir()
+  store.config.exportDir = await path.join(appDataDirPath, DEFAULT_EXPORT_DIR_NAME)
+  message.success('导出目录已恢复默认，已经导出的文件不会被移动')
+}
 
 const exportSkipModeOptions = [
   { label: '不跳过，每次都重新导出', value: 'None' },
@@ -18,6 +74,35 @@ const exportSkipModeOptions = [
 
 <template>
   <div v-if="store.config !== undefined" class="flex flex-col">
+    <div class="mt-2 flex items-center gap-2">
+      <span class="font-bold">导出目录</span>
+      <n-button
+        class="ml-auto shrink-0"
+        size="tiny"
+        quaternary
+        title="恢复成默认的导出目录（只改路径，已导出的文件不移动）"
+        @click="resetExportDir">
+        恢复默认
+      </n-button>
+    </div>
+    <div class="mt-1 flex items-center gap-1">
+      <!-- 点这一条就是改目录 -->
+      <n-input
+        class="flex-1 min-w-0 cursor-pointer"
+        :value="store.config.exportDir"
+        size="small"
+        readonly
+        title="点击选择导出目录"
+        @click="selectExportDir" />
+      <n-button class="shrink-0" size="small" title="在资源管理器里打开" @click="showExportDirInFileManager">
+        <template #icon>
+          <n-icon size="18">
+            <PhFolderOpen />
+          </n-icon>
+        </template>
+      </n-button>
+    </div>
+
     <div class="flex gap-1 items-center">
       <n-input-group class="w-70">
         <n-input-group-label size="small">创建pdf并发数</n-input-group-label>

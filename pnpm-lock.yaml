@@ -17,36 +17,21 @@ importers:
       '@tauri-apps/plugin-dialog':
         specifier: 2.0.0-rc.1
         version: 2.0.0-rc.1
-      '@tauri-apps/plugin-shell':
-        specifier: '>=2.0.0-rc.0'
-        version: 2.0.0-rc.1
       '@viselect/vue':
         specifier: ^3.9.0
         version: 3.9.0(vue@3.5.13(typescript@5.6.2))
-      '@vitejs/plugin-vue-jsx':
-        specifier: ^4.1.2
-        version: 4.1.2(vite@5.4.8)(vue@3.5.13(typescript@5.6.2))
       naive-ui:
         specifier: ^2.40.1
         version: 2.40.1(vue@3.5.13(typescript@5.6.2))
       pinia:
         specifier: ^3.0.1
         version: 3.0.1(typescript@5.6.2)(vue@3.5.13(typescript@5.6.2))
-      prettier:
-        specifier: ^3.4.2
-        version: 3.4.2
-      unocss:
-        specifier: ^0.63.0
-        version: 0.63.0(postcss@8.5.3)(rollup@4.22.5)(vite@5.4.8)
       virtua:
         specifier: ^0.48.6
         version: 0.48.8(vue@3.5.13(typescript@5.6.2))
       vue:
         specifier: ^3.5.13
         version: 3.5.13(typescript@5.6.2)
-      z-vue-scan:
-        specifier: ^0.0.37
-        version: 0.0.37(vue@3.5.13(typescript@5.6.2))
     devDependencies:
       '@eslint/js':
         specifier: ^9.18.0
@@ -57,6 +42,9 @@ importers:
       '@vitejs/plugin-vue':
         specifier: ^5.0.5
         version: 5.1.4(vite@5.4.8)(vue@3.5.13(typescript@5.6.2))
+      '@vitejs/plugin-vue-jsx':
+        specifier: ^4.1.2
+        version: 4.1.2(vite@5.4.8)(vue@3.5.13(typescript@5.6.2))
       eslint:
         specifier: ^9.18.0
         version: 9.18.0(jiti@2.0.0)
@@ -66,12 +54,18 @@ importers:
       globals:
         specifier: ^15.14.0
         version: 15.14.0
+      prettier:
+        specifier: ^3.4.2
+        version: 3.4.2
       typescript:
         specifier: ^5.2.2
         version: 5.6.2
       typescript-eslint:
         specifier: ^8.21.0
         version: 8.21.0(eslint@9.18.0(jiti@2.0.0))(typescript@5.6.2)
+      unocss:
+        specifier: ^0.63.0
+        version: 0.63.0(postcss@8.5.3)(rollup@4.22.5)(vite@5.4.8)
       vite:
         specifier: ^5.3.1
         version: 5.4.8
@@ -81,6 +75,9 @@ importers:
       vue-tsc:
         specifier: ^2.0.22
         version: 2.1.6(typescript@5.6.2)
+      z-vue-scan:
+        specifier: ^0.0.37
+        version: 0.0.37(vue@3.5.13(typescript@5.6.2))
 
 packages:
 
@@ -819,9 +816,6 @@ packages:
 
   '@tauri-apps/plugin-dialog@2.0.0-rc.1':
     resolution: {integrity: sha512-H28gh6BfZtjflHQ+HrmWwunDriBI3AQLAKnMs50GA6zeNUULqbQr7VXbAAKeJL/0CmWcecID4PKXVoSlaWRhEg==}
-
-  '@tauri-apps/plugin-shell@2.0.0-rc.1':
-    resolution: {integrity: sha512-JtNROc0rqEwN/g93ig5pK4cl1vUo2yn+osCpY9de64cy/d9hRzof7AuYOgvt/Xcd5VPQmlgo2AGvUh5sQRSR1A==}
 
   '@types/estree@1.0.6':
     resolution: {integrity: sha512-AYnb1nQyY49te+VRAVgmzfcgjYS91mY5P0TKUDCLEM+gNnA+3T6rWITXRLYCpahpqSQbN5cE+gHpnPyXjHWxcw==}
@@ -2721,10 +2715,6 @@ snapshots:
       '@tauri-apps/cli-win32-x64-msvc': 2.0.0-rc.17
 
   '@tauri-apps/plugin-dialog@2.0.0-rc.1':
-    dependencies:
-      '@tauri-apps/api': 2.0.0-rc.6
-
-  '@tauri-apps/plugin-shell@2.0.0-rc.1':
     dependencies:
       '@tauri-apps/api': 2.0.0-rc.6
 

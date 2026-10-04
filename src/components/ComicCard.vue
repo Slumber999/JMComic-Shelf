@@ -88,7 +88,7 @@ async function startDownload() {
 
 async function startExportCbz() {
   // 让底部抽屉切到「导出进度」，方便看进度
-  store.showProgressesTab('export')
+  store.showProgressesTab('uncompleted')
 
   const result = await commands.exportCbzWithoutDownload([props.comicId])
   if (result.status === 'error') {

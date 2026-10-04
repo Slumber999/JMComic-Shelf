@@ -1,5 +1,12 @@
 import { defineStore } from 'pinia'
-import { ComicLayout, CurrentTabName, GridSize, ProgressData, ProgressesPaneTabName } from './types.ts'
+import {
+  ComicLayout,
+  CurrentTabName,
+  ExportProgressData,
+  GridSize,
+  ProgressData,
+  ProgressesPaneTabName,
+} from './types.ts'
 import { GRID_ITEM_WIDTHS, resizeMainWindowForGridSize } from './comicGrid.ts'
 import { CategoryResp, Comic, commands, Config, GetFavoriteResult, GetUserProfileRespData, GetWeeklyResult, LocalLibrarySource, SearchResult } from './bindings.ts'
 
@@ -24,6 +31,8 @@ export const useStore = defineStore('store', () => {
   /// 待搜索的关键词：别的页面点作者名时写进来，搜索页看到就去搜
   const pendingSearch = ref<string>()
   const progresses = ref<Map<number, ProgressData>>(new Map())
+  /// 导出进度：和下载进度并排放在「未完成 / 已完成」两个页签里
+  const exportProgresses = ref<Map<string, ExportProgressData>>(new Map())
   const getFavoriteResult = ref<GetFavoriteResult>()
   const searchResult = ref<SearchResult>()
   const progressesPaneTabName = ref<ProgressesPaneTabName>('uncompleted')
@@ -162,6 +171,7 @@ export const useStore = defineStore('store', () => {
     pendingSearch,
     searchByKeyword,
     progresses,
+    exportProgresses,
     getFavoriteResult,
     searchResult,
     progressesPaneTabName,

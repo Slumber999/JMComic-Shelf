@@ -5,9 +5,6 @@
 
 
 export const commands = {
-async greet(name: string) : Promise<string> {
-    return await TAURI_INVOKE("greet", { name });
-},
 async getConfig() : Promise<Config> {
     return await TAURI_INVOKE("get_config");
 },
@@ -288,13 +285,6 @@ async closeReader() : Promise<void> {
  */
 async getLocalComics(source: LocalLibrarySource) : Promise<Comic[]> {
     return await TAURI_INVOKE("get_local_comics", { source });
-},
-/**
- * 本地库存的标签统计（标签云用）
- * - 只回「标签 + 次数」，前端不用把整库漫画都拉下来
- */
-async getLocalTags(source: LocalLibrarySource) : Promise<LocalTag[]> {
-    return await TAURI_INVOKE("get_local_tags", { source });
 },
 /**
  * 标签云：下载目录 + 导出目录共用的一份标签统计

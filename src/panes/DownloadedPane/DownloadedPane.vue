@@ -2,7 +2,6 @@
 import { Comic, LocalTag, commands } from '../../bindings.ts'
 import { computed, nextTick, ref, watch, watchEffect } from 'vue'
 import DownloadedComicCard from './components/DownloadedComicCard.vue'
-import { open } from '@tauri-apps/plugin-dialog'
 import { PhFolderOpen } from '@phosphor-icons/vue'
 import { useStore } from '../../store.ts'
 import { useGridColumns } from '../../comicGrid.ts'
@@ -16,6 +15,7 @@ import {
   NInputGroup,
   NInputGroupLabel,
   NPagination,
+  NPopover,
   NRadioButton,
   NRadioGroup,
   NTag,
@@ -164,24 +164,20 @@ watch(
   },
 )
 
-async function selectExportDir() {
+/// 当前来源对应的目录：只读展示，要改去设置页改
+const currentDir = computed(() => {
   if (store.config === undefined) {
+    return ''
+  }
+  return fromExportDir.value ? store.config.exportDir : store.config.downloadDir
+})
+
+async function showCurrentDirInFileManager() {
+  const dir = currentDir.value
+  if (dir === '') {
     return
   }
-
-  const selectedDirPath = await open({ directory: true })
-  if (selectedDirPath === null) {
-    return
-  }
-
-  store.config.exportDir = selectedDirPath
-}
-
-async function showExportDirInFileManager() {
-  if (store.config === undefined) {
-    return
-  }
-  const result = await commands.showPathInFileManager(store.config.exportDir)
+  const result = await commands.showPathInFileManager(dir)
   if (result.status === 'error') {
     console.error(result.error)
   }
@@ -233,7 +229,7 @@ async function exportCbz() {
     return
   }
 
-  store.showProgressesTab('export')
+  store.showProgressesTab('uncompleted')
   const comics = currentPageComics.value.filter((comic) => checkedIds.value.has(comic.id))
   for (const comic of comics) {
     const result = await commands.exportCbz(comic)
@@ -249,7 +245,7 @@ async function exportPdf() {
     return
   }
 
-  store.showProgressesTab('export')
+  store.showProgressesTab('uncompleted')
   const comics = currentPageComics.value.filter((comic) => checkedIds.value.has(comic.id))
   for (const comic of comics) {
     const result = await commands.exportPdf(comic)
@@ -328,9 +324,10 @@ function useDropdown() {
         <n-radio-button value="ExportDir">导出目录</n-radio-button>
       </n-radio-group>
       <n-input-group>
-        <n-input-group-label size="small">导出目录</n-input-group-label>
-        <n-input v-model:value="store.config.exportDir" size="small" readonly @click="selectExportDir" />
-        <n-button class="w-10" size="small" @click="showExportDirInFileManager">
+        <n-input-group-label size="small">{{ fromExportDir ? '导出目录' : '下载目录' }}</n-input-group-label>
+        <!-- 只读展示：改目录请去设置页 -->
+        <n-input :value="currentDir" size="small" readonly />
+        <n-button class="w-10" size="small" @click="showCurrentDirInFileManager">
           <template #icon>
             <n-icon size="20">
               <PhFolderOpen />
@@ -341,37 +338,52 @@ function useDropdown() {
       <update-downloaded-comics-button v-if="!fromExportDir" />
       <update-exported-comics-button v-else />
     </div>
-    <!-- 标签云：聚合本地库存的标签，点标签筛选 -->
+    <!-- 标签云：悬浮窗口，不占列表高度；点标签累加筛选 -->
     <div class="flex gap-2 items-center px-2 pt-1 select-none">
       <span class="text-xs text-gray-500">标签云来自下载目录 + 导出目录</span>
-      <n-button class="ml-auto" size="small" quaternary @click="tagsExpanded = !tagsExpanded">
-        <template #icon>
-          <n-icon>
-            <PhTag />
-          </n-icon>
+      <n-popover
+        v-model:show="tagsExpanded"
+        trigger="click"
+        placement="bottom-end"
+        :width="440"
+        raw>
+        <template #trigger>
+          <n-button class="ml-auto" size="small" quaternary :disabled="tagStats.length === 0">
+            <template #icon>
+              <n-icon>
+                <PhTag />
+              </n-icon>
+            </template>
+            标签云 ({{ tagStats.length }})
+          </n-button>
         </template>
-        标签云 ({{ tagStats.length }})
-      </n-button>
-    </div>
-    <div
-      v-if="tagsExpanded && tagStats.length > 0"
-      class="flex flex-wrap gap-1 items-center px-2 pb-1 max-h-24 overflow-auto shrink-0">
-      <n-tag
-        v-for="tag in visibleTags"
-        :key="tag.name"
-        size="small"
-        checkable
-        :checked="selectedTags.includes(tag.name)"
-        @update:checked="toggleTag(tag.name)">
-        {{ tag.name }} {{ tag.count }}
-      </n-tag>
-      <n-button v-if="tagStats.length > TAG_PREVIEW_COUNT" size="small" quaternary @click="tagsShowAll = !tagsShowAll">
-        {{ tagsShowAll ? '收起' : `展开全部 ${tagStats.length} 个` }}
-      </n-button>
-      <template v-if="selectedTags.length > 0">
-        <span class="text-xs text-gray-500">筛选出 {{ filteredComics.length }} 本</span>
-        <n-button size="small" quaternary type="error" @click="selectedTags = []">清空筛选</n-button>
-      </template>
+        <div class="flex max-h-[60vh] flex-col gap-2 overflow-auto rounded-md bg-white p-3 shadow-lg">
+          <div class="flex flex-wrap items-center gap-1">
+            <n-tag
+              v-for="tag in visibleTags"
+              :key="tag.name"
+              size="small"
+              checkable
+              :checked="selectedTags.includes(tag.name)"
+              @update:checked="toggleTag(tag.name)">
+              {{ tag.name }} {{ tag.count }}
+            </n-tag>
+          </div>
+          <div class="flex items-center gap-2">
+            <n-button
+              v-if="tagStats.length > TAG_PREVIEW_COUNT"
+              size="small"
+              quaternary
+              @click="tagsShowAll = !tagsShowAll">
+              {{ tagsShowAll ? '收起' : `展开全部 ${tagStats.length} 个` }}
+            </n-button>
+            <template v-if="selectedTags.length > 0">
+              <span class="text-xs text-gray-500">筛选出 {{ filteredComics.length }} 本</span>
+              <n-button size="small" quaternary type="error" @click="selectedTags = []">清空筛选</n-button>
+            </template>
+          </div>
+        </div>
+      </n-popover>
     </div>
     <div class="flex gap-2 items-center px-2 select-none">
       <div v-if="!fromExportDir" class="animate-pulse text-sm text-red flex flex-col">

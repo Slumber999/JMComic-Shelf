@@ -38,12 +38,6 @@ use crate::{export, logger, utils};
 
 #[tauri::command]
 #[specta::specta]
-pub fn greet(name: &str) -> String {
-    format!("Hello, {}! You've been greeted from Rust!", name)
-}
-
-#[tauri::command]
-#[specta::specta]
 #[allow(clippy::needless_pass_by_value)]
 #[instrument(level = "error", skip_all)]
 pub fn get_config(app: AppHandle) -> Config {
@@ -231,15 +225,6 @@ pub async fn probe_image_lines(app: AppHandle) -> CommandResult<Vec<ImageLinePro
     results.sort_by_key(|item| (!item.ok, item.latency_ms.unwrap_or(u64::MAX)));
 
     Ok(results)
-}
-
-/// 本地库存的标签统计（标签云用）
-/// - 只回「标签 + 次数」，前端不用把整库漫画都拉下来
-#[tauri::command]
-#[specta::specta]
-#[instrument(level = "error", skip_all)]
-pub fn get_local_tags(app: AppHandle, source: LocalLibrarySource) -> Vec<local_index::LocalTag> {
-    local_index::local_tags(&app, source)
 }
 
 /// 标签云：下载目录 + 导出目录共用的一份标签统计

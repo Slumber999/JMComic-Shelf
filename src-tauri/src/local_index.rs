@@ -18,7 +18,6 @@ use specta::Type;
 use tauri::AppHandle;
 use walkdir::WalkDir;
 
-use crate::config::LocalLibrarySource;
 use crate::extensions::{AppHandleExt, WalkDirEntryExt};
 
 /// 快照最长有效期：即使某个改动点漏了 invalidate，最多 10 秒后也会自愈
@@ -47,8 +46,6 @@ struct Snapshot {
     dir_by_id: HashMap<i64, (PathBuf, String)>,
     /// 导出目录里同样建一份：空间统计要按漫画归属算占用
     export_dir_by_id: HashMap<i64, (PathBuf, String)>,
-    download_tags: Vec<LocalTag>,
-    export_tags: Vec<LocalTag>,
     /// 下载目录 + 导出目录合并去重后的标签：标签云两个目录共用这一份
     all_tags: Vec<LocalTag>,
 }
@@ -139,8 +136,6 @@ fn build_snapshot(download_dir: &Path, export_dir: &Path) -> Snapshot {
         download_metadata,
         dir_by_id,
         export_dir_by_id,
-        download_tags: count_tags(download_tags),
-        export_tags: count_tags(export_tags),
         all_tags: count_tags(all_tags),
     }
 }
@@ -228,15 +223,6 @@ pub fn export_comic_dir_and_name(app: &AppHandle, comic_id: i64) -> Option<(Path
 /// 导出目录里的漫画ID集合，用来判断"这本是否已经导出过"
 pub fn exported_id_set(app: &AppHandle) -> HashSet<i64> {
     snapshot(app).export_dir_by_id.keys().copied().collect()
-}
-
-/// 本地库存里的标签统计
-pub fn local_tags(app: &AppHandle, source: LocalLibrarySource) -> Vec<LocalTag> {
-    let snapshot = snapshot(app);
-    match source {
-        LocalLibrarySource::DownloadDir => snapshot.download_tags.clone(),
-        LocalLibrarySource::ExportDir => snapshot.export_tags.clone(),
-    }
 }
 
 /// 下载目录 + 导出目录共用的一份标签统计（标签云用）

@@ -59,7 +59,11 @@ function onScaleChange(value: number) {
 
     <div class="flex items-center gap-2 mt-3">
       <span class="font-bold">封面悬停预览</span>
-      <n-switch :value="store.coverPreview" @update:value="onCoverPreviewChange" />
+      <!-- 悬停预览只作用于列表模式 -->
+      <n-switch
+        :value="store.coverPreview"
+        :disabled="store.comicLayout === 'grid'"
+        @update:value="onCoverPreviewChange" />
     </div>
 
     <div class="flex items-center mt-3">
@@ -69,7 +73,7 @@ function onScaleChange(value: number) {
         :min="COVER_PREVIEW_SCALE_MIN"
         :max="COVER_PREVIEW_SCALE_MAX"
         :step="0.1"
-        :disabled="!store.coverPreview"
+        :disabled="store.comicLayout === 'grid' || !store.coverPreview"
         :value="store.coverPreviewScale"
         @update:value="onScaleChange" />
       <span class="shrink-0">{{ store.coverPreviewScale.toFixed(1) }} 倍</span>

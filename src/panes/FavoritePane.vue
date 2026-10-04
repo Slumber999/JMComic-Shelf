@@ -252,7 +252,7 @@ async function exportCbz() {
 
   const comicIds = [...selectedIds.value]
   // 让右侧面板切到「导出」，方便看进度
-  store.showProgressesTab('export')
+  store.showProgressesTab('uncompleted')
   busy.value = true
   const result = await commands.exportCbzWithoutDownload(comicIds)
   busy.value = false

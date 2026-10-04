@@ -1,13 +1,11 @@
 <script setup lang="ts">
 import { onMounted, onUnmounted, ref } from 'vue'
 import { commands, events } from '../../bindings.ts'
-import { open } from '@tauri-apps/plugin-dialog'
 import { PhFolderOpen } from '@phosphor-icons/vue'
 import { useStore } from '../../store.ts'
-import UncompletedProgresses from './components/UncompletedProgresses.vue'
-import CompletedProgresses from './components/CompletedProgresses.vue'
+import ProgressList from './components/ProgressList.vue'
 import { ProgressData } from '../../types.ts'
-import ExportProgresses from './components/ExportProgresses.vue'
+import { startExportProgressListeners } from '../../exportProgress.ts'
 import { NButton, NIcon, NInput, NInputGroup, NInputGroupLabel, NTabPane, NTabs } from 'naive-ui'
 
 const store = useStore()
@@ -15,7 +13,11 @@ const store = useStore()
 const downloadSpeed = ref<string>('')
 
 let unListenDownloadEvent: (() => void) | undefined
+/// 导出进度的事件监听：提到这里统一注册，「未完成 / 已完成」两个页签共用
+let stopExportProgressListeners: (() => void) | undefined
 onMounted(async () => {
+  stopExportProgressListeners = startExportProgressListeners()
+
   await events.downloadEvent
     .listen(async ({ payload: { event, data } }) => {
       if (event === 'Speed') {
@@ -85,6 +87,7 @@ onMounted(async () => {
 
 onUnmounted(() => {
   unListenDownloadEvent?.()
+  stopExportProgressListeners?.()
 })
 
 async function syncPickedComic() {
@@ -157,18 +160,6 @@ async function showDownloadDirInFileManager() {
   }
 }
 
-async function selectDownloadDir() {
-  if (store.config === undefined) {
-    return
-  }
-
-  const selectedDirPath = await open({ directory: true })
-  if (selectedDirPath === null) {
-    return
-  }
-
-  store.config.downloadDir = selectedDirPath
-}
 </script>
 
 <template>
@@ -176,7 +167,8 @@ async function selectDownloadDir() {
     <div class="flex gap-1 box-border px-2 pt-2.5">
       <n-input-group class="">
         <n-input-group-label size="small">下载目录</n-input-group-label>
-        <n-input v-model:value="store.config.downloadDir" size="small" readonly @click="selectDownloadDir" />
+        <!-- 只读展示：改目录请去设置页 -->
+        <n-input :value="store.config.downloadDir" size="small" readonly />
         <n-button class="w-10" size="small" @click="showDownloadDirInFileManager">
           <template #icon>
             <n-icon size="20">
@@ -188,13 +180,10 @@ async function selectDownloadDir() {
     </div>
     <n-tabs class="h-full overflow-auto" v-model:value="store.progressesPaneTabName" type="line" size="small">
       <n-tab-pane class="h-full p-0! overflow-auto" name="uncompleted" tab="未完成">
-        <UncompletedProgresses />
+        <ProgressList :finished="false" />
       </n-tab-pane>
       <n-tab-pane class="h-full p-0! overflow-auto" name="completed" tab="已完成">
-        <CompletedProgresses />
-      </n-tab-pane>
-      <n-tab-pane class="h-full p-0! overflow-auto" name="export" tab="导出进度" display-directive="show">
-        <ExportProgresses />
+        <ProgressList :finished="true" />
       </n-tab-pane>
 
       <template #suffix>

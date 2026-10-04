@@ -66,7 +66,7 @@ function confirmWholeComic(run: () => Promise<void>) {
 }
 
 async function startExportCbz() {
-  store.showProgressesTab('export')
+  store.showProgressesTab('uncompleted')
   const result = await commands.exportCbz(props.comic)
   if (result.status === 'error') {
     message.error(result.error.message, { duration: 8000 })
@@ -74,7 +74,7 @@ async function startExportCbz() {
 }
 
 async function startExportPdf() {
-  store.showProgressesTab('export')
+  store.showProgressesTab('uncompleted')
   const result = await commands.exportPdf(props.comic)
   if (result.status === 'error') {
     message.error(result.error.message, { duration: 8000 })
@@ -179,20 +179,23 @@ function onCoverClick(event: MouseEvent) {
           <PhFolderOpen :size="20" />
         </IconButton>
 
-        <template v-if="!fromExportDir">
-          <IconButton class="ml-auto" title="导出cbz" @click="(event) => runAction(event, exportCbz)">
-            <PhFileZip :size="20" />
-          </IconButton>
+        <!-- 其余按钮整组靠右，和搜索 / 收藏页的卡片一致 -->
+        <div class="ml-auto flex gap-col-2">
+          <template v-if="!fromExportDir">
+            <IconButton title="导出cbz" @click="(event) => runAction(event, exportCbz)">
+              <PhFileZip :size="20" />
+            </IconButton>
 
-          <IconButton title="导出pdf" @click="(event) => runAction(event, exportPdf)">
-            <PhFilePdf :size="20" />
-          </IconButton>
-        </template>
+            <IconButton title="导出pdf" @click="(event) => runAction(event, exportPdf)">
+              <PhFilePdf :size="20" />
+            </IconButton>
+          </template>
 
-        <!-- 右下角：直接阅读（下载目录读图片，导出目录读cbz） -->
-        <IconButton class="ml-auto" title="阅读" @click="(event) => runAction(event, () => emit('read', comic))">
-          <PhBookOpen :size="20" />
-        </IconButton>
+          <!-- 右下角：直接阅读（下载目录读图片，导出目录读cbz） -->
+          <IconButton title="阅读" @click="(event) => runAction(event, () => emit('read', comic))">
+            <PhBookOpen :size="20" />
+          </IconButton>
+        </div>
       </div>
     </div>
   </div>

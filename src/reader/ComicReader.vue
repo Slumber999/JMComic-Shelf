@@ -22,7 +22,6 @@ const pageIndex = ref<number>(0)
 // 默认用上下滑动
 const readingMode = ref<ReadingMode>('scroll')
 const opening = ref<boolean>(false)
-const imageLoading = ref<boolean>(false)
 const preparing = ref<boolean>(false)
 /// 阅读器的收藏按钮只用来取初始状态，后续状态由 FavoriteButton 自己维护
 const isFavorite = ref<boolean>(false)
@@ -95,7 +94,6 @@ watch(
 
 async function open() {
   opening.value = true
-  imageLoading.value = true
   closed = false
   // 每次打开都用上下滑动
   readingMode.value = 'scroll'
@@ -216,7 +214,6 @@ function goToPage(index: number) {
   }
 
   pageIndex.value = next
-  imageLoading.value = true
   preloadAround()
 
   nextTick(() => {
@@ -232,7 +229,6 @@ async function goToChapter(index: number) {
 
   chapterIndex.value = Math.min(Math.max(index, 0), count - 1)
   pageIndex.value = 0
-  imageLoading.value = true
 
   await ensureChapterReady(chapterIndex.value)
 
@@ -412,10 +408,6 @@ function onKeydown(event: KeyboardEvent) {
   event.preventDefault()
 }
 
-function onImageLoad() {
-  imageLoading.value = false
-}
-
 /// 切换阅读方式：窗口宽度不变（进入阅读时已经收到下限）
 function setReadingMode(mode: ReadingMode) {
   readingMode.value = mode
@@ -531,8 +523,7 @@ onBeforeUnmount(() => {
           :src="pageUrls[pageIndex]"
           class="block max-h-full max-w-full object-contain"
           :draggable="false"
-          decoding="async"
-          @load="onImageLoad" />
+          decoding="async" />
         <!-- 左右点击区 -->
         <div class="absolute inset-y-0 left-0 w-1/4 cursor-w-resize" @click="prevPage" />
         <div class="absolute inset-y-0 right-0 w-1/4 cursor-e-resize" @click="nextPage" />
