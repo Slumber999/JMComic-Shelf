@@ -14,6 +14,7 @@ import { useStore } from './store.ts'
 import { getCurrentWindow } from '@tauri-apps/api/window'
 import LogDialog from './dialogs/LogDialog.vue'
 import RankingPane from './panes/RankingPane.vue'
+import CommentsPane from './panes/CommentsPane.vue'
 import ComicReader from './reader/ComicReader.vue'
 import DownloadStatusBar from './components/DownloadStatusBar.vue'
 import CoverPreview from './components/CoverPreview.vue'
@@ -242,6 +243,9 @@ onMounted(async () => {
       </n-tab-pane>
       <n-tab-pane class="h-full overflow-auto p-0!" name="weekly" tab="排行榜" display-directive="show">
         <RankingPane />
+      </n-tab-pane>
+      <n-tab-pane class="h-full overflow-auto p-0!" name="comments" tab="全站评论" display-directive="show">
+        <CommentsPane />
       </n-tab-pane>
       <n-tab-pane class="h-full overflow-auto p-0!" name="downloaded" tab="本地库存" display-directive="show">
         <DownloadedPane />

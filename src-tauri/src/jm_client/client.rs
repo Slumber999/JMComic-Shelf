@@ -348,6 +348,93 @@ impl JmClient {
         Ok(ranking_resp_data)
     }
 
+    /// 漫画评论：aid 传漫画 id 就是单本评论，不传就是全站最新评论
+    /// （官方 App 接口 /forum，只读；发评论走的是网页端接口，App 接口不支持）
+    ///
+    /// 官方接口每页固定 10 条、且不接受页大小参数，这里并发拉 3 页合成 30 条一页
+    #[instrument(level = "error", skip_all, fields(aid = ?aid, page = page))]
+    pub async fn get_comments(&self, aid: Option<i64>, page: i64) -> eyre::Result<CommentPage> {
+        const API_PAGE_SIZE: i64 = 10;
+        const PAGES_PER_REQUEST: i64 = COMMENT_PAGE_SIZE / API_PAGE_SIZE;
+
+        let first_api_page = (page.max(1) - 1) * PAGES_PER_REQUEST + 1;
+
+        let (first, second, third) = tokio::join!(
+            self.fetch_comment_api_page(aid, first_api_page),
+            self.fetch_comment_api_page(aid, first_api_page + 1),
+            self.fetch_comment_api_page(aid, first_api_page + 2),
+        );
+
+        // 第一页必须成功（total 也取自它）
+        let mut head = first?;
+        let total = head.total;
+        let mut list = std::mem::take(&mut head.list);
+
+        // 注意：请求超出最后一页时，官方会把同一页再返回一次，
+        // 所以这里按 CID 去重（评论很少时，第 2、3 个官方页就是第 1 页的重复）
+        let mut seen: std::collections::HashSet<String> =
+            list.iter().map(|comment| comment.cid.clone()).collect();
+        for extra in [second, third] {
+            let Ok(mut extra_page) = extra else {
+                continue;
+            };
+            for comment in extra_page.list.drain(..) {
+                if seen.insert(comment.cid.clone()) {
+                    list.push(comment);
+                }
+            }
+        }
+
+        // 一页最多 30 条
+        list.truncate(COMMENT_PAGE_SIZE as usize);
+
+        Ok(CommentPage { list, total })
+    }
+
+    /// 拉官方的一页评论（固定 10 条）
+    #[instrument(level = "error", skip_all, fields(aid = ?aid, api_page = api_page))]
+    async fn fetch_comment_api_page(
+        &self,
+        aid: Option<i64>,
+        api_page: i64,
+    ) -> eyre::Result<CommentPage> {
+        let mut query = serde_json::Map::new();
+        query.insert("mode".to_string(), serde_json::Value::String("all".to_string()));
+        query.insert("page".to_string(), serde_json::Value::from(api_page));
+        if let Some(aid) = aid {
+            query.insert("aid".to_string(), serde_json::Value::from(aid));
+        }
+
+        let ts = SystemTime::now().duration_since(UNIX_EPOCH)?.as_secs();
+        let http_resp = self
+            .jm_get(ApiPath::GetComments, Some(serde_json::Value::Object(query)), ts)
+            .await?;
+
+        let status = http_resp.status();
+        let body = http_resp.text().await?;
+        if status != reqwest::StatusCode::OK {
+            return Err(eyre!("获取评论失败，预料之外的状态码({status}): {body}"));
+        }
+
+        let jm_resp =
+            serde_json::from_str::<JmResp>(&body).wrap_err(format!("将body解析为JmResp失败: {body}"))?;
+        if jm_resp.code != 200 {
+            return Err(eyre!("获取评论失败，预料之外的code: {jm_resp:?}"));
+        }
+
+        let data = jm_resp
+            .data
+            .as_str()
+            .ok_or_eyre(format!("获取评论失败，data字段不是字符串: {jm_resp:?}"))?;
+        let data = decrypt_data(ts, data)?;
+
+        let mut comment_page = serde_json::from_str::<CommentPage>(&data)
+            .wrap_err(format!("将解密后的数据解析为CommentPage失败: {data}"))?;
+        // 正文是 HTML，统一转成纯文本
+        comment_page.strip_html();
+        Ok(comment_page)
+    }
+
     #[instrument(level = "error", skip_all, fields(aid = aid))]
     pub async fn get_comic(&self, aid: i64) -> eyre::Result<GetComicRespData> {
         let ts = SystemTime::now().duration_since(UNIX_EPOCH)?.as_secs();

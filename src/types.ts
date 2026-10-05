@@ -1,6 +1,6 @@
 import { DownloadEvent } from './bindings.ts'
 
-export type CurrentTabName = 'search' | 'favorite' | 'weekly' | 'downloaded' | 'chapter'
+export type CurrentTabName = 'search' | 'favorite' | 'weekly' | 'comments' | 'downloaded' | 'chapter'
 export type ProgressesPaneTabName = 'uncompleted' | 'completed'
 export type ComicLayout = 'list' | 'grid'
 /// 网格里漫画的大小档位

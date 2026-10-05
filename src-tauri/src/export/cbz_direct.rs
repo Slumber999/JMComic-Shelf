@@ -1,4 +1,5 @@
 use std::{
+    collections::HashSet,
     io::Write,
     path::Path,
     sync::{
@@ -112,7 +113,7 @@ pub async fn export_cbz_without_download(
             comic_export_dir,
         );
 
-        if let Err(err) = export_comic_cbz(&app, &comic, img_concurrency, &task, skip_mode).await {
+        if let Err(err) = export_comic_cbz(&app, &comic, img_concurrency, &task, skip_mode, None).await {
             let err_title = format!("漫画`{}`导出cbz失败", comic.name);
             tracing::error!(err_title, message = format!("{err:?}"));
             task.set_state(ExportTaskState::Failed);
@@ -148,7 +149,7 @@ pub async fn export_missing_chapters(app: &AppHandle, comic: &Comic) -> eyre::Re
         comic_export_dir,
     );
 
-    export_comic_cbz(app, comic, img_concurrency, &task, ExportSkipMode::SkipExisting).await?;
+    export_comic_cbz(app, comic, img_concurrency, &task, ExportSkipMode::SkipExisting, None).await?;
     Ok(true)
 }
 
@@ -171,7 +172,69 @@ pub async fn resume_comic_cbz(
     task: &Arc<ExportTask>,
 ) -> eyre::Result<()> {
     let img_concurrency = app.get_config().read().img_concurrency;
-    export_comic_cbz(app, comic, img_concurrency, task, ExportSkipMode::SkipExisting).await
+    export_comic_cbz(app, comic, img_concurrency, task, ExportSkipMode::SkipExisting, None).await
+}
+
+/// 直接导出指定章节的 cbz（免下载，不落下载目录）
+/// - 章节详情页导出未下载的章节走这里
+/// - 输出和整本直出一致：导出目录/{漫画名}/cbz/{章节标题}.cbz
+#[instrument(
+    level = "error",
+    skip_all,
+    fields(comic_id = comic.id, comic_title = comic.name, chapters = chapter_ids.len())
+)]
+pub async fn export_cbz_chapters_without_download(
+    app: AppHandle,
+    comic: Comic,
+    chapter_ids: Vec<i64>,
+) -> eyre::Result<()> {
+    let (img_concurrency, export_dir, skip_mode) = {
+        let config = app.get_config();
+        let config = config.read();
+        (
+            config.img_concurrency,
+            config.export_dir.clone(),
+            config.export_skip_mode,
+        )
+    };
+
+    let only_chapter_ids: HashSet<i64> = chapter_ids.into_iter().collect();
+    let total = u32::try_from(
+        comic
+            .chapter_infos
+            .iter()
+            .filter(|chapter| only_chapter_ids.contains(&chapter.chapter_id))
+            .count(),
+    )
+    .unwrap_or(u32::MAX);
+
+    let comic_export_dir = export_dir.join(utils::filename_filter(&comic.name));
+    let task = app.get_export_manager().create_task(
+        uuid::Uuid::new_v4().to_string(),
+        comic.id,
+        comic.name.clone(),
+        ExportTaskKind::CbzDirect,
+        total,
+        comic_export_dir,
+    );
+
+    if let Err(err) = export_comic_cbz(
+        &app,
+        &comic,
+        img_concurrency,
+        &task,
+        skip_mode,
+        Some(&only_chapter_ids),
+    )
+    .await
+    {
+        let err_title = format!("漫画{}导出指定章节cbz失败", comic.name);
+        tracing::error!(err_title, message = format!("{err:?}"));
+        task.set_state(ExportTaskState::Failed);
+        return Err(err);
+    }
+
+    Ok(())
 }
 
 #[instrument(
@@ -179,12 +242,14 @@ pub async fn resume_comic_cbz(
     skip_all,
     fields(comic_id = comic.id, comic_title = comic.name, chapters = comic.chapter_infos.len())
 )]
+/// only_chapter_ids 为 None 时导出整本，Some 时只导出这些章节
 async fn export_comic_cbz(
     app: &AppHandle,
     comic: &Comic,
     img_concurrency: usize,
     task: &Arc<ExportTask>,
     skip_mode: ExportSkipMode,
+    only_chapter_ids: Option<&HashSet<i64>>,
 ) -> eyre::Result<()> {
     let (export_dir, download_format) = {
         let config = app.get_config();
@@ -204,8 +269,15 @@ async fn export_comic_cbz(
     // 导出目录内容变了，本地库索引（本地标签云等）要重建
     crate::local_index::invalidate();
 
+    // 需要导出的章节（整本，或调用方指定的那些）
+    let chapters: Vec<&ChapterInfo> = comic
+        .chapter_infos
+        .iter()
+        .filter(|chapter| only_chapter_ids.is_none_or(|ids| ids.contains(&chapter.chapter_id)))
+        .collect();
+
     let uuid = task.uuid.clone();
-    let total = comic.chapter_infos.len();
+    let total = chapters.len();
     task.set_progress(0, u32::try_from(total).unwrap_or(u32::MAX));
     let _ = ExportCbzEvent::Start {
         uuid: uuid.clone(),
@@ -228,7 +300,7 @@ async fn export_comic_cbz(
 
     let sem = Arc::new(Semaphore::new(img_concurrency.max(1)));
 
-    for (index, chapter_info) in comic.chapter_infos.iter().enumerate() {
+    for (index, chapter_info) in chapters.into_iter().enumerate() {
         // 暂停/删除检查点：不再开始新的章节
         if task.is_paused() || task.is_deleted() {
             break;

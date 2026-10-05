@@ -111,6 +111,17 @@ async getComic(aid: number) : Promise<Result<Comic, CommandError>> {
     else return { status: "error", error: e  as any };
 }
 },
+/**
+ * 漫画评论（只读）：aid 传漫画 id 就是单本评论，不传就是全站最新评论
+ */
+async getComments(aid: number | null, page: number) : Promise<Result<CommentPage, CommandError>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("get_comments", { aid, page }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
 async getFavoriteFolder(folderId: number, page: number, sort: FavoriteSort) : Promise<Result<GetFavoriteResult, CommandError>> {
     try {
     return { status: "ok", data: await TAURI_INVOKE("get_favorite_folder", { folderId, page, sort }) };
@@ -306,6 +317,17 @@ async exportCbz(comic: Comic) : Promise<Result<null, CommandError>> {
 async exportCbzWithoutDownload(comicIds: number[]) : Promise<Result<null, CommandError>> {
     try {
     return { status: "ok", data: await TAURI_INVOKE("export_cbz_without_download", { comicIds }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+/**
+ * 章节详情页的「免下载直出」：只导出选中的章节，不先下载到下载目录
+ */
+async exportCbzChaptersWithoutDownload(comic: Comic, chapterIds: number[]) : Promise<Result<null, CommandError>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("export_cbz_chapters_without_download", { comic, chapterIds }) };
 } catch (e) {
     if(e instanceof Error) throw e;
     else return { status: "error", error: e  as any };
@@ -609,6 +631,42 @@ isExported: boolean; comicDownloadDir: string }
 export type ComicInSearch = { id: number; author: string; name: string; image: string; category: CategoryRespData; categorySub: CategorySubRespData; liked: boolean; isFavorite: boolean; updateAt: number; isDownloaded: boolean; comicDownloadDir: string }
 export type ComicInWeekly = { id: number; author: string; description: string; name: string; image: string; category: Category; category_sub: CategorySub; liked: boolean; is_favorite: boolean; update_at: number; is_downloaded: boolean; comic_download_dir: string }
 export type CommandError = { err_title: string; message: string }
+/**
+ * 一条漫画评论（官方 App 接口 /forum 的返回）
+ */
+export type Comment = { 
+/**
+ * 评论 id
+ */
+CID: string; 
+/**
+ * 所属漫画 id（全站评论靠它定位来源）
+ */
+AID?: string; username?: string; nickname?: string; 
+/**
+ * 正文：后端已去掉 HTML 标签，只留文字
+ */
+content?: string; likes?: string; 
+/**
+ * 形如 "Aug 30, 2026"
+ */
+addtime?: string; 
+/**
+ * 父评论 id，"0" 表示主评论
+ */
+parent_CID?: string; 
+/**
+ * "1" 表示剧透
+ */
+spoiler?: string; 
+/**
+ * 子评论（App 接口目前不返回，有就直接显示）
+ */
+replies?: Comment[] }
+/**
+ * 一页评论
+ */
+export type CommentPage = { list?: Comment[]; total?: number }
 export type Config = { username: string; password: string; downloadDir: string; exportDir: string; downloadFormat: DownloadFormat; dirFmt: string; proxyMode: ProxyMode; proxyHost: string; proxyPort: number; enableFileLogger: boolean; chapterConcurrency: number; chapterDownloadIntervalSec: number; imgConcurrency: number; imgDownloadIntervalSec: number; downloadAllFavoritesIntervalSec: number; updateDownloadedComicsIntervalSec: number; apiDomainMode: ApiDomainMode; customApiDomain: string; shouldDownloadCover: boolean; 
 /**
  * 阅读器是否拆分成独立窗口

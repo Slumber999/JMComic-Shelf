@@ -186,14 +186,13 @@ onMounted(async () => {
     </div>
 
     <div
-      v-if="currentView === 'ranking' && rankingResult !== undefined"
-      class="flex items-center justify-center gap-3 box-border p-2 pt-0">
+      v-if="currentView === 'ranking' && rankingResult !== undefined && rankingPageCount > 0"
+      class="flex items-center justify-center gap-3 box-border p-2 pt-0 mt-auto">
       <span class="text-xs text-gray-500">共 {{ rankingResult?.total ?? 0 }} 条</span>
       <n-pagination
-        v-if="rankingPageCount > 1"
-        v-model:page="rankingPage"
         :page-count="rankingPageCount"
-        size="small" />
+        :page="rankingPage"
+        @update:page="rankingPage = $event" />
     </div>
 
     <div

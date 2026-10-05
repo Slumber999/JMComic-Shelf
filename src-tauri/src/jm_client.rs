@@ -31,12 +31,15 @@ use crate::responses::{
     SearchResp, SearchRespData, ToggleFavoriteRespData,
 };
 use crate::types::{
-    CategoryNode, CategoryResp, FavoriteSort, ProxyMode, SearchSort, SubCategoryNode, TagBlock,
+    CategoryNode, CategoryResp, CommentPage, FavoriteSort, ProxyMode, SearchSort, SubCategoryNode, TagBlock,
 };
 use crate::utils;
 
 /// 默认图片线路：真正的线路选择交给 `lines` 模块，失败会自动换线路
 pub const IMAGE_DOMAIN: &str = "cdn-msp2.jmapiproxy2.cc";
+
+/// 评论一页多少条：官方接口每页固定 10 条，我们一次请求 3 页合并成 30 条
+pub const COMMENT_PAGE_SIZE: i64 = 30;
 
 const USER_AGENT: &str = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36";
 
@@ -131,6 +134,7 @@ enum ApiPath {
     GetWeekly,
     GetCategories,
     GetRanking,
+    GetComments,
     ManageFavoriteFolder,
 }
 
@@ -150,6 +154,7 @@ impl ApiPath {
             ApiPath::GetWeekly => "/week/filter",
             ApiPath::GetCategories => "/categories",
             ApiPath::GetRanking => "/categories/filter/",
+            ApiPath::GetComments => "/forum",
             ApiPath::ManageFavoriteFolder => "/favorite_folder",
         }
     }

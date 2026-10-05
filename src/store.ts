@@ -44,6 +44,8 @@ export const useStore = defineStore('store', () => {
     progressesPaneTabName.value = tab
     progressDrawerExpanded.value = true
   }
+  /// 「全站评论」看到第几页：记住它，跳去看漫画再回来能接着往下看
+  const commentsPage = ref<number>(1)
   const getWeeklyResult = ref<GetWeeklyResult>()
   const downloadedComics = ref<Comic[]>([])
   // 阅读器目标：传 comic = 本地优先；只传 comicId = 可以从网络读
@@ -177,6 +179,7 @@ export const useStore = defineStore('store', () => {
     progressesPaneTabName,
     progressDrawerExpanded,
     showProgressesTab,
+    commentsPage,
     getWeeklyResult,
     downloadedComics,
     readerTarget,

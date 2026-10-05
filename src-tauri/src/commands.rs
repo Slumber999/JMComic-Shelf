@@ -356,6 +356,23 @@ pub async fn get_ranking(
     Ok(ranking_result)
 }
 
+/// 漫画评论（只读）：aid 传漫画 id 就是单本评论，不传就是全站最新评论
+#[tauri::command]
+#[specta::specta]
+#[instrument(level = "error", skip_all, fields(aid = ?aid, page = page))]
+pub async fn get_comments(
+    app: AppHandle,
+    aid: Option<i64>,
+    page: i64,
+) -> CommandResult<crate::types::CommentPage> {
+    let jm_client = app.get_jm_client();
+
+    jm_client
+        .get_comments(aid, page)
+        .await
+        .map_err(|err| CommandError::from("获取评论失败", err))
+}
+
 #[tauri::command]
 #[specta::specta]
 #[instrument(level = "error", skip_all, fields(aid = aid))]
@@ -1069,7 +1086,7 @@ pub fn get_exported_comics(app: AppHandle) -> Vec<Comic> {
             }
         };
 
-        mark_cbz_exported_chapters(&mut comic, &comic_export_dir);
+        mark_exported_chapters(&mut comic, &comic_export_dir, false);
 
         // 指向导出目录，方便「打开目录」按钮；同时标记为未下载（只是导出过）
         comic.comic_download_dir = Some(comic_export_dir);
@@ -1097,24 +1114,50 @@ fn has_cbz_file(dir: &Path) -> bool {
         .any(|entry| entry.path().extension().is_some_and(|ext| ext.eq_ignore_ascii_case("cbz")))
 }
 
-/// 根据导出目录里已存在的 cbz 文件，标记对应章节的导出状态
+/// 根据导出目录里**真实存在**的 pdf / cbz 文件，重算每个章节的导出状态
+/// - 元数据里的标记可能是旧的（导出之后又把文件删了，标记不会自己消失）
+/// - reset=true：以文件为准（本地下载的漫画能拿到章节下载目录名，匹配可靠）
+/// - reset=false：只用文件**补上**标记、不清除（导出目录里的漫画拿不到下载目录名，
+///   文件名可能对不上，清掉会误伤）
 #[instrument(level = "error", skip_all, fields(comic_id = comic.id, comic_title = comic.name))]
-fn mark_cbz_exported_chapters(comic: &mut Comic, comic_export_dir: &Path) {
-    let cbz_dir = comic_export_dir.join("cbz");
-    let Ok(read_dir) = std::fs::read_dir(&cbz_dir) else {
-        return;
+fn mark_exported_chapters(comic: &mut Comic, comic_export_dir: &Path, reset: bool) {
+    let file_names = |sub_dir: &str, extension: &str| -> Vec<String> {
+        let Ok(read_dir) = std::fs::read_dir(comic_export_dir.join(sub_dir)) else {
+            return Vec::new();
+        };
+        read_dir
+            .filter_map(Result::ok)
+            .map(|entry| entry.file_name().to_string_lossy().to_string())
+            .filter(|name| name.to_lowercase().ends_with(extension))
+            .collect()
     };
 
-    let cbz_file_names: Vec<String> = read_dir
-        .filter_map(Result::ok)
-        .map(|entry| entry.file_name().to_string_lossy().to_string())
-        .filter(|name| name.to_lowercase().ends_with(".cbz"))
-        .collect();
+    let pdf_files = file_names(export::ExportFormat::Pdf.extension(), ".pdf");
+    let cbz_files = file_names(export::ExportFormat::Cbz.extension(), ".cbz");
 
     for chapter_info in &mut comic.chapter_infos {
-        let cbz_file_name = format!("{}.cbz", utils::filename_filter(&chapter_info.chapter_title));
-        if cbz_file_names.contains(&cbz_file_name) {
-            chapter_info.is_cbz_exported = true;
+        let chapter_title = utils::filename_filter(&chapter_info.chapter_title);
+        let mut pdf_names = vec![format!("{chapter_title}.pdf")];
+        let mut cbz_names = vec![format!("{chapter_title}.cbz")];
+        // 本地导出的文件名用的是「章节下载目录名」，和章节标题不一定完全一致
+        if let Some(dir_name) = chapter_info
+            .chapter_download_dir
+            .as_ref()
+            .and_then(|dir| dir.file_name())
+        {
+            let dir_name = dir_name.to_string_lossy();
+            pdf_names.push(format!("{dir_name}.pdf"));
+            cbz_names.push(format!("{dir_name}.cbz"));
+        }
+
+        let pdf_exists = pdf_names.iter().any(|name| pdf_files.contains(name));
+        let cbz_exists = cbz_names.iter().any(|name| cbz_files.contains(name));
+
+        if pdf_exists || reset {
+            chapter_info.is_pdf_exported = pdf_exists;
+        }
+        if cbz_exists || reset {
+            chapter_info.is_cbz_exported = cbz_exists;
         }
     }
 }
@@ -1183,7 +1226,11 @@ pub fn get_downloaded_comics(app: AppHandle) -> Vec<Comic> {
             tracing::error!(err_title, message);
         }
         // 取第一个作为保留的漫画
-        let chosen_comic = comics.remove(0);
+        let mut chosen_comic = comics.remove(0);
+        // 导出状态以导出目录里真实的文件为准（元数据里的标记可能是旧的）
+        if let Ok(comic_export_dir) = chosen_comic.get_comic_export_dir(&app) {
+            mark_exported_chapters(&mut chosen_comic, &comic_export_dir, true);
+        }
         unique_comics.push(chosen_comic);
     }
 
@@ -1454,6 +1501,22 @@ pub async fn export_cbz_without_download(
     export::export_cbz_without_download(app, comic_ids)
         .await
         .map_err(|err| CommandError::from("导出cbz失败", err))?;
+    Ok(())
+}
+
+/// 章节详情页的「免下载直出」：只导出选中的章节，不先下载到下载目录
+#[allow(clippy::needless_pass_by_value)]
+#[tauri::command(async)]
+#[specta::specta]
+#[instrument(level = "error", skip_all, fields(comic_id = comic.id, chapters = chapter_ids.len()))]
+pub async fn export_cbz_chapters_without_download(
+    app: AppHandle,
+    comic: Comic,
+    chapter_ids: Vec<i64>,
+) -> CommandResult<()> {
+    export::export_cbz_chapters_without_download(app, comic, chapter_ids)
+        .await
+        .map_err(|err| CommandError::from("导出指定章节cbz失败", err))?;
     Ok(())
 }
 

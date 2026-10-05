@@ -2,11 +2,19 @@
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { Comic, commands, ReaderComic } from '../bindings.ts'
 import { NButton, NIcon, NSelect, NSlider, SelectProps, useMessage } from 'naive-ui'
-import { PhCaretDoubleLeft, PhCaretDoubleRight, PhCaretLeft, PhCaretRight, PhX } from '@phosphor-icons/vue'
+import {
+  PhCaretDoubleLeft,
+  PhCaretDoubleRight,
+  PhCaretLeft,
+  PhCaretRight,
+  PhChatCircleDots,
+  PhX,
+} from '@phosphor-icons/vue'
 import { getProgress, saveProgress as saveReaderProgress } from './progress.ts'
 import { readerPageUrl } from './protocol.ts'
 import FavoriteButton from '../components/FavoriteButton.vue'
 import LoadingSpinner from '../components/LoadingSpinner.vue'
+import CommentDrawer from './CommentDrawer.vue'
 
 // 传 comic 表示本地库存（本地优先），只传 comicId 表示可以从网络读
 const props = defineProps<{ comic?: Comic; comicId?: number; keepSessionOnUnmount?: boolean }>()
@@ -25,6 +33,10 @@ const opening = ref<boolean>(false)
 const preparing = ref<boolean>(false)
 /// 阅读器的收藏按钮只用来取初始状态，后续状态由 FavoriteButton 自己维护
 const isFavorite = ref<boolean>(false)
+/// 评论抽屉
+const commentDrawerShowing = ref<boolean>(false)
+/// 评论用的漫画 id：本地库存走 comic.id，在线阅读走 comicId
+const commentComicId = computed(() => props.comicId ?? props.comic?.id)
 
 let closed = true
 
@@ -498,6 +510,20 @@ onBeforeUnmount(() => {
           左右翻页
         </n-button>
 
+        <!-- 和收藏按钮一样的默认带边框样式，抽屉打开时高亮 -->
+        <n-button
+          size="small"
+          :type="commentDrawerShowing ? 'primary' : 'default'"
+          title="评论"
+          :disabled="commentComicId === undefined"
+          @click="commentDrawerShowing = true">
+          <template #icon>
+            <n-icon size="18">
+              <PhChatCircleDots />
+            </n-icon>
+          </template>
+        </n-button>
+
         <FavoriteButton :comic-id="comicId" :is-favorite="isFavorite" variant="button" />
       </div>
     </div>
@@ -578,6 +604,12 @@ onBeforeUnmount(() => {
         </template>
       </n-button>
     </div>
+
+    <!-- 评论抽屉：自下而上弹出 -->
+    <CommentDrawer
+      v-if="commentComicId !== undefined"
+      v-model:showing="commentDrawerShowing"
+      :comic-id="commentComicId" />
   </div>
 </template>
 

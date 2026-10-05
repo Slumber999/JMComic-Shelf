@@ -4,13 +4,24 @@ import { computed, defineComponent, nextTick, PropType, ref, watch, watchEffect 
 import { ChapterInfo, commands, DownloadTaskState } from '../../../bindings.ts'
 import { useStore } from '../../../store.ts'
 import { useMarqueeSelection } from '../../../marqueeSelection.ts'
-import { DropdownOption, NButton, NCheckbox, NDropdown, NIcon, NPopover, NRadioButton, NRadioGroup } from 'naive-ui'
+import {
+  DropdownOption,
+  NButton,
+  NCheckbox,
+  NDropdown,
+  NIcon,
+  NPopover,
+  NRadioButton,
+  NRadioGroup,
+  useMessage,
+} from 'naive-ui'
 import { ChapterPaneMode } from '../ChapterPane.vue'
 import { PhPalette } from '@phosphor-icons/vue'
 
 type State = DownloadTaskState | 'Idle'
 
 const store = useStore()
+const message = useMessage()
 
 // 注意：这个组件的脚本块是 tsx，props 只能用运行时对象写法：
 // 泛型写法里的尖括号会被 vue-jsx 当成 JSX 标签，导致整个模块 transform 失败。
@@ -127,12 +138,24 @@ async function exportPdf() {
     return
   }
 
-  const chapterIds = chapterInfos.value
-    .filter((chapter) => isChapterSelectable(chapter) && checkedIds.value.has(chapter.chapterId))
-    .map((chapter) => chapter.chapterId)
-  if (chapterIds.length === 0) {
+  const checked = chapterInfos.value.filter(
+    (chapter) => isChapterSelectable(chapter) && checkedIds.value.has(chapter.chapterId),
+  )
+  // pdf 只能从本地图片生成，没下载的章节跳过
+  const downloaded = checked.filter(isDownloadedChapter)
+  const skipped = checked.length - downloaded.length
+
+  if (downloaded.length === 0) {
+    if (skipped > 0) {
+      message.warning('选中的章节都还没下载，导出 pdf 需要先下载图片')
+    }
     return
   }
+  if (skipped > 0) {
+    message.warning('有 ' + skipped + ' 章还没下载，已跳过（导出 pdf 需要先下载图片）')
+  }
+
+  const chapterIds = downloaded.map((chapter) => chapter.chapterId)
 
   store.showProgressesTab('uncompleted')
   chapterIds.forEach((id) => exportingChapterIds.value.add(id))
@@ -153,21 +176,36 @@ async function exportCbz() {
     return
   }
 
-  const chapterIds = chapterInfos.value
-    .filter((chapter) => isChapterSelectable(chapter) && checkedIds.value.has(chapter.chapterId))
-    .map((chapter) => chapter.chapterId)
-  if (chapterIds.length === 0) {
+  const checked = chapterInfos.value.filter(
+    (chapter) => isChapterSelectable(chapter) && checkedIds.value.has(chapter.chapterId),
+  )
+  if (checked.length === 0) {
     return
   }
 
-  store.showProgressesTab('uncompleted')
-  chapterIds.forEach((id) => exportingChapterIds.value.add(id))
+  // 已下载的用本地图片导出；还没下载的直接免下载直出（不落下载目录）
+  const downloadedIds = checked.filter(isDownloadedChapter).map((chapter) => chapter.chapterId)
+  const directIds = checked.filter((chapter) => !isDownloadedChapter(chapter)).map((chapter) => chapter.chapterId)
 
-  const result = await commands.exportCbzChapters(store.pickedComic, chapterIds)
-  if (result.status === 'error') {
-    console.error(result.error)
-    chapterIds.forEach((id) => exportingChapterIds.value.delete(id))
-    return
+  store.showProgressesTab('uncompleted')
+  checked.forEach((chapter) => exportingChapterIds.value.add(chapter.chapterId))
+
+  if (downloadedIds.length > 0) {
+    const result = await commands.exportCbzChapters(store.pickedComic, downloadedIds)
+    if (result.status === 'error') {
+      console.error(result.error)
+      message.error(result.error.message, { duration: 8000 })
+      downloadedIds.forEach((id) => exportingChapterIds.value.delete(id))
+    }
+  }
+
+  if (directIds.length > 0) {
+    const result = await commands.exportCbzChaptersWithoutDownload(store.pickedComic, directIds)
+    if (result.status === 'error') {
+      console.error(result.error)
+      message.error(result.error.message, { duration: 8000 })
+      directIds.forEach((id) => exportingChapterIds.value.delete(id))
+    }
   }
 
   clearCheckedAndSelected()
@@ -191,8 +229,9 @@ function isExportingChapter(chapter: ChapterInfo) {
   return exportingChapterIds.value.has(chapter.chapterId)
 }
 
+/// 可选条件：正在下载 / 正在导出的不行；没下载的也可以选（cbz 支持免下载直出）
 function isChapterSelectable(chapter: ChapterInfo) {
-  return !isDownloadingChapter(chapter) && isDownloadedChapter(chapter) && !isExportingChapter(chapter)
+  return !isDownloadingChapter(chapter) && !isExportingChapter(chapter)
 }
 
 const ChapterCheckbox = defineComponent({
@@ -257,6 +296,9 @@ const ChapterCheckbox = defineComponent({
           <div class="flex items-center gap-2">
             <span class="h-3.5 w-3.5 shrink-0 rounded border border-solid border-indigo bg-indigo-2" />
             <span>曾导出过PDF+CBZ</span>
+          </div>
+          <div class="border-t border-gray-2 pt-1 text-gray-500">
+            cbz 未下载也能直接导出（免下载直出）；pdf 需要先下载图片
           </div>
         </div>
       </n-popover>
