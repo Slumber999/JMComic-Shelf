@@ -75,6 +75,7 @@ pub fn run() {
             get_config,
             save_config,
             login,
+            logout,
             search,
             get_ranking,
             toggle_favorite,

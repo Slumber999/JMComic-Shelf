@@ -112,6 +112,15 @@ pub async fn login(
     Ok(user_profile)
 }
 
+/// 退出登录：清掉内存里的登录态（配置里记住的账号密码由前端清空并自动保存）
+#[tauri::command]
+#[specta::specta]
+#[instrument(level = "error", skip_all)]
+pub fn logout(app: AppHandle) -> CommandResult<()> {
+    app.get_jm_client().logout();
+    Ok(())
+}
+
 /// 官方分类树 + 常用标签分组
 #[tauri::command]
 #[specta::specta]

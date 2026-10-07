@@ -27,6 +27,8 @@ const API_DOMAIN_5: &str = "www.cdn-mspjmapiproxy.xyz";
 pub struct Config {
     pub username: String,
     pub password: String,
+    /// 启动时是否自动用记住的账号登录
+    pub auto_login: bool,
     pub download_dir: PathBuf,
     pub export_dir: PathBuf,
     pub download_format: DownloadFormat,
@@ -125,6 +127,7 @@ impl Config {
         Config {
             username: String::new(),
             password: String::new(),
+            auto_login: true,
             download_dir: app_data_dir.join("漫画下载"),
             export_dir: app_data_dir.join("漫画导出"),
             download_format: DownloadFormat::default(),

@@ -63,7 +63,7 @@
 - **封面悬停预览**：列表模式下鼠标放到封面上，侧边贴出放大 2~3 倍的预览图，倍数可在设置里调节
 - **线路优化**：API 线路一键测速并选最快；图片线路失败自动切换
 - **空间统计与清理**：统计下载 / 导出 / 日志占用，清理下载残留、分享包、旧日志
-- **配置分区**：下载、导出、网络、空间、界面
+- **配置分区**：账号、下载、导出、网络、空间、界面
 
 ## 界面截图
 
@@ -84,7 +84,7 @@
 
 ## 下载
 
-前往 [Releases](https://github.com/Slumber999/JMComic-Shelf/releases) 下载 Windows 免安装单文件 exe，双击即可运行。需要系统自带 WebView2，Windows 10 / 11 一般都有。
+前往 [Releases](https://github.com/Slumber999/JMComic-Shelf/releases) 下载 Windows 免安装单文件 exe，双击即可运行。需要系统自带 WebView2，Windows 10 / 11 一般都有。作者尚未在mac等其他系统验证软件运行，不过代码本身不受不同系统限制，如若需要请自行构建。
 
 ## 构建
 
@@ -105,6 +105,24 @@ pnpm tauri build --bundles nsis
 pnpm build
 pnpm tauri build --no-bundle
 ```
+
+### macOS 打包
+
+需要 macOS 与 Xcode Command Line Tools（`xcode-select --install`）。
+
+```bash
+# Apple Silicon（M 系列）
+pnpm tauri build --target aarch64-apple-darwin
+
+# Intel 机型
+pnpm tauri build --target x86_64-apple-darwin
+
+# 通用包（两种芯片都能跑，需先装两个 target）
+rustup target add aarch64-apple-darwin x86_64-apple-darwin
+pnpm tauri build --target universal-apple-darwin
+```
+
+产物在 `src-tauri/target/<target>/release/bundle/dmg/*.dmg`。
 
 ## 反馈与贡献
 

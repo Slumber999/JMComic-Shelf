@@ -118,6 +118,14 @@ impl JmClient {
             .await
     }
 
+    /// 退出登录：丢掉登录态 AVS，之后的请求退回游客身份
+    #[instrument(level = "error", skip_all)]
+    pub fn logout(&self) {
+        self.cookie_store.clear_session();
+        self.session_generation.fetch_add(1, Ordering::Relaxed);
+        *self.last_relogin_failure.write() = None;
+    }
+
     #[instrument(level = "error", skip_all)]
     pub async fn login(
         &self,

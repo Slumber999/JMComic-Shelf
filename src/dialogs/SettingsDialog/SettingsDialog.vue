@@ -5,6 +5,7 @@ import { path } from '@tauri-apps/api'
 import { appDataDir } from '@tauri-apps/api/path'
 import { useStore } from '../../store.ts'
 import { NButton, NDialog, NTabs, NTabPane, NModal } from 'naive-ui'
+import AccountSettings from './components/AccountSettings.vue'
 import DownloadSettings from './components/DownloadSettings.vue'
 import NetworkSettings from './components/NetworkSettings.vue'
 import ExportSettings from './components/ExportSettings.vue'
@@ -39,6 +40,11 @@ async function showConfigInFileManager() {
           去撑弹窗高度——弹窗高度是 auto，整条 flex 链会塌成 0 高、内容变空白。
         -->
         <n-tabs v-model:value="currentTabName" type="line" size="small">
+          <n-tab-pane name="account_settings" tab="账号">
+            <div class="max-h-[50vh] overflow-y-auto pr-1">
+              <AccountSettings />
+            </div>
+          </n-tab-pane>
           <n-tab-pane name="download_settings" tab="下载 / 导出">
             <div class="max-h-[50vh] overflow-y-auto pr-1">
               <DownloadSettings />

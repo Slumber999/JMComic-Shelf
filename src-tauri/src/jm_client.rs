@@ -70,6 +70,11 @@ impl SessionCookieStore {
         *self.session.write() = Some(avs);
     }
 
+    /// 退出登录：丢掉登录态 AVS，之后的请求退回游客身份
+    fn clear_session(&self) {
+        *self.session.write() = None;
+    }
+
     /// 拼请求要带的 cookie：jar 里的原样保留，只把 AVS 换成登录态的那份
     fn cookies_text(&self, url: &Url) -> Option<String> {
         let jar_cookies = self

@@ -153,8 +153,8 @@ onMounted(async () => {
 
   // 主窗口尺寸跟着配置走
   void getCurrentWindow().onResized(rememberWindowSize)
-  // 如果username和password不为空，尝试登录
-  if (store.config.username !== '' && store.config.password !== '') {
+  // 开着自动登录、并且记住过账号密码时，才尝试登录
+  if (store.config.autoLogin && store.config.username !== '' && store.config.password !== '') {
     const result = await commands.login(store.config.username, store.config.password)
     if (result.status === 'error') {
       console.error(result.error)

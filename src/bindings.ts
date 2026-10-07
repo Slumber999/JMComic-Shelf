@@ -24,6 +24,17 @@ async login(username: string, password: string) : Promise<Result<GetUserProfileR
     else return { status: "error", error: e  as any };
 }
 },
+/**
+ * 退出登录：清掉内存里的登录态（配置里记住的账号密码由前端清空并自动保存）
+ */
+async logout() : Promise<Result<null, CommandError>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("logout") };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
 async search(keyword: string, page: number, sort: SearchSort, year: number | null, month: number | null) : Promise<Result<SearchResultVariant, CommandError>> {
     try {
     return { status: "ok", data: await TAURI_INVOKE("search", { keyword, page, sort, year, month }) };
@@ -667,7 +678,11 @@ replies?: Comment[] }
  * 一页评论
  */
 export type CommentPage = { list?: Comment[]; total?: number }
-export type Config = { username: string; password: string; downloadDir: string; exportDir: string; downloadFormat: DownloadFormat; dirFmt: string; proxyMode: ProxyMode; proxyHost: string; proxyPort: number; enableFileLogger: boolean; chapterConcurrency: number; chapterDownloadIntervalSec: number; imgConcurrency: number; imgDownloadIntervalSec: number; downloadAllFavoritesIntervalSec: number; updateDownloadedComicsIntervalSec: number; apiDomainMode: ApiDomainMode; customApiDomain: string; shouldDownloadCover: boolean; 
+export type Config = { username: string; password: string; 
+/**
+ * 启动时是否自动用记住的账号登录
+ */
+autoLogin: boolean; downloadDir: string; exportDir: string; downloadFormat: DownloadFormat; dirFmt: string; proxyMode: ProxyMode; proxyHost: string; proxyPort: number; enableFileLogger: boolean; chapterConcurrency: number; chapterDownloadIntervalSec: number; imgConcurrency: number; imgDownloadIntervalSec: number; downloadAllFavoritesIntervalSec: number; updateDownloadedComicsIntervalSec: number; apiDomainMode: ApiDomainMode; customApiDomain: string; shouldDownloadCover: boolean; 
 /**
  * 阅读器是否拆分成独立窗口
  */
