@@ -1,17 +1,19 @@
 <script setup lang="ts">
 import { Comic, commands } from '../../../bindings.ts'
+import { showError } from '../../../errors.ts'
 import { useStore } from '../../../store.ts'
 import { PhBookOpen, PhBookmarkSimple, PhFilePdf, PhFileZip, PhFolderOpen } from '@phosphor-icons/vue'
-import { NCheckbox, useDialog, useMessage } from 'naive-ui'
+import { NCheckbox, useDialog } from 'naive-ui'
 import IconButton from '../../../components/IconButton.vue'
 import AuthorLinks from '../../../components/AuthorLinks.vue'
 import { computed } from 'vue'
 import { getProgress, progressLabel } from '../../../reader/progress.ts'
 import { localCoverUrl } from '../../../reader/protocol.ts'
 import { ComicLayout } from '../../../types.ts'
+import { useI18n } from '../../../i18n.ts'
 
 const store = useStore()
-const message = useMessage()
+const { t } = useI18n()
 const dialog = useDialog()
 
 const props = withDefaults(
@@ -32,7 +34,7 @@ const emit = defineEmits<{ read: [comic: Comic] }>()
 const progress = computed(() => getProgress(props.comic.id))
 const progressText = computed(() => (progress.value === undefined ? '' : progressLabel(progress.value)))
 const progressTitle = computed(() =>
-  progress.value === undefined ? '' : `继续阅读：${progress.value.chapterTitle}`,
+  progress.value === undefined ? '' : t('comic.continueReading', { title: progress.value.chapterTitle }),
 )
 
 function pickComic() {
@@ -57,10 +59,10 @@ function confirmWholeComic(run: () => Promise<void>) {
   }
 
   dialog.warning({
-    title: '整本导出',
-    content: `《${props.comic.name}》共 ${chapterCount} 话，确定全部导出吗？`,
-    positiveText: '确定',
-    negativeText: '取消',
+    title: t('comic.wholeExportTitle'),
+    content: t('comic.wholeExportContent', { name: props.comic.name, count: chapterCount }),
+    positiveText: t('comic.confirm'),
+    negativeText: t('common.cancel'),
     onPositiveClick: () => void run(),
   })
 }
@@ -69,7 +71,7 @@ async function startExportCbz() {
   store.showProgressesTab('uncompleted')
   const result = await commands.exportCbz(props.comic)
   if (result.status === 'error') {
-    message.error(result.error.message, { duration: 8000 })
+    showError(result.error)
   }
 }
 
@@ -77,7 +79,7 @@ async function startExportPdf() {
   store.showProgressesTab('uncompleted')
   const result = await commands.exportPdf(props.comic)
   if (result.status === 'error') {
-    message.error(result.error.message, { duration: 8000 })
+    showError(result.error)
   }
 }
 
@@ -89,7 +91,7 @@ async function showComicDownloadDirInFileManager() {
   const comicDownloadDir = props.comic.comicDownloadDir
 
   if (comicDownloadDir === undefined || comicDownloadDir === null) {
-    console.error('comicDownloadDir的值为undefined或null')
+    console.error(t('comic.dirUndefined'))
     return
   }
 
@@ -174,7 +176,7 @@ function onCoverClick(event: MouseEvent) {
             : 'flex mt-auto gap-col-2 opacity-0 transition-opacity duration-150 group-hover:opacity-100'
         ">
         <IconButton
-          :title="fromExportDir ? '打开导出目录' : '打开下载目录'"
+          :title="fromExportDir ? t('comic.openExportDir') : t('comic.openDownloadDir')"
           @click="(event) => runAction(event, showComicDownloadDirInFileManager)">
           <PhFolderOpen :size="20" />
         </IconButton>
@@ -182,17 +184,19 @@ function onCoverClick(event: MouseEvent) {
         <!-- 其余按钮整组靠右，和搜索 / 收藏页的卡片一致 -->
         <div class="ml-auto flex gap-col-2">
           <template v-if="!fromExportDir">
-            <IconButton title="导出cbz" @click="(event) => runAction(event, exportCbz)">
+            <IconButton :title="t('downloaded.exportCbz')" @click="(event) => runAction(event, exportCbz)">
               <PhFileZip :size="20" />
             </IconButton>
 
-            <IconButton title="导出pdf" @click="(event) => runAction(event, exportPdf)">
+            <IconButton :title="t('downloaded.exportPdf')" @click="(event) => runAction(event, exportPdf)">
               <PhFilePdf :size="20" />
             </IconButton>
           </template>
 
           <!-- 右下角：直接阅读（下载目录读图片，导出目录读cbz） -->
-          <IconButton title="阅读" @click="(event) => runAction(event, () => emit('read', comic))">
+          <IconButton
+        :title="t('comic.read')"
+        @click="(event) => runAction(event, () => emit('read', comic))">
             <PhBookOpen :size="20" />
           </IconButton>
         </div>

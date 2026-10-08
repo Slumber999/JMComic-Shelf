@@ -28,6 +28,7 @@ import {
 import { appDataDir, basename } from '@tauri-apps/api/path'
 import { path } from '@tauri-apps/api'
 import { useStore } from '../store.ts'
+import { useI18n } from '../i18n.ts'
 import { open } from '@tauri-apps/plugin-dialog'
 import { VList } from 'virtua/vue'
 import { PhArrowDown, PhArrowUp } from '@phosphor-icons/vue'
@@ -51,6 +52,7 @@ type LogRecord = LogMetadata & {
 }
 
 const store = useStore()
+const { t } = useI18n()
 
 const notification = useNotification()
 
@@ -128,19 +130,19 @@ onMounted(async () => {
   // 检查日志目录大小
   if (result.data > 50 * 1024 * 1024) {
     notification.warning({
-      title: '日志目录大小超过50MB，请及时清理日志文件',
+      title: t('log.sizeWarning'),
       description: () => (
         <>
           <div>
-            点击右上角的 <span class="bg-gray-2 px-1">日志</span> 按钮
+            {t('log.tip1')} <span class="bg-gray-2 px-1">{t('app.logs')}</span> {t('log.tip2')}
           </div>
           <div>
-            里边有 <span class="bg-gray-2 px-1">打开日志目录</span> 按钮
+            {t('log.tip3')} <span class="bg-gray-2 px-1">{t('log.openLogsDir')}</span> {t('log.tip4')}
           </div>
           <div>
-            你也可以在里边取消勾选 <span class="bg-gray-2 px-1">输出文件日志</span>
+            {t('log.tip5')} <span class="bg-gray-2 px-1">{t('log.outputFileLog')}</span>
           </div>
-          <div>这样将不再产生文件日志</div>
+          <div>{t('log.tip6')}</div>
         </>
       ),
     })
@@ -173,11 +175,18 @@ onMounted(() => {
       liveLogRecords.value.push(logRecord)
       triggerRef(liveLogRecords)
 
-      if (logRecord.level === 'ERROR') {
+      // 后台任务（下载图片、保存元数据等）的失败只有这里能看到。
+      // 带 code 的是命令类错误，命令返回值那条路已经弹过通知，这里跳过。
+      const errCode = logRecord.fields['code'] as string | undefined
+      if (logRecord.level === 'ERROR' && errCode === undefined) {
+        // 标题 + 中文原因；完整报错在日志记录里
+        const errTitle = (logRecord.fields['err_title'] as string) || t('error.title')
+        const errReason = logRecord.fields['message'] as string | undefined
         notification.error({
-          title: (logRecord.fields['err_title'] as string) || 'Error',
-          description: (logRecord.fields['message'] as string) || 'Unknown Error',
-          duration: 0,
+          title: errTitle,
+          description: errReason !== undefined && errReason !== '' ? errReason : t('error.unknown'),
+          duration: 6000,
+          keepAliveOnHover: true,
         })
       }
     })
@@ -437,9 +446,9 @@ const LogRecordComponent = defineComponent({
     <n-dialog :showIcon="false" @close="showing = false" style="width: 95%">
       <template #header>
         <div class="text-lg font-bold flex items-center gap-2">
-          <span v-if="viewMode === 'live'">📡 实时日志</span>
+          <span v-if="viewMode === 'live'">{{ t('log.liveLogs') }}</span>
           <span v-else>
-            📂 文件日志
+            {{ t('log.fileLogs') }}
             <n-tag class="ml-2" type="primary" size="small">
               {{ currentFileName }}
             </n-tag>
@@ -449,15 +458,15 @@ const LogRecordComponent = defineComponent({
 
       <div class="mb-2 flex flex-wrap">
         <n-input-group class="flex-1 mr-4">
-          <n-input v-model:value="filterText" placeholder="关键词过滤..." clearable />
+          <n-input v-model:value="filterText" :placeholder="t('log.filterPlaceholder')" clearable />
           <n-select v-model:value="selectedLevel" :options="logLevelOptions" style="width: 120px" />
         </n-input-group>
 
         <n-button v-if="viewMode === 'file'" class="mr-2" type="primary" secondary @click="exitFileMode">
-          返回实时日志
+          {{ t('log.backToLive') }}
         </n-button>
 
-        <n-button type="primary" @click="openLogFile">打开日志文件</n-button>
+        <n-button type="primary" @click="openLogFile">{{ t('log.openLogFile') }}</n-button>
       </div>
 
       <div class="relative h-[calc(100vh-250px)]!">
@@ -492,8 +501,12 @@ const LogRecordComponent = defineComponent({
       </div>
 
       <div class="pt-2 flex flex-wrap items-center">
-        <n-checkbox v-model:checked="store.config.enableFileLogger">输出文件日志</n-checkbox>
-        <n-button class="ml-2" size="small" @click="showLogsDirInFileManager">打开日志目录</n-button>
+        <n-checkbox v-model:checked="store.config.enableFileLogger">
+          {{ t('log.outputFileLog') }}
+        </n-checkbox>
+        <n-button class="ml-2" size="small" @click="showLogsDirInFileManager">
+          {{ t('log.openLogsDir') }}
+        </n-button>
         <n-tag class="ml-1" size="small" :bordered="false">
           {{ formatedLogsDirSize }}
         </n-tag>
@@ -505,7 +518,7 @@ const LogRecordComponent = defineComponent({
           size="small"
           type="error"
           @click="clearLiveLogRecords">
-          清空实时日志
+          {{ t('log.clearLive') }}
         </n-button>
       </div>
     </n-dialog>

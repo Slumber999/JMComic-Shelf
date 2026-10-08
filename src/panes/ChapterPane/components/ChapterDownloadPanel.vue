@@ -6,10 +6,12 @@ import { useStore } from '../../../store.ts'
 import { useMarqueeSelection } from '../../../marqueeSelection.ts'
 import { DropdownOption, NButton, NCheckbox, NDropdown, NRadioButton, NRadioGroup } from 'naive-ui'
 import { ChapterPaneMode } from '../ChapterPane.vue'
+import { useI18n } from '../../../i18n.ts'
 
 type State = DownloadTaskState | 'Idle'
 
 const store = useStore()
+const { t } = useI18n()
 
 // 注意：这个组件的脚本块是 tsx，props 只能用运行时对象写法：
 // 泛型写法里的尖括号会被 vue-jsx 当成 JSX 标签，导致整个模块 transform 失败。
@@ -68,7 +70,7 @@ const dropdownY = ref<number>(0)
 const dropdownShowing = ref<boolean>(false)
 const dropdownOptions: DropdownOption[] = [
   {
-    label: '勾选',
+    label: t('chapterExport.check'),
     key: 'check',
     props: {
       onClick: () => {
@@ -78,7 +80,7 @@ const dropdownOptions: DropdownOption[] = [
     },
   },
   {
-    label: '取消勾选',
+    label: t('chapterExport.uncheck'),
     key: 'uncheck',
     props: {
       onClick: () => {
@@ -88,7 +90,7 @@ const dropdownOptions: DropdownOption[] = [
     },
   },
   {
-    label: '全选',
+    label: t('chapterExport.selectAll'),
     key: 'check-all',
     props: {
       onClick: () => {
@@ -100,7 +102,7 @@ const dropdownOptions: DropdownOption[] = [
     },
   },
   {
-    label: '取消全选',
+    label: t('chapterExport.unselectAll'),
     key: 'uncheck-all',
     props: {
       onClick: () => {
@@ -192,11 +194,13 @@ const ChapterCheckbox = defineComponent({
   <div v-if="store.pickedComic !== undefined" class="flex-1 flex flex-col overflow-auto">
     <div class="flex items-center select-none pt-2 gap-1 px-2">
       <n-radio-group v-model:value="chapterPaneMode" size="small">
-        <n-radio-button value="download">下载</n-radio-button>
-        <n-radio-button value="export">导出</n-radio-button>
+        <n-radio-button value="download">{{ t('chapterExport.tabDownload') }}</n-radio-button>
+        <n-radio-button value="export">{{ t('chapterExport.tabExport') }}</n-radio-button>
       </n-radio-group>
-      <n-button class="ml-auto" size="small" @click="props.reload">刷新</n-button>
-      <n-button size="small" type="primary" @click="downloadCheckedChapters">下载勾选章节</n-button>
+      <n-button class="ml-auto" size="small" @click="props.reload">{{ t('common.refresh') }}</n-button>
+      <n-button size="small" type="primary" @click="downloadCheckedChapters">
+          {{ t('chapterDownload.downloadChecked') }}
+        </n-button>
     </div>
 
     <SelectionArea ref="selectionAreaRef" :options="selectionOptions" @move="updateSelectedIds" @start="unselectAll" />

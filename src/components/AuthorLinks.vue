@@ -1,6 +1,9 @@
 <script setup lang="ts">
 import { computed } from 'vue'
 import { useStore } from '../store.ts'
+import { useI18n } from '../i18n.ts'
+
+const { t } = useI18n()
 
 const props = withDefaults(
   defineProps<{
@@ -31,11 +34,11 @@ function searchAuthor(name: string, event: MouseEvent) {
 
 <template>
   <span>
-    <template v-if="prefix">作者：</template>
+    <template v-if="prefix">{{ t('author.prefix') }}</template>
     <template v-for="(name, index) in authors" :key="name">
       <span
         class="cursor-pointer transition-colors duration-200 hover:text-blue-5"
-        :title="`搜索 ${name} 的作品`"
+        :title="t('author.searchTitle', { name })"
         @click="(event) => searchAuthor(name, event)">
         {{ name }}
       </span>

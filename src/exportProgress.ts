@@ -1,5 +1,6 @@
 import { commands, events } from './bindings.ts'
 import { useStore } from './store.ts'
+import { t } from './i18n.ts'
 
 /// 导出任务的事件监听：把 cbz / pdf 的导出进度写进 store.exportProgresses
 ///
@@ -68,7 +69,7 @@ export function startExportProgressListeners(): () => void {
             current: done,
             total,
             percentage,
-            indicator: `CBZ导出中 ${done}/${total}`,
+            indicator: t('exportProgress.cbzExporting', { done, total }),
             chapterExportDir: comicExportDir,
             comicId,
           })
@@ -85,7 +86,11 @@ export function startExportProgressListeners(): () => void {
         total,
         percentage,
         indicator:
-          state === 'Paused' ? `已暂停 ${done}/${total}` : state === 'Completed' ? 'CBZ导出完成' : 'CBZ导出失败',
+          state === 'Paused'
+        ? t('exportProgress.cbzPaused', { done, total })
+        : state === 'Completed'
+          ? t('exportProgress.cbzCompleted')
+          : t('exportProgress.cbzFailed'),
         chapterExportDir: existing?.chapterExportDir ?? comicExportDir,
         comicId,
       })
@@ -107,7 +112,7 @@ export function startExportProgressListeners(): () => void {
           current: 0,
           total,
           percentage: 0,
-          indicator: 'CBZ创建中',
+          indicator: t('exportProgress.cbzCreating'),
         })
       } else if (exportEvent.event === 'Progress') {
         const { uuid, current, imgCurrent, imgTotal, chapterTitle } = exportEvent.data
@@ -127,15 +132,22 @@ export function startExportProgressListeners(): () => void {
             progressData.total === 0 ? 100 : Math.min(100, (done / progressData.total) * 100)
 
           const chapterPart = chapterTitle ? ` ${chapterTitle}` : ''
-          const imgPart = hasImgProgress ? ` 图片 ${imgCurrent ?? 0}/${imgTotal}` : ''
-          progressData.indicator = `CBZ创建中 ${current}/${progressData.total}${chapterPart}${imgPart}`
+          const imgPart = hasImgProgress
+    ? t('exportProgress.imageProgress', { current: imgCurrent ?? 0, total: imgTotal })
+    : ''
+          progressData.indicator = t('exportProgress.cbzCreatingDetail', {
+      current,
+      total: progressData.total,
+      chapter: chapterPart,
+      image: imgPart,
+    })
         }
       } else if (exportEvent.event === 'Error') {
         const { uuid } = exportEvent.data
         const progressData = progresses.get(uuid)
         if (progressData !== undefined) {
           progressData.state = 'Error'
-          progressData.indicator = 'CBZ创建失败'
+          progressData.indicator = t('exportProgress.cbzCreateFailed')
         }
       } else if (exportEvent.event === 'End') {
         const { uuid, comicId, chapterExportDir } = exportEvent.data
@@ -146,7 +158,7 @@ export function startExportProgressListeners(): () => void {
           progressData.percentage = 100
           progressData.chapterExportDir = chapterExportDir
           progressData.comicId = comicId
-          progressData.indicator = 'CBZ创建完成'
+          progressData.indicator = t('exportProgress.cbzCreateCompleted')
         }
         await syncPickedAndDownloadedComic(comicId)
       }
@@ -168,7 +180,7 @@ export function startExportProgressListeners(): () => void {
           current: 0,
           total,
           percentage: 0,
-          indicator: 'PDF创建中',
+          indicator: t('exportProgress.pdfCreating'),
         })
       } else if (exportEvent.event === 'CreateProgress') {
         const { uuid, current } = exportEvent.data
@@ -177,14 +189,14 @@ export function startExportProgressListeners(): () => void {
           progressData.state = 'Processing'
           progressData.current = current
           progressData.percentage = progressData.total === 0 ? 100 : (current / progressData.total) * 100
-          progressData.indicator = `PDF创建中 ${current}/${progressData.total}`
+          progressData.indicator = t('exportProgress.pdfCreatingDetail', { current, total: progressData.total })
         }
       } else if (exportEvent.event === 'CreateError') {
         const { uuid } = exportEvent.data
         const progressData = progresses.get(uuid)
         if (progressData !== undefined) {
           progressData.state = 'Error'
-          progressData.indicator = '创建PDF失败'
+          progressData.indicator = t('exportProgress.pdfCreateFailed')
         }
       } else if (exportEvent.event === 'CreateEnd') {
         const { uuid, comicId, chapterExportDir } = exportEvent.data
@@ -195,7 +207,7 @@ export function startExportProgressListeners(): () => void {
           progressData.percentage = 100
           progressData.chapterExportDir = chapterExportDir
           progressData.comicId = comicId
-          progressData.indicator = 'PDF创建完成'
+          progressData.indicator = t('exportProgress.pdfCreateCompleted')
         }
         await syncPickedAndDownloadedComic(comicId)
       } else if (exportEvent.event === 'MergeStart') {
@@ -208,7 +220,7 @@ export function startExportProgressListeners(): () => void {
           current: 0,
           total,
           percentage: 0,
-          indicator: 'PDF合并中',
+          indicator: t('exportProgress.pdfMerging'),
         })
       } else if (exportEvent.event === 'MergeProgress') {
         const { uuid, current } = exportEvent.data
@@ -217,14 +229,14 @@ export function startExportProgressListeners(): () => void {
           progressData.state = 'Processing'
           progressData.current = current
           progressData.percentage = progressData.total === 0 ? 100 : (current / progressData.total) * 100
-          progressData.indicator = `PDF合并中 ${current}/${progressData.total}`
+          progressData.indicator = t('exportProgress.pdfMergingDetail', { current, total: progressData.total })
         }
       } else if (exportEvent.event === 'MergeError') {
         const { uuid } = exportEvent.data
         const progressData = progresses.get(uuid)
         if (progressData !== undefined) {
           progressData.state = 'Error'
-          progressData.indicator = 'PDF合并失败'
+          progressData.indicator = t('exportProgress.pdfMergeFailed')
         }
       } else if (exportEvent.event === 'MergeEnd') {
         const { uuid, comicId, chapterExportDir } = exportEvent.data
@@ -235,7 +247,7 @@ export function startExportProgressListeners(): () => void {
           progressData.percentage = 100
           progressData.chapterExportDir = chapterExportDir
           progressData.comicId = comicId
-          progressData.indicator = 'PDF合并完成'
+          progressData.indicator = t('exportProgress.pdfMergeCompleted')
         }
       }
     })

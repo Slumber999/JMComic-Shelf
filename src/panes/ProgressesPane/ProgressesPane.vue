@@ -7,8 +7,10 @@ import ProgressList from './components/ProgressList.vue'
 import { ProgressData } from '../../types.ts'
 import { startExportProgressListeners } from '../../exportProgress.ts'
 import { NButton, NIcon, NInput, NInputGroup, NInputGroupLabel, NTabPane, NTabs } from 'naive-ui'
+import { useI18n } from '../../i18n.ts'
 
 const store = useStore()
+const { t } = useI18n()
 
 const downloadSpeed = ref<string>('')
 
@@ -25,7 +27,7 @@ onMounted(async () => {
       } else if (event === 'Sleeping') {
         const progressData = store.progresses.get(data.chapterId)
         if (progressData !== undefined) {
-          progressData.indicator = `将在${data.remainingSec}秒后继续下载`
+          progressData.indicator = t('progresses.resumeIn', { sec: data.remainingSec })
         }
       } else if (event === 'TaskCreate') {
         const { chapterInfo, downloadedImgCount, totalImgCount } = data
@@ -33,7 +35,7 @@ onMounted(async () => {
         store.progresses.set(chapterInfo.chapterId, {
           ...data,
           percentage: 0,
-          indicator: `排队中 ${downloadedImgCount}/${totalImgCount}`,
+          indicator: t('progresses.queued', { done: downloadedImgCount, total: totalImgCount }),
         })
       } else if (event === 'TaskUpdate') {
         const { chapterId, state, downloadedImgCount, totalImgCount } = data
@@ -59,15 +61,15 @@ onMounted(async () => {
 
         let indicator = ''
         if (state === 'Pending') {
-          indicator = `排队中`
+          indicator = t('progresses.queuedShort')
         } else if (state === 'Downloading') {
-          indicator = `下载中`
+          indicator = t('progresses.downloading')
         } else if (state === 'Paused') {
-          indicator = `已暂停`
+          indicator = t('progresses.paused')
         } else if (state === 'Completed') {
-          indicator = `下载完成`
+          indicator = t('progresses.completed')
         } else if (state === 'Failed') {
-          indicator = `下载失败`
+          indicator = t('progresses.failed')
         }
         if (totalImgCount !== 0) {
           indicator += ` ${downloadedImgCount}/${totalImgCount}`
@@ -166,7 +168,7 @@ async function showDownloadDirInFileManager() {
   <div v-if="store.config !== undefined" class="flex flex-col flex-1 overflow-auto">
     <div class="flex gap-1 box-border px-2 pt-2.5">
       <n-input-group class="">
-        <n-input-group-label size="small">下载目录</n-input-group-label>
+        <n-input-group-label size="small">{{ t('settings.download.dir') }}</n-input-group-label>
         <!-- 只读展示：改目录请去设置页 -->
         <n-input :value="store.config.downloadDir" size="small" readonly />
         <n-button class="w-10" size="small" @click="showDownloadDirInFileManager">
@@ -179,10 +181,10 @@ async function showDownloadDirInFileManager() {
       </n-input-group>
     </div>
     <n-tabs class="h-full overflow-auto" v-model:value="store.progressesPaneTabName" type="line" size="small">
-      <n-tab-pane class="h-full p-0! overflow-auto" name="uncompleted" tab="未完成">
+      <n-tab-pane class="h-full p-0! overflow-auto" name="uncompleted" :tab="t('progresses.tabUncompleted')">
         <ProgressList :finished="false" />
       </n-tab-pane>
-      <n-tab-pane class="h-full p-0! overflow-auto" name="completed" tab="已完成">
+      <n-tab-pane class="h-full p-0! overflow-auto" name="completed" :tab="t('progresses.tabCompleted')">
         <ProgressList :finished="true" />
       </n-tab-pane>
 

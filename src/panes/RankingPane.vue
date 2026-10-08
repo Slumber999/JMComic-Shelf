@@ -7,25 +7,27 @@ import ComicCard from '../components/ComicCard.vue'
 import { useGridColumns } from '../comicGrid.ts'
 import LoadingSpinner from '../components/LoadingSpinner.vue'
 import { useStore } from '../store.ts'
+import { useI18n } from '../i18n.ts'
 
 const store = useStore()
+const { t } = useI18n()
 
 const currentView = ref<'ranking' | 'weekly'>('ranking')
 
 /// 官方排行榜：总榜 / 月榜 / 周榜 / 日榜
 const rankingOrders = [
-  { value: 'mv', label: '总榜' },
-  { value: 'mv_m', label: '月榜' },
-  { value: 'mv_w', label: '周榜' },
-  { value: 'mv_t', label: '日榜' },
+  { value: 'mv', label: t('ranking.total') },
+  { value: 'mv_m', label: t('ranking.month') },
+  { value: 'mv_w', label: t('ranking.week') },
+  { value: 'mv_t', label: t('ranking.day') },
 ]
 const rankingCategories = [
-  { value: '0', label: '全部' },
-  { value: 'doujin', label: '同人' },
-  { value: 'single', label: '单本' },
-  { value: 'short', label: '短篇' },
-  { value: 'another', label: '其他' },
-  { value: 'hanman', label: '韩漫' },
+  { value: '0', label: t('ranking.all') },
+  { value: 'doujin', label: t('ranking.doujin') },
+  { value: 'single', label: t('ranking.single') },
+  { value: 'short', label: t('ranking.short') },
+  { value: 'another', label: t('ranking.other') },
+  { value: 'hanman', label: t('ranking.hanman') },
 ]
 /// 排行榜接口每页固定 80 条
 const RANKING_PAGE_SIZE = 80
@@ -128,8 +130,8 @@ onMounted(async () => {
   <div class="h-full flex flex-col">
     <div class="flex flex-wrap items-center gap-2 box-border px-2 pt-2 shrink-0">
       <n-tabs class="w-auto" type="line" size="small" v-model:value="currentView">
-        <n-tab name="ranking">排行榜</n-tab>
-        <n-tab name="weekly">每周必看</n-tab>
+        <n-tab name="ranking">{{ t('ranking.tabRanking') }}</n-tab>
+        <n-tab name="weekly">{{ t('ranking.tabWeekly') }}</n-tab>
       </n-tabs>
 
       <template v-if="currentView === 'ranking'">
@@ -162,7 +164,7 @@ onMounted(async () => {
 
     <div v-if="loading" class="flex flex-col items-center gap-3 py-16 text-orange">
       <loading-spinner :size="14" />
-      <span class="text-sm text-gray-500">正在加载…</span>
+      <span class="text-sm text-gray-500">{{ t('ranking.loading') }}</span>
     </div>
 
     <div
@@ -188,7 +190,9 @@ onMounted(async () => {
     <div
       v-if="currentView === 'ranking' && rankingResult !== undefined && rankingPageCount > 0"
       class="flex items-center justify-center gap-3 box-border p-2 pt-0 mt-auto">
-      <span class="text-xs text-gray-500">共 {{ rankingResult?.total ?? 0 }} 条</span>
+      <span class="text-xs text-gray-500">
+        {{ t('ranking.totalCount', { count: rankingResult?.total ?? 0 }) }}
+      </span>
       <n-pagination
         :page-count="rankingPageCount"
         :page="rankingPage"

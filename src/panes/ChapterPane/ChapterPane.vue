@@ -10,10 +10,12 @@ import ChapterExportPanel from './components/ChapterExportPanel.vue'
 import { NButton, NEmpty, NIcon } from 'naive-ui'
 import { localCoverUrl } from '../../reader/protocol.ts'
 import { getProgress, progressLabel } from '../../reader/progress.ts'
+import { useI18n } from '../../i18n.ts'
 
 export type ChapterPaneMode = 'download' | 'export'
 
 const store = useStore()
+const { t } = useI18n()
 
 const chapterPaneMode = ref<ChapterPaneMode>('download')
 
@@ -48,7 +50,9 @@ const progressText = computed(() => {
   return progress === undefined ? '' : progressLabel(progress)
 })
 const readTitle = computed(() =>
-  progressText.value === '' ? '打开阅读器' : `继续阅读：${progressText.value}`,
+  progressText.value === ''
+    ? t('comic.openReader')
+    : t('comic.continueReading', { title: progressText.value }),
 )
 
 /// 阅读：后端按ID打开是"本地优先"——下载过就读本地文件，没下载过就在线读；
@@ -68,7 +72,7 @@ async function showComicDownloadDirInFileManager() {
 
   const comicDownloadDir = store.pickedComic.comicDownloadDir
   if (comicDownloadDir === undefined || comicDownloadDir === null) {
-    console.error('comicDownloadDir的值为undefined或null')
+    console.error(t('comic.dirUndefined'))
     return
   }
 
@@ -81,7 +85,7 @@ async function showComicDownloadDirInFileManager() {
 
 <template>
   <div class="h-full flex flex-col box-border">
-    <n-empty v-if="store.pickedComic === undefined" description="请先选择漫画(搜索、收藏夹、每周必看、本地库存)" />
+    <n-empty v-if="store.pickedComic === undefined" :description="t('comic.selectComic')" />
     <template v-else>
       <div class="flex p-2 shrink-0">
         <img
@@ -92,7 +96,7 @@ async function showComicDownloadDirInFileManager() {
         <div class="flex flex-col w-full">
           <span class="font-bold text-lg line-clamp-2">{{ store.pickedComic.name }}</span>
           <author-links class="text-red" :author="store.pickedComic.author" />
-          <span class="text-gray">标签：{{ store.pickedComic.tags.join(' / ') }}</span>
+          <span class="text-gray">{{ t('comic.tags') }}{{ store.pickedComic.tags.join(' / ') }}</span>
           <div class="flex items-center gap-2 mt-auto">
             <n-button size="small" type="primary" secondary :title="readTitle" @click="readComic">
               <template #icon>
@@ -100,13 +104,13 @@ async function showComicDownloadDirInFileManager() {
                   <PhBookOpen />
                 </n-icon>
               </template>
-              {{ progressText === '' ? '阅读' : '继续阅读' }}
+              {{ progressText === '' ? t('comic.read') : t('comic.continue') }}
             </n-button>
             <span v-if="progressText !== ''" class="text-xs text-gray-500">{{ progressText }}</span>
             <IconButton
               v-if="store.pickedComic.isDownloaded"
               class="ml-auto"
-              title="打开下载目录"
+              :title="t('comic.openDownloadDir')"
               @click="showComicDownloadDirInFileManager">
               <PhFolderOpen :size="24" />
             </IconButton>

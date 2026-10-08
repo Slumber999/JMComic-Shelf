@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { computed, h, nextTick, ref, watch } from 'vue'
+import { showError } from '../errors.ts'
 import { commands, ComicInFavorite, FavoriteSort } from '../bindings.ts'
 import { scrollListToTop } from '../listScroll.ts'
 import {
@@ -20,15 +21,17 @@ import { localCoverUrl } from '../reader/protocol.ts'
 import { useStore } from '../store.ts'
 import DownloadAllFavoriteButton from '../components/DownloadAllFavoriteButton.vue'
 import { PhCaretDown, PhCheckCircle, PhCircle, PhDownloadSimple, PhFileZip } from '@phosphor-icons/vue'
+import { useI18n } from '../i18n.ts'
 
 const store = useStore()
+const { t } = useI18n()
 
 const message = useMessage()
 
-const sortOptions: SelectProps['options'] = [
-  { label: '收藏时间', value: 'FavoriteTime' },
-  { label: '更新时间', value: 'UpdateTime' },
-]
+const sortOptions = computed<SelectProps['options']>(() => [
+  { label: t('favorite.sortFavoriteTime'), value: 'FavoriteTime' },
+  { label: t('favorite.sortUpdateTime'), value: 'UpdateTime' },
+])
 
 const sortSelected = ref<FavoriteSort>('FavoriteTime')
 const pageSelected = ref<number>(1)
@@ -56,7 +59,7 @@ const favoritePageCount = computed(() => {
   return Math.ceil(total / PAGE_SIZE)
 })
 const folderOptions = computed<SelectProps['options']>(() => [
-  { label: '全部', value: 0 },
+  { label: t('favorite.allFolders'), value: 0 },
   ...(store.getFavoriteResult?.folderList || []).map((folder) => ({
     label: folder.name,
     value: parseInt(folder.FID),
@@ -126,7 +129,7 @@ async function syncFavoriteFolder() {
     return
   }
   await changeFilter(0, 'FavoriteTime')
-  message.success('收藏夹已同步')
+  message.success(t('favorite.synced'))
 }
 
 function toggleSelect(comicId: number) {
@@ -153,13 +156,13 @@ async function loadAllComics(): Promise<ComicInFavorite[] | undefined> {
 
   if (result.status === 'error') {
     console.error(result.error)
-    message.error(result.error.message, { duration: 8000 })
+    showError(result.error)
     return undefined
   }
 
   allComics.value = result.data
   if (allComics.value.length === 0) {
-    message.warning('这个收藏夹里没有漫画')
+    message.warning(t('favorite.emptyFolder'))
   }
   return allComics.value
 }
@@ -182,17 +185,17 @@ async function selectAll() {
     return
   }
   comics.forEach((comic) => selectedIds.value.add(comic.id))
-  message.success(`已选中 ${comics.length} 本漫画`)
+  message.success(t('favorite.selectedComics', { count: comics.length }))
 }
 
 const actionOptions: DropdownOption[] = [
   {
-    label: '下载',
+    label: t('favorite.download'),
     key: 'download',
     icon: () => h(NIcon, { size: 18 }, () => h(PhDownloadSimple)),
   },
   {
-    label: '导出cbz',
+    label: t('favorite.exportCbz'),
     key: 'export-cbz',
     icon: () => h(NIcon, { size: 18 }, () => h(PhFileZip)),
   },
@@ -235,12 +238,12 @@ async function downloadSelected() {
 
   busy.value = false
 
-  const parts = [`已为 ${created} 本漫画创建下载任务`]
+  const parts = [t('favorite.createdTasks', { created })]
   if (alreadyDownloaded > 0) {
-    parts.push(`${alreadyDownloaded} 本已全部下载过`)
+    parts.push(t('favorite.allDownloaded', { count: alreadyDownloaded }))
   }
   if (failed > 0) {
-    parts.push(`${failed} 本失败`)
+    parts.push(t('favorite.failedCount', { count: failed }))
   }
   message.success(parts.join('，'), { duration: 8000 })
 }
@@ -259,11 +262,11 @@ async function exportCbz() {
 
   if (result.status === 'error') {
     console.error(result.error)
-    message.error(result.error.message, { duration: 8000 })
+    showError(result.error)
     return
   }
 
-  message.success(`已导出 ${comicIds.length} 本漫画的 cbz，详见右侧「导出」进度`, { duration: 8000 })
+  message.success(t('favorite.exportedMsg', { count: comicIds.length }), { duration: 8000 })
 }
 </script>
 
@@ -282,17 +285,23 @@ async function exportCbz() {
         :show-checkmark="false"
         size="small"
         @update-value="changeFilter(folderIdSelected, $event)" />
-      <n-button size="small" type="primary" secondary @click="syncFavoriteFolder">同步收藏夹</n-button>
+      <n-button size="small" type="primary" secondary @click="syncFavoriteFolder">
+        {{ t('favorite.syncFavorite') }}
+      </n-button>
       <download-all-favorite-button />
     </div>
 
     <div v-if="store.getFavoriteResult !== undefined" class="flex items-center gap-2 box-border px-2">
       <n-button size="small" :loading="loadingAll" @click="toggleListMode">
-        {{ listMode ? '返回卡片视图' : '列出全部漫画' }}
+        {{ listMode ? t('favorite.backToCards') : t('favorite.listAll') }}
       </n-button>
-      <span class="text-sm text-gray-500 whitespace-nowrap">已选中 {{ selectedCount }} 本</span>
-      <n-button size="small" :loading="loadingAll" @click="selectAll">全选</n-button>
-      <n-button size="small" :disabled="selectedCount === 0" @click="clearSelection">全不选</n-button>
+      <span class="text-sm text-gray-500 whitespace-nowrap">
+        {{ t('favorite.selected', { count: selectedCount }) }}
+      </span>
+      <n-button size="small" :loading="loadingAll" @click="selectAll">{{ t('favorite.selectAll') }}</n-button>
+      <n-button size="small" :disabled="selectedCount === 0" @click="clearSelection">
+        {{ t('favorite.clearSelection') }}
+      </n-button>
       <n-dropdown
         class="ml-auto"
         trigger="click"
@@ -300,7 +309,7 @@ async function exportCbz() {
         :show-arrow="true"
         @select="handleAction">
         <n-button type="primary" size="small" :loading="busy" :disabled="selectedCount === 0">
-          下载 / 导出cbz ({{ selectedCount }})
+          {{ t('favorite.downloadExport', { count: selectedCount }) }}
           <n-icon class="ml-1" size="14">
             <PhCaretDown />
           </n-icon>
@@ -311,7 +320,7 @@ async function exportCbz() {
     <template v-if="!listMode">
       <div v-if="loading" class="flex flex-col items-center gap-3 py-16 text-orange">
         <loading-spinner :size="14" />
-        <span class="text-sm text-gray-500">正在加载收藏夹…</span>
+        <span class="text-sm text-gray-500">{{ t('favorite.loadingFolder') }}</span>
       </div>
 
       <div
@@ -336,7 +345,9 @@ async function exportCbz() {
       </div>
 
       <div class="flex items-center justify-center gap-3 box-border p-2 pt-0 mt-auto">
-        <span class="text-xs text-gray-500">共 {{ store.getFavoriteResult?.total ?? 0 }} 条</span>
+        <span class="text-xs text-gray-500">
+          {{ t('favorite.totalCount', { count: store.getFavoriteResult?.total ?? 0 }) }}
+        </span>
         <n-pagination
           :page-count="favoritePageCount"
           :page="pageSelected"
@@ -346,7 +357,7 @@ async function exportCbz() {
 
     <div v-else class="flex flex-col overflow-auto box-border px-2 pb-2">
       <div class="text-xs text-gray-500 px-1 pb-1">
-        共 {{ allComics.length }} 本，点击一行即可选中/取消（选中状态跨页保留）
+        {{ t('favorite.allCount', { count: allComics.length }) }}
       </div>
       <div
         v-for="comic in allComics"
@@ -377,13 +388,13 @@ async function exportCbz() {
           <span
             v-if="comic.isDownloaded"
             class="flex items-center justify-center w-5 h-5 rounded bg-green-1 text-green-6"
-            title="已下载">
+            :title="t('favorite.downloaded')">
             <PhDownloadSimple :size="12" />
           </span>
           <span
             v-if="comic.isExported"
             class="flex items-center justify-center w-5 h-5 rounded bg-blue-1 text-blue-6"
-            title="已导出">
+            :title="t('favorite.exported')">
             <PhFileZip :size="12" />
           </span>
         </div>

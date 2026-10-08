@@ -24,6 +24,18 @@ pub struct ReaderWindowTarget {
 #[derive(Default)]
 pub struct ReaderWindowTargetState(RwLock<Option<ReaderWindowTarget>>);
 
+/// 主窗口**启动时**的尺寸（逻辑像素）
+/// - 阅读窗口按它开，而不是按主窗口当时的尺寸；
+///   这样主窗口中途被拉大/换网格档位，已经开着的阅读窗口也不会跟着变
+#[derive(Default)]
+pub struct MainWindowInitialSize(RwLock<Option<(f64, f64)>>);
+
+impl MainWindowInitialSize {
+    pub fn new(size: (f64, f64)) -> Self {
+        Self(RwLock::new(Some(size)))
+    }
+}
+
 #[tauri::command(async)]
 #[specta::specta]
 pub fn open_reader_window(app: AppHandle, target: ReaderWindowTarget) -> CommandResult<()> {
@@ -36,8 +48,8 @@ pub fn open_reader_window(app: AppHandle, target: ReaderWindowTarget) -> Command
         return Ok(());
     }
 
-    // 阅读窗口默认和主窗口一样大
-    let (width, height) = main_window_size(&app);
+    // 阅读窗口按主窗口「启动时」的尺寸开
+    let (width, height) = initial_reader_window_size(&app);
 
     WebviewWindowBuilder::new(&app, READER_WINDOW_LABEL, WebviewUrl::App("index.html".into()))
         .title("禁漫书架 · 阅读")
@@ -47,6 +59,17 @@ pub fn open_reader_window(app: AppHandle, target: ReaderWindowTarget) -> Command
         .map_err(|err| CommandError::from("打开阅读窗口失败", err))?;
 
     Ok(())
+}
+
+/// 阅读窗口的初始尺寸：优先用主窗口启动时记录下来的尺寸
+fn initial_reader_window_size(app: &AppHandle) -> (f64, f64) {
+    if let Some(size) = app
+        .try_state::<MainWindowInitialSize>()
+        .and_then(|state| *state.0.read())
+    {
+        return size;
+    }
+    main_window_size(app)
 }
 
 /// 主窗口当前的逻辑尺寸；拿不到就用默认值

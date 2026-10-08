@@ -23,8 +23,10 @@ import {
 import { PhChecks, PhTag, PhX } from '@phosphor-icons/vue'
 import UpdateDownloadedComicsButton from './components/UpdateDownloadedComicsButton.vue'
 import UpdateExportedComicsButton from './components/UpdateExportedComicsButton.vue'
+import { useI18n } from '../../i18n.ts'
 
 const store = useStore()
+const { t } = useI18n()
 
 /// 网格列数跟着窗口宽度走
 const listRef = ref<HTMLElement>()
@@ -262,7 +264,7 @@ function useDropdown() {
   const dropdownShowing = ref<boolean>(false)
   const dropdownOptions: DropdownOption[] = [
     {
-      label: '全选',
+      label: t('downloaded.selectAll'),
       key: 'check-all',
       icon: () => (
         <NIcon size="20">
@@ -277,7 +279,7 @@ function useDropdown() {
       },
     },
     {
-      label: '取消全选',
+      label: t('downloaded.unselectAll'),
       key: 'uncheck-all',
       icon: () => (
         <NIcon size="20">
@@ -320,11 +322,13 @@ function useDropdown() {
   <div v-if="store.config !== undefined" class="h-full flex flex-col">
     <div class="flex gap-1 box-border px-2 pt-2">
       <n-radio-group v-model:value="localLibrarySource" size="small">
-        <n-radio-button value="DownloadDir">下载目录</n-radio-button>
-        <n-radio-button value="ExportDir">导出目录</n-radio-button>
+        <n-radio-button value="DownloadDir">{{ t('settings.download.dir') }}</n-radio-button>
+        <n-radio-button value="ExportDir">{{ t('settings.export.dir') }}</n-radio-button>
       </n-radio-group>
       <n-input-group>
-        <n-input-group-label size="small">{{ fromExportDir ? '导出目录' : '下载目录' }}</n-input-group-label>
+        <n-input-group-label size="small">
+          {{ fromExportDir ? t('settings.export.dir') : t('settings.download.dir') }}
+        </n-input-group-label>
         <!-- 只读展示：改目录请去设置页 -->
         <n-input :value="currentDir" size="small" readonly />
         <n-button class="w-10" size="small" @click="showCurrentDirInFileManager">
@@ -340,7 +344,7 @@ function useDropdown() {
     </div>
     <!-- 标签云：悬浮窗口，不占列表高度；点标签累加筛选 -->
     <div class="flex gap-2 items-center px-2 pt-1 select-none">
-      <span class="text-xs text-gray-500">标签云来自下载目录 + 导出目录</span>
+      <span class="text-xs text-gray-500">{{ t('downloaded.tagCloudHint') }}</span>
       <n-popover
         v-model:show="tagsExpanded"
         trigger="click"
@@ -354,7 +358,7 @@ function useDropdown() {
                 <PhTag />
               </n-icon>
             </template>
-            标签云 ({{ tagStats.length }})
+            {{ t('downloaded.tagCloud', { count: tagStats.length }) }}
           </n-button>
         </template>
         <div class="flex max-h-[60vh] flex-col gap-2 overflow-auto rounded-md bg-white p-3 shadow-lg">
@@ -375,11 +379,15 @@ function useDropdown() {
               size="small"
               quaternary
               @click="tagsShowAll = !tagsShowAll">
-              {{ tagsShowAll ? '收起' : `展开全部 ${tagStats.length} 个` }}
+              {{ tagsShowAll ? t('common.collapse') : t('search.expandAllLocal', { count: tagStats.length }) }}
             </n-button>
             <template v-if="selectedTags.length > 0">
-              <span class="text-xs text-gray-500">筛选出 {{ filteredComics.length }} 本</span>
-              <n-button size="small" quaternary type="error" @click="selectedTags = []">清空筛选</n-button>
+              <span class="text-xs text-gray-500">
+                {{ t('downloaded.filteredCount', { count: filteredComics.length }) }}
+              </span>
+              <n-button size="small" quaternary type="error" @click="selectedTags = []">
+                {{ t('search.resetFilters') }}
+              </n-button>
             </template>
           </div>
         </div>
@@ -387,17 +395,19 @@ function useDropdown() {
     </div>
     <div class="flex gap-2 items-center px-2 select-none">
       <div v-if="!fromExportDir" class="animate-pulse text-sm text-red flex flex-col">
-        <div>Ctrl+左键单击多选，右键打开菜单</div>
-        <div>右边的按钮作用于勾选项</div>
+        <div>{{ t('downloaded.selectHint') }}</div>
+        <div>{{ t('downloaded.buttonsHint') }}</div>
       </div>
       <template v-if="!fromExportDir">
-        <n-button class="ml-auto" type="primary" size="small" @click="exportCbz">导出cbz</n-button>
-        <n-button type="primary" size="small" @click="exportPdf">导出pdf</n-button>
+        <n-button class="ml-auto" type="primary" size="small" @click="exportCbz">
+          {{ t('downloaded.exportCbz') }}
+        </n-button>
+        <n-button type="primary" size="small" @click="exportPdf">{{ t('downloaded.exportPdf') }}</n-button>
       </template>
     </div>
     <div v-if="loading" class="flex flex-col items-center gap-3 py-16 text-orange">
       <loading-spinner :size="14" />
-      <span class="text-sm text-gray-500">正在扫描本地库…</span>
+      <span class="text-sm text-gray-500">{{ t('downloaded.scanning') }}</span>
     </div>
 
     <div
@@ -428,7 +438,9 @@ function useDropdown() {
     </div>
 
     <div class="flex items-center justify-center gap-3 box-border p-2 pt-0 mt-auto">
-      <span class="text-xs text-gray-500">共 {{ filteredComics.length }} 本</span>
+      <span class="text-xs text-gray-500">
+        {{ t('downloaded.totalCount', { count: filteredComics.length }) }}
+      </span>
       <n-pagination :page-count="pageCount" :page="currentPage" @update:page="currentPage = $event" />
     </div>
 

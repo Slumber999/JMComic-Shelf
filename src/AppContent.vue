@@ -1,7 +1,8 @@
 <script setup lang="tsx">
 import { computed, onMounted, ref, watch } from 'vue'
+import { setErrorNotifier, showError } from './errors.ts'
 import { commands } from './bindings.ts'
-import { NAvatar, NButton, NIcon, NTabPane, NTabs, useMessage } from 'naive-ui'
+import { NAvatar, NButton, NIcon, NTabPane, NTabs, useMessage, useNotification } from 'naive-ui'
 import LoginDialog from './dialogs/LoginDialog.vue'
 import SearchPane from './panes/SearchPane.vue'
 import ChapterPane from './panes/ChapterPane/ChapterPane.vue'
@@ -21,10 +22,14 @@ import CoverPreview from './components/CoverPreview.vue'
 import SettingsDialog from './dialogs/SettingsDialog/SettingsDialog.vue'
 import { lastProgress, progressLabel } from './reader/progress.ts'
 import LoadingSpinner from './components/LoadingSpinner.vue'
+import { useI18n } from './i18n.ts'
 
 const store = useStore()
+const { t, locale, setLocale } = useI18n()
 
 const message = useMessage()
+// 错误通知统一走右下角，实例在这里注册一次
+setErrorNotifier(useNotification())
 
 
 const readerShowing = ref<boolean>(false)
@@ -58,8 +63,9 @@ const lastReadTitle = computed(() => {
   const comicTitle =
     last.progress.comicTitle !== ''
       ? last.progress.comicTitle
-      : (store.downloadedComics.find((comic) => comic.id === last.comicId)?.name ?? `漫画${last.comicId}`)
-  return `继续阅读：${comicTitle} · ${progressLabel(last.progress)}`
+      : (store.downloadedComics.find((comic) => comic.id === last.comicId)?.name ??
+        t('app.fallbackComicName', { id: last.comicId }))
+  return t('app.continueReadingWith', { title: comicTitle, progress: progressLabel(last.progress) })
 })
 
 async function continueReading() {
@@ -108,14 +114,14 @@ async function saveConfigNow() {
   if (result.status === 'error') {
     // 保存失败（比如代理地址不合法）时把记录清掉，下次改动还会再试一次
     lastSavedConfig = ''
-    message.error(result.error.message, { duration: 8000 })
+    showError(result.error)
     return
   }
 
   // 只有"在配置弹窗里改"才提示保存成功：
   // 选导出目录、切本地库存来源这类操作不需要提示
   if (settingsDialogShowing.value) {
-    message.success('保存配置成功')
+    message.success(t('app.saveConfigSuccess'))
   }
 }
 
@@ -150,6 +156,8 @@ onMounted(async () => {
   // 获取配置（记下来，避免这次赋值又触发一次"没变化"的保存）
   store.config = await commands.getConfig()
   lastSavedConfig = JSON.stringify(store.config)
+  // 界面语言跟着配置走
+  setLocale(store.config.language)
 
   // 主窗口尺寸跟着配置走
   void getCurrentWindow().onResized(rememberWindowSize)
@@ -161,7 +169,7 @@ onMounted(async () => {
       return
     }
     store.userProfile = result.data
-    message.success('自动登录成功')
+    message.success(t('app.autoLoginSuccess'))
   }
 })
 </script>
@@ -179,7 +187,7 @@ onMounted(async () => {
             <PhUser />
           </n-icon>
         </template>
-        登录
+        {{ t('app.login') }}
       </n-button>
       <n-button size="small" @click="logViewerShowing = true">
         <template #icon>
@@ -187,7 +195,7 @@ onMounted(async () => {
             <PhClockCounterClockwise />
           </n-icon>
         </template>
-        日志
+        {{ t('app.logs') }}
       </n-button>
       <n-button size="small" @click="aboutDialogShowing = true">
         <template #icon>
@@ -195,7 +203,7 @@ onMounted(async () => {
             <PhInfo />
           </n-icon>
         </template>
-        关于
+        {{ t('app.about') }}
       </n-button>
       <n-button size="small" @click="settingsDialogShowing = true">
         <template #icon>
@@ -203,7 +211,7 @@ onMounted(async () => {
             <PhGearSix />
           </n-icon>
         </template>
-        配置
+        {{ t('app.settings') }}
       </n-button>
       <n-button
         v-if="lastRead !== undefined"
@@ -218,7 +226,7 @@ onMounted(async () => {
             <PhBookmarkSimple />
           </n-icon>
         </template>
-        继续阅读
+        {{ t('app.continueReading') }}
       </n-button>
       <div v-if="store.userProfile !== undefined" class="flex items-center gap-1 ml-auto overflow-hidden">
         <n-avatar
@@ -235,22 +243,52 @@ onMounted(async () => {
 
     <!-- 内容区：占满整个宽度 -->
     <n-tabs class="flex-1 min-h-0" v-model:value="store.currentTabName" type="line" size="small" animated>
-      <n-tab-pane class="h-full overflow-auto p-0!" name="search" tab="搜索" display-directive="show">
+      <n-tab-pane
+        class="h-full overflow-auto p-0!"
+        name="search"
+        :tab="t('tab.search')"
+        :key="locale"
+        display-directive="show">
         <SearchPane />
       </n-tab-pane>
-      <n-tab-pane class="h-full overflow-auto p-0!" name="favorite" tab="收藏夹" display-directive="show">
+      <n-tab-pane
+        class="h-full overflow-auto p-0!"
+        name="favorite"
+        :tab="t('tab.favorite')"
+        :key="locale"
+        display-directive="show">
         <FavoritePane />
       </n-tab-pane>
-      <n-tab-pane class="h-full overflow-auto p-0!" name="weekly" tab="排行榜" display-directive="show">
+      <n-tab-pane
+        class="h-full overflow-auto p-0!"
+        name="weekly"
+        :tab="t('tab.ranking')"
+        :key="locale"
+        display-directive="show">
         <RankingPane />
       </n-tab-pane>
-      <n-tab-pane class="h-full overflow-auto p-0!" name="comments" tab="全站评论" display-directive="show">
+      <n-tab-pane
+        class="h-full overflow-auto p-0!"
+        name="comments"
+        :tab="t('tab.comments')"
+        :key="locale"
+        display-directive="show">
         <CommentsPane />
       </n-tab-pane>
-      <n-tab-pane class="h-full overflow-auto p-0!" name="downloaded" tab="本地库存" display-directive="show">
+      <n-tab-pane
+        class="h-full overflow-auto p-0!"
+        name="downloaded"
+        :tab="t('tab.downloaded')"
+        :key="locale"
+        display-directive="show">
         <DownloadedPane />
       </n-tab-pane>
-      <n-tab-pane class="h-full overflow-auto p-0!" name="chapter" tab="章节详情" display-directive="show">
+      <n-tab-pane
+        class="h-full overflow-auto p-0!"
+        name="chapter"
+        :tab="t('tab.chapter')"
+        :key="locale"
+        display-directive="show">
         <ChapterPane />
       </n-tab-pane>
     </n-tabs>

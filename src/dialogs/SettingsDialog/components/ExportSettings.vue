@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref } from 'vue'
+import { computed, ref } from 'vue'
 import { open } from '@tauri-apps/plugin-dialog'
 import { path } from '@tauri-apps/api'
 import { appDataDir } from '@tauri-apps/api/path'
@@ -19,8 +19,10 @@ import {
 } from 'naive-ui'
 import { PhFolderOpen } from '@phosphor-icons/vue'
 import QuickReaderExportDialog from './QuickReaderExportDialog.vue'
+import { useI18n } from '../../../i18n.ts'
 
 const store = useStore()
+const { t } = useI18n()
 
 const quickReaderDialogShowing = ref<boolean>(false)
 
@@ -61,28 +63,29 @@ async function resetExportDir() {
 
   const appDataDirPath = await appDataDir()
   store.config.exportDir = await path.join(appDataDirPath, DEFAULT_EXPORT_DIR_NAME)
-  message.success('导出目录已恢复默认，已经导出的文件不会被移动')
+  message.success(t('settings.export.dirRestoreSuccess'))
 }
 
-const exportSkipModeOptions = [
-  { label: '不跳过，每次都重新导出', value: 'None' },
-  { label: '跳过已存在的文件', value: 'SkipExisting' },
-  { label: '跳过曾导出过的章节', value: 'SkipExported' },
-]
+/// 用 computed：切语言时下拉里的三行也要跟着变
+const exportSkipModeOptions = computed(() => [
+  { label: t('settings.export.skipNone'), value: 'None' },
+  { label: t('settings.export.skipExisting'), value: 'SkipExisting' },
+  { label: t('settings.export.skipExported'), value: 'SkipExported' },
+])
 
 </script>
 
 <template>
   <div v-if="store.config !== undefined" class="flex flex-col">
     <div class="mt-2 flex items-center gap-2">
-      <span class="font-bold">导出目录</span>
+      <span class="font-bold">{{ t('settings.export.dir') }}</span>
       <n-button
         class="ml-auto shrink-0"
         size="tiny"
         quaternary
-        title="恢复成默认的导出目录（只改路径，已导出的文件不移动）"
+        :title="t('settings.export.dirRestoreTitle')"
         @click="resetExportDir">
-        恢复默认
+        {{ t('settings.export.restoreDefault') }}
       </n-button>
     </div>
     <div class="mt-1 flex items-center gap-1">
@@ -92,9 +95,13 @@ const exportSkipModeOptions = [
         :value="store.config.exportDir"
         size="small"
         readonly
-        title="点击选择导出目录"
+        :title="t('settings.export.dirPickTitle')"
         @click="selectExportDir" />
-      <n-button class="shrink-0" size="small" title="在资源管理器里打开" @click="showExportDirInFileManager">
+      <n-button
+        class="shrink-0"
+        size="small"
+        :title="t('settings.export.openInFileManager')"
+        @click="showExportDirInFileManager">
         <template #icon>
           <n-icon size="18">
             <PhFolderOpen />
@@ -105,7 +112,7 @@ const exportSkipModeOptions = [
 
     <div class="flex gap-1 items-center">
       <n-input-group class="w-70">
-        <n-input-group-label size="small">创建pdf并发数</n-input-group-label>
+        <n-input-group-label size="small">{{ t('settings.export.pdfConcurrency') }}</n-input-group-label>
         <n-input-number
           class="w-full"
           v-model:value="store.config.createPdfConcurrency"
@@ -114,43 +121,22 @@ const exportSkipModeOptions = [
           :parse="(x: string) => Number(x)" />
       </n-input-group>
       <n-tooltip placement="top" trigger="hover">
-        <div>
-          <span>在</span>
-          <span class="rounded bg-gray-500 px-1">章节详情</span>
-          <span>里手动勾选导出的PDF一律不会自动合并</span>
-        </div>
-        <div>
-          <span>只有在</span>
-          <span class="rounded bg-gray-500 px-1">本地库存</span>
-          <span>里直接导出整部作品为PDF</span>
-        </div>
-        <div>
-          <span>且导出策略不为</span>
-          <span class="rounded bg-gray-500 px-1">跳过曾导出过的章节</span>
-          <span>时才会触发自动合并</span>
-        </div>
+        <div>{{ t('settings.export.mergePdfNote1') }}</div>
+        <div>{{ t('settings.export.mergePdfNote2') }}</div>
         <template #trigger>
-          <n-checkbox class="ml-4 w-fit" v-model:checked="store.config.enableMergePdf">创建完成后自动合并</n-checkbox>
+          <n-checkbox class="ml-4 w-fit" v-model:checked="store.config.enableMergePdf">
+            {{ t('settings.export.mergePdf') }}
+          </n-checkbox>
         </template>
       </n-tooltip>
     </div>
 
     <n-tooltip placement="top" trigger="hover">
-      <div>
-        <span>只影响</span>
-        <span class="rounded bg-gray-500 px-1">本地库存</span>
-        <span>里直接导出整部作品时的行为</span>
-      </div>
-      <div>
-        <span>在</span>
-        <span class="rounded bg-gray-500 px-1">章节详情</span>
-        <span>里手动勾选导出时一律以</span>
-        <span class="rounded bg-gray-500 px-1">不跳过，每次都重新导出</span>
-        <span>处理</span>
-      </div>
+      <div>{{ t('settings.export.skipModeNote1') }}</div>
+      <div>{{ t('settings.export.skipModeNote2') }}</div>
       <template #trigger>
         <n-input-group class="mt-2 w-fit">
-          <n-input-group-label size="small">导出策略</n-input-group-label>
+          <n-input-group-label size="small">{{ t('settings.export.skipMode') }}</n-input-group-label>
           <n-select
             v-model:value="store.config.exportSkipMode"
             :options="exportSkipModeOptions"
@@ -160,15 +146,15 @@ const exportSkipModeOptions = [
       </template>
     </n-tooltip>
 
-    <span class="font-bold mt-2">快速阅读器</span>
+    <span class="font-bold mt-2">{{ t('settings.export.quickReader') }}</span>
     <n-tooltip placement="top" trigger="hover" :width="520">
-      <div>生成一个可以在手机/电脑浏览器里直接打开的分享包</div>
-      <div>包含 <span class="rounded bg-gray-500 px-1">index.html</span> 和各漫画的图片（cbz 会解压成图片目录）</div>
-      <div>对方拿到整个「快速阅读器」文件夹，双击 index.html 即可阅读，无需联网</div>
-      <div class="text-orange-4">注意：会把漫画图片复制一份到该文件夹，占用额外磁盘空间</div>
+      <div>{{ t('settings.export.quickReaderDesc') }}</div>
+      <div>{{ t('settings.export.quickReaderContent') }}</div>
+      <div>{{ t('settings.export.quickReaderShare') }}</div>
+      <div class="text-orange-4">{{ t('settings.export.quickReaderWarn') }}</div>
       <template #trigger>
         <n-button class="mt-1 w-fit" size="small" type="primary" @click="quickReaderDialogShowing = true">
-          导出快速阅读器
+          {{ t('settings.export.quickReaderExport') }}
         </n-button>
       </template>
     </n-tooltip>

@@ -1,9 +1,12 @@
 <script setup lang="ts">
 import { NButton, NPopconfirm, useMessage } from 'naive-ui'
+import { showError } from '../../../errors.ts'
 import { ref } from 'vue'
 import { commands } from '../../../bindings.ts'
 import { useStore } from '../../../store.ts'
+import { useI18n } from '../../../i18n.ts'
 
+const { t } = useI18n()
 const message = useMessage()
 const store = useStore()
 
@@ -16,14 +19,14 @@ async function update() {
   try {
     const result = await commands.updateExportedComics()
     if (result.status === 'error') {
-      message.error(result.error.message, { duration: 8000 })
+      showError(result.error)
       return
     }
     if (result.data === 0) {
-      message.success('导出目录里的漫画都是最新的')
+      message.success(t('updateExported.upToDate'))
       return
     }
-    message.success(`已为 ${result.data} 本漫画补导新章节，进度见底部「导出」`)
+    message.success(t('updateExported.added', { count: result.data }))
   } finally {
     busy.value = false
   }
@@ -31,15 +34,15 @@ async function update() {
 </script>
 
 <template>
-  <n-popconfirm positive-text="开始" @positive-click="update">
+  <n-popconfirm :positive-text="t('updateExported.start')" @positive-click="update">
     <div class="flex flex-col">
-      <div>会去接口拉取导出目录里每本漫画的最新章节</div>
-      <div>只补导还没导出过的章节，已存在的 cbz 直接跳过</div>
-      <div>导出进度在底部的「导出」里看</div>
+      <div>{{ t('updateExported.desc1') }}</div>
+      <div>{{ t('updateExported.desc2') }}</div>
+      <div>{{ t('updateExported.desc3') }}</div>
     </div>
 
     <template #trigger>
-      <n-button size="small" :loading="busy">更新库存</n-button>
+      <n-button size="small" :loading="busy">{{ t('updateDownloaded.update') }}</n-button>
     </template>
   </n-popconfirm>
 </template>

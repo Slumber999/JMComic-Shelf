@@ -1,7 +1,8 @@
 <script setup lang="tsx">
 import { computed, defineComponent, nextTick, PropType, ref, watchEffect } from 'vue'
+import { showError } from '../../../errors.ts'
 import { SelectionArea } from '@viselect/vue'
-import { DropdownOption, NDropdown, NIcon, NProgress, ProgressProps, useDialog, useMessage } from 'naive-ui'
+import { DropdownOption, NDropdown, NIcon, NProgress, ProgressProps, useDialog } from 'naive-ui'
 import {
   PhPause,
   PhChecks,
@@ -18,14 +19,15 @@ import { useMarqueeSelection } from '../../../marqueeSelection.ts'
 import { useStore } from '../../../store.ts'
 import { ExportProgressData, ProgressData } from '../../../types.ts'
 import IconButton from '../../../components/IconButton.vue'
+import { useI18n } from '../../../i18n.ts'
 
 /// finished=false 是「未完成」页签，true 是「已完成」
 /// 下载项和导出项共用这一个列表：勾选、右键菜单、双击暂停/继续都是共通的
 const props = defineProps<{ finished: boolean }>()
 
 const store = useStore()
+const { t } = useI18n()
 const dialog = useDialog()
-const message = useMessage()
 
 /// 选中集合的 key：下载项用 d:章节id，导出项用 e:uuid
 function downloadKey(chapterId: number) {
@@ -91,7 +93,7 @@ async function resumeSelected() {
     const result = await commands.resumeExportTask(uuid)
     if (result.status === 'error') {
       console.error(result.error)
-      message.error(result.error.message, { duration: 8000 })
+      showError(result.error)
     }
   }
 }
@@ -116,7 +118,7 @@ async function pauseSelected() {
     const result = await commands.pauseExportTask(uuid)
     if (result.status === 'error') {
       console.error(result.error)
-      message.error(result.error.message, { duration: 8000 })
+      showError(result.error)
     }
   }
 }
@@ -133,14 +135,14 @@ async function deleteSelected(deleteFiles: boolean) {
     const result = await commands.deleteDownloadTask(chapterId, deleteFiles)
     if (result.status === 'error') {
       console.error(result.error)
-      message.error(result.error.message, { duration: 8000 })
+      showError(result.error)
     }
   }
   for (const uuid of uuids) {
     const result = await commands.deleteExportTask(uuid, deleteFiles)
     if (result.status === 'error') {
       console.error(result.error)
-      message.error(result.error.message, { duration: 8000 })
+      showError(result.error)
     }
   }
 }
@@ -153,10 +155,10 @@ function confirmDeleteSelectedAndFiles() {
   }
 
   dialog.warning({
-    title: '删除任务和文件',
-    content: `将删除选中的 ${count} 个任务，并删除它们已经在磁盘上的文件夹（直接删除，不进回收站）。`,
-    positiveText: '删除',
-    negativeText: '取消',
+    title: t('progressList.deleteTaskFiles'),
+    content: t('progressList.deleteFilesContent', { count }),
+    positiveText: t('progressList.delete'),
+    negativeText: t('common.cancel'),
     onPositiveClick: async () => {
       await deleteSelected(true)
     },
@@ -190,7 +192,7 @@ async function toggleItem(key: string) {
       : await commands.pauseExportTask(uuid)
   if (result.status === 'error') {
     console.error(result.error)
-    message.error(result.error.message, { duration: 8000 })
+    showError(result.error)
   }
 }
 
@@ -208,7 +210,7 @@ const dropdownY = ref<number>(0)
 const dropdownShowing = ref<boolean>(false)
 const dropdownOptions: DropdownOption[] = [
   {
-    label: '全选',
+    label: t('chapterExport.selectAll'),
     key: 'select-all',
     icon: () => (
       <NIcon size="20">
@@ -228,7 +230,7 @@ const dropdownOptions: DropdownOption[] = [
     },
   },
   {
-    label: '继续',
+    label: t('progressList.resume'),
     key: 'resume',
     icon: () => (
       <NIcon size="20">
@@ -243,7 +245,7 @@ const dropdownOptions: DropdownOption[] = [
     },
   },
   {
-    label: '暂停',
+    label: t('progressList.pause'),
     key: 'pause',
     icon: () => (
       <NIcon size="20">
@@ -258,7 +260,7 @@ const dropdownOptions: DropdownOption[] = [
     },
   },
   {
-    label: '删除任务',
+    label: t('progressList.deleteTask'),
     key: 'delete-task',
     icon: () => (
       <NIcon size="20">
@@ -273,7 +275,7 @@ const dropdownOptions: DropdownOption[] = [
     },
   },
   {
-    label: '删除任务和文件',
+    label: t('progressList.deleteTaskFiles'),
     key: 'delete-task-and-files',
     icon: () => (
       <NIcon size="20">
@@ -371,7 +373,7 @@ const DownloadProgressCard = defineComponent({
               {props.p.chapterInfo.chapterTitle}
             </div>
           </div>
-          <span class="shrink-0 rounded bg-gray-2 px-1 text-xs text-gray-6">下载</span>
+          <span class="shrink-0 rounded bg-gray-2 px-1 text-xs text-gray-6">{t('progressList.badgeDownload')}</span>
         </div>
         <div class={`flex items-center mt-1 ${colorClass.value}`}>
           <NIcon class={[colorClass.value, 'mr-2']} size={20}>
@@ -421,7 +423,7 @@ const ExportProgressCard = defineComponent({
           <div class="text-ellipsis whitespace-nowrap overflow-hidden flex-1" title={props.p.comicTitle}>
             {props.p.comicTitle}
           </div>
-          <span class="shrink-0 rounded bg-blue-1 px-1 text-xs text-blue-6">导出</span>
+          <span class="shrink-0 rounded bg-blue-1 px-1 text-xs text-blue-6">{t('progressList.badgeExport')}</span>
         </div>
 
         {props.p.state === 'Processing' && (
@@ -453,7 +455,10 @@ const ExportProgressCard = defineComponent({
           </div>
         )}
         {props.p.chapterExportDir !== undefined && (
-          <IconButton class="ml-auto" title="打开导出目录" onClick={showChapterExportDirInFileManager}>
+          <IconButton
+        class="ml-auto"
+        title={t('comic.openExportDir')}
+        onClick={showChapterExportDirInFileManager}>
             <PhFolderOpen size={24} />
           </IconButton>
         )}
@@ -466,9 +471,9 @@ const ExportProgressCard = defineComponent({
 <template>
   <div class="progresses-selection-container h-full flex flex-col px-2" @contextmenu="showDropdown">
     <SelectionArea :options="selectionOptions" @move="updateSelectedIds" @start="unselectAll" />
-    <span class="ml-auto select-none animate-pulse text-red">左键拖动进行框选，右键打开菜单，双击暂停/继续</span>
+    <span class="ml-auto select-none animate-pulse text-red">{{ t('progressList.dragHint') }}</span>
     <div v-if="itemCount === 0" class="select-none py-8 text-center text-sm text-gray-500">
-      {{ finished ? '还没有完成的任务' : '没有进行中的任务' }}
+      {{ finished ? t('progressList.noFinished') : t('progressList.noRunning') }}
     </div>
     <div class="h-full select-none">
       <DownloadProgressCard

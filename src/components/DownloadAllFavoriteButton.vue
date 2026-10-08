@@ -3,8 +3,10 @@ import { computed, onMounted, ref } from 'vue'
 import { useStore } from '../store.ts'
 import { commands, DownloadAllFavoritesEvent, events } from '../bindings.ts'
 import { MessageReactive, NButton, NPopconfirm, useMessage } from 'naive-ui'
+import { useI18n } from '../i18n.ts'
 
 const store = useStore()
+const { t } = useI18n()
 
 const popConfirmShowing = ref<boolean>(false)
 
@@ -25,10 +27,10 @@ let prepareMessage: MessageReactive | undefined
 onMounted(async () => {
   await events.downloadAllFavoritesEvent.listen(({ payload }) => {
     if (payload.event === 'GetFavoritesStart') {
-      prepareMessage = message.loading('正在获取收藏夹', { duration: 0 })
+      prepareMessage = message.loading(t('downloadAllFavorites.preparing'), { duration: 0 })
     } else if (payload.event === 'GetComicsProgress' && prepareMessage !== undefined) {
       const { current, total } = payload.data
-      prepareMessage.content = `正在获取收藏夹中的漫画(${current}/${total})`
+      prepareMessage.content = t('downloadAllFavorites.preparingDetail', { current, total })
     } else if (payload.event === 'StartCreateDownloadTasks') {
       const { comicId, comicTitle, current, total } = payload.data
       progresses.value.set(comicId, {
@@ -40,7 +42,7 @@ onMounted(async () => {
           () => {
             const progressData = progresses.value.get(comicId)
             if (progressData === undefined) return ''
-            return `${progressData.comicTitle} 正在创建下载任务(${progressData.current}/${progressData.total})`
+            return t('downloadAllFavorites.creating', { title: progressData.comicTitle, current: progressData.current, total: progressData.total })
           },
           { duration: 0 },
         ),
@@ -56,7 +58,7 @@ onMounted(async () => {
       const progressData = progresses.value.get(comicId)
       if (progressData) {
         progressData.progressMessage.type = 'success'
-        progressData.progressMessage.content = `${progressData.comicTitle} 创建下载任务完成(${progressData.current}/${progressData.total})`
+        progressData.progressMessage.content = t('downloadAllFavorites.created', { title: progressData.comicTitle, current: progressData.current, total: progressData.total })
         setTimeout(() => {
           progressData.progressMessage.destroy()
           progresses.value.delete(comicId)
@@ -64,7 +66,7 @@ onMounted(async () => {
       }
     } else if (payload.event === 'GetComicsEnd' && prepareMessage !== undefined) {
       prepareMessage.type = 'success'
-      prepareMessage.content = '成功获取收藏夹中所有的漫画'
+      prepareMessage.content = t('downloadAllFavorites.fetched')
       setTimeout(() => {
         prepareMessage?.destroy()
         prepareMessage = undefined
@@ -129,26 +131,32 @@ function handleDownloadClick() {
 <template>
   <n-popconfirm :positive-text="null" :negative-text="null" v-model:show="popConfirmShowing">
     <div class="flex flex-col">
-      <div>下载整个收藏夹是个大任务</div>
-      <div>为了减轻禁漫服务器压力</div>
-      <div>将自动调整配置中的下载间隔</div>
+      <div>{{ t('downloadAllFavorites.title') }}</div>
+      <div>{{ t('downloadAllFavorites.line1') }}</div>
+      <div>{{ t('downloadAllFavorites.line2') }}</div>
       <div>
-        <span>之后你随时可以在右上角的</span>
-        <span class="bg-gray-2 px-1">配置</span>
-        <span>调整</span>
+        <span>{{ t('downloadAllFavorites.line3Prefix') }}</span>
+        <span class="bg-gray-2 px-1">{{ t('downloadAllFavorites.line3Config') }}</span>
+        <span>{{ t('downloadAllFavorites.line3Suffix') }}</span>
       </div>
     </div>
 
     <template #action>
       <n-button size="small" :disabled="rejectButtonDisabled" @click="reject">
-        <span v-if="rejectButtonDisabled">不调整直接下载 ({{ rejectCooldown }})</span>
-        <span v-else>不调整直接下载</span>
+        <span v-if="rejectButtonDisabled">
+          {{ t('downloadAllFavorites.adjustLater', { count: rejectCooldown }) }}
+        </span>
+        <span v-else>{{ t('downloadAllFavorites.adjustNow') }}</span>
       </n-button>
-      <n-button size="small" type="primary" @click="agree">调整并下载</n-button>
+      <n-button size="small" type="primary" @click="agree">
+        {{ t('downloadAllFavorites.adjustAndDownload') }}
+      </n-button>
     </template>
 
     <template #trigger>
-      <n-button type="primary" size="small" @click="handleDownloadClick">下载整个收藏夹</n-button>
+      <n-button type="primary" size="small" @click="handleDownloadClick">
+        {{ t('downloadAllFavorites.downloadAll') }}
+      </n-button>
     </template>
   </n-popconfirm>
 </template>

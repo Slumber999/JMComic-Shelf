@@ -55,6 +55,8 @@ pub struct Config {
     pub enable_merge_pdf: bool,
     /// 导出跳过模式
     pub export_skip_mode: ExportSkipMode,
+    /// 界面语言
+    pub language: Language,
 }
 
 impl Config {
@@ -151,8 +153,19 @@ impl Config {
             create_pdf_concurrency: cpu_core_num,
             enable_merge_pdf: true,
             export_skip_mode: ExportSkipMode::default(),
+            language: Language::default(),
         }
     }
+}
+
+/// 界面语言：值与前端 i18n 的 Locale 一一对应
+#[derive(Default, Debug, Clone, Copy, PartialEq, Serialize, Deserialize, Type)]
+pub enum Language {
+    #[default]
+    #[serde(rename = "zh-CN")]
+    ZhCn,
+    #[serde(rename = "zh-TW")]
+    ZhTw,
 }
 
 #[derive(Default, Debug, Clone, PartialEq, Serialize, Deserialize, Type)]

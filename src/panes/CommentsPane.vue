@@ -1,13 +1,15 @@
 <script setup lang="ts">
 import { computed, ref, watch } from 'vue'
-import { NButton, NIcon, NPagination, useMessage } from 'naive-ui'
+import { showError } from '../errors.ts'
+import { NButton, NIcon, NPagination } from 'naive-ui'
 import { commands, Comment } from '../bindings.ts'
 import LoadingSpinner from '../components/LoadingSpinner.vue'
 import { useStore } from '../store.ts'
 import { PhChatCircleDots } from '@phosphor-icons/vue'
+import { useI18n } from '../i18n.ts'
 
 const store = useStore()
-const message = useMessage()
+const { t } = useI18n()
 
 /// 后端一次请求 30 条
 const PAGE_SIZE = 30
@@ -30,7 +32,7 @@ async function loadComments() {
 
   if (result.status === 'error') {
     console.error(result.error)
-    message.error(result.error.message, { duration: 6000 })
+    showError(result.error)
     return
   }
 
@@ -56,7 +58,7 @@ async function openComic(aid: string | undefined) {
 
   if (result.status === 'error') {
     console.error(result.error)
-    message.error(result.error.message, { duration: 6000 })
+    showError(result.error)
     return
   }
 
@@ -91,16 +93,18 @@ watch(
       <n-icon size="18">
         <PhChatCircleDots />
       </n-icon>
-      <span class="text-sm text-gray-500">全站最新评论 · 共 {{ total }} 条</span>
-      <n-button class="ml-auto" size="small" @click="loadComments">刷新</n-button>
+      <span class="text-sm text-gray-500">{{ t('comments.title', { count: total }) }}</span>
+      <n-button class="ml-auto" size="small" @click="loadComments">{{ t('common.refresh') }}</n-button>
     </div>
 
     <div v-if="loading" class="flex flex-col items-center gap-3 py-16 text-orange">
       <loading-spinner :size="14" />
-      <span class="text-sm text-gray-500">正在加载评论…</span>
+      <span class="text-sm text-gray-500">{{ t('comments.loading') }}</span>
     </div>
 
-    <div v-else-if="comments.length === 0" class="py-16 text-center text-sm text-gray-500">暂时没有评论</div>
+    <div v-else-if="comments.length === 0" class="py-16 text-center text-sm text-gray-500">
+        {{ t('comments.empty') }}
+      </div>
 
     <div v-else class="flex-1 overflow-auto px-2 py-1">
       <!-- 点一条就跳到它所属的漫画 -->
@@ -109,7 +113,7 @@ watch(
         :key="comment.CID"
         class="cursor-pointer rounded-md px-2 py-2 hover:bg-gray-1"
         :class="jumping === Number(comment.AID) ? 'opacity-50' : ''"
-        :title="'点击查看 JM' + (comment.AID ?? '')"
+        :title="t('comments.jumpTitle', { aid: comment.AID ?? '' })"
         @click="openComic(comment.AID)">
         <div class="flex items-center gap-2 text-xs text-gray-500">
           <span>{{ comment.addtime }}</span>
@@ -124,7 +128,7 @@ watch(
     </div>
 
     <div class="flex items-center justify-center gap-3 box-border p-2 pt-0 mt-auto">
-      <span class="text-xs text-gray-500">共 {{ total }} 条</span>
+      <span class="text-xs text-gray-500">{{ t('comments.totalCount', { count: total }) }}</span>
       <n-pagination :page-count="pageCount" :page="store.commentsPage" @update:page="goToPage" />
     </div>
   </div>

@@ -1,10 +1,12 @@
 <script setup lang="ts">
 import { computed, ref, watch } from 'vue'
+import { showError } from '../errors.ts'
 import { DropdownOption, NButton, NDropdown, NIcon, useMessage } from 'naive-ui'
 import { FavoriteFolderRespData, commands } from '../bindings.ts'
 import { useStore } from '../store.ts'
 import IconButton from './IconButton.vue'
 import { PhStar } from '@phosphor-icons/vue'
+import { useI18n } from '../i18n.ts'
 
 /// variant: 'icon' 用于漫画卡片，'button' 用于阅读器工具栏
 const props = withDefaults(
@@ -19,6 +21,7 @@ const props = withDefaults(
 const emit = defineEmits<{ favoriteChanged: [] }>()
 
 const store = useStore()
+const { t } = useI18n()
 const message = useMessage()
 
 const isFavoriteNow = ref<boolean>(false)
@@ -31,17 +34,24 @@ watch(
 )
 
 const starWeight = computed<'fill' | 'regular'>(() => (isFavoriteNow.value ? 'fill' : 'regular'))
-const favoriteTitle = computed(() => (isFavoriteNow.value ? '已收藏（可移动或取消）' : '收藏'))
+const favoriteTitle = computed(() =>
+  isFavoriteNow.value ? t('favoriteButton.titleFavorited') : t('favoriteButton.titleFavorite'),
+)
 
 const favoriteFolders = ref<FavoriteFolderRespData[]>([])
 
 const favoriteOptions = computed<DropdownOption[]>(() => {
   const options: DropdownOption[] = [
-    isFavoriteNow.value ? { label: '取消收藏', key: 'remove' } : { label: '收藏到全部', key: 'add' },
+    isFavoriteNow.value
+      ? { label: t('favoriteButton.remove'), key: 'remove' }
+      : { label: t('favoriteButton.addToAll'), key: 'add' },
   ]
 
   options.push(
-    ...favoriteFolders.value.map((folder) => ({ label: `收藏到「${folder.name}」`, key: `folder:${folder.FID}` })),
+    ...favoriteFolders.value.map((folder) => ({
+      label: t('favoriteButton.addToFolder', { name: folder.name }),
+      key: `folder:${folder.FID}`,
+    })),
   )
 
   return options
@@ -68,7 +78,7 @@ function onFavoriteDropdownShow(show: boolean) {
 
 async function onFavoriteSelect(key: string) {
   if (store.userProfile === undefined) {
-    message.warning('请先登录')
+    message.warning(t('favoriteButton.needLogin'))
     return
   }
 
@@ -76,11 +86,11 @@ async function onFavoriteSelect(key: string) {
     const result = await commands.toggleFavorite(props.comicId)
     if (result.status === 'error') {
       console.error(result.error)
-      message.error(result.error.message, { duration: 8000 })
+      showError(result.error)
       return
     }
     isFavoriteNow.value = key === 'add'
-    message.success(key === 'add' ? '已收藏到「全部」' : '已取消收藏')
+    message.success(key === 'add' ? t('favoriteButton.addedToAll') : t('favoriteButton.removed'))
     emit('favoriteChanged')
     return
   }
@@ -92,7 +102,7 @@ async function onFavoriteSelect(key: string) {
       const favoriteResult = await commands.toggleFavorite(props.comicId)
       if (favoriteResult.status === 'error') {
         console.error(favoriteResult.error)
-        message.error(favoriteResult.error.message, { duration: 8000 })
+        showError(favoriteResult.error)
         return
       }
       isFavoriteNow.value = true
@@ -101,12 +111,12 @@ async function onFavoriteSelect(key: string) {
     const moveResult = await commands.moveFavoriteToFolder(props.comicId, folderId)
     if (moveResult.status === 'error') {
       console.error(moveResult.error)
-      message.error(moveResult.error.message, { duration: 8000 })
+      showError(moveResult.error)
       return
     }
 
     const folder = favoriteFolders.value.find((item) => item.FID === folderId)
-    message.success(`已收藏到「${folder?.name ?? folderId}」`)
+    message.success(t('favoriteButton.added', { name: folder?.name ?? folderId }))
     emit('favoriteChanged')
   }
 }

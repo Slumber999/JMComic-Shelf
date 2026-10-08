@@ -11,8 +11,10 @@ import NetworkSettings from './components/NetworkSettings.vue'
 import ExportSettings from './components/ExportSettings.vue'
 import StorageSettings from './components/StorageSettings.vue'
 import InterfaceSettings from './components/InterfaceSettings.vue'
+import { useI18n } from '../../i18n.ts'
 
 const store = useStore()
+const { t } = useI18n()
 
 const showing = defineModel<boolean>('showing', { required: true })
 
@@ -40,36 +42,38 @@ async function showConfigInFileManager() {
           去撑弹窗高度——弹窗高度是 auto，整条 flex 链会塌成 0 高、内容变空白。
         -->
         <n-tabs v-model:value="currentTabName" type="line" size="small">
-          <n-tab-pane name="account_settings" tab="账号">
+          <n-tab-pane name="account_settings" :tab="t('settings.tab.account')">
             <div class="max-h-[50vh] overflow-y-auto pr-1">
               <AccountSettings />
             </div>
           </n-tab-pane>
-          <n-tab-pane name="download_settings" tab="下载 / 导出">
+          <n-tab-pane name="download_settings" :tab="t('settings.tab.downloadExport')">
             <div class="max-h-[50vh] overflow-y-auto pr-1">
               <DownloadSettings />
               <div class="my-4 h-px w-full bg-gray-200" />
               <ExportSettings />
             </div>
           </n-tab-pane>
-          <n-tab-pane name="network_settings" tab="网络">
+          <n-tab-pane name="network_settings" :tab="t('settings.tab.network')">
             <div class="max-h-[50vh] overflow-y-auto pr-1">
               <NetworkSettings />
             </div>
           </n-tab-pane>
-          <n-tab-pane name="storage_settings" tab="空间">
+          <n-tab-pane name="storage_settings" :tab="t('settings.tab.storage')">
             <div class="max-h-[50vh] overflow-y-auto pr-1">
               <StorageSettings />
             </div>
           </n-tab-pane>
-          <n-tab-pane name="interface_settings" tab="界面">
+          <n-tab-pane name="interface_settings" :tab="t('settings.tab.interface')">
             <div class="max-h-[50vh] overflow-y-auto pr-1">
               <InterfaceSettings />
             </div>
           </n-tab-pane>
         </n-tabs>
 
-        <n-button class="ml-auto mt-2" size="small" @click="showConfigInFileManager">打开配置目录</n-button>
+        <n-button class="ml-auto mt-2" size="small" @click="showConfigInFileManager">
+          {{ t('settingsDialog.openConfigDir') }}
+        </n-button>
       </div>
     </n-dialog>
   </n-modal>

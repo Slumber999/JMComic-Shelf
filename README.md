@@ -63,6 +63,7 @@
 - **封面悬停预览**：列表模式下鼠标放到封面上，侧边贴出放大 2~3 倍的预览图，倍数可在设置里调节
 - **线路优化**：API 线路一键测速并选最快；图片线路失败自动切换
 - **空间统计与清理**：统计下载 / 导出 / 日志占用，清理下载残留、分享包、旧日志
+- **语言**：适配简体中文/繁体中文
 - **配置分区**：账号、下载、导出、网络、空间、界面
 
 ## 界面截图
@@ -137,12 +138,12 @@ pnpm tauri build --target universal-apple-darwin
 
 ## Star History
 
-<a href="https://www.star-history.com/?type=date&repos=Slumber999%2FJMComic-Shelf">
-  <picture>
-    <source media="(prefers-color-scheme: dark)" srcset="https://api.star-history.com/chart?repos=Slumber999/JMComic-Shelf&type=date&theme=dark&legend=top-left" />
-    <source media="(prefers-color-scheme: light)" srcset="https://api.star-history.com/chart?repos=Slumber999/JMComic-Shelf&type=date&legend=top-left" />
-    <img alt="Star History Chart" src="https://api.star-history.com/chart?repos=Slumber999/JMComic-Shelf&type=date&legend=top-left" />
-  </picture>
+<a href="https://www.star-history.com/?repos=Slumber999%2FJMComic-Shelf&type=date&legend=top-left">
+ <picture>
+   <source media="(prefers-color-scheme: dark)" srcset="https://api.star-history.com/chart?repos=Slumber999/JMComic-Shelf&type=date&theme=dark&legend=top-left" />
+   <source media="(prefers-color-scheme: light)" srcset="https://api.star-history.com/chart?repos=Slumber999/JMComic-Shelf&type=date&legend=top-left" />
+   <img alt="Star History Chart" src="https://api.star-history.com/chart?repos=Slumber999/JMComic-Shelf&type=date&legend=top-left" />
+ </picture>
 </a>
 
 ## 许可证与致谢

@@ -16,7 +16,8 @@ use crate::export::ComicExportLock;
 use crate::jm_client::JmClient;
 use crate::reader::ReaderState;
 use crate::reader_window::{
-    get_reader_window_target, open_reader_window, ReaderWindowTargetState, READER_WINDOW_LABEL,
+    get_reader_window_target, open_reader_window, MainWindowInitialSize, ReaderWindowTargetState,
+    READER_WINDOW_LABEL,
 };
 
 mod commands;
@@ -178,17 +179,6 @@ pub fn run() {
             });
         })
         .on_window_event(|window, event| {
-            // 主窗口改尺寸时，阅读窗口跟着一样大
-            if window.label() == "main" {
-                if let tauri::WindowEvent::Resized(size) = event {
-                    if let Some(reader_window) =
-                        window.app_handle().get_webview_window(READER_WINDOW_LABEL)
-                    {
-                        let _ = reader_window.set_size(tauri::Size::Physical(*size));
-                    }
-                }
-            }
-
             // 阅读窗口关掉了就释放它的后端缓存
             if matches!(event, tauri::WindowEvent::Destroyed) && window.label() == READER_WINDOW_LABEL {
                 if let Some(reader_state) = window.try_state::<ReaderState>() {
@@ -257,6 +247,16 @@ pub fn run() {
                     (saved.window_width, saved.window_height)
                 };
                 restore_main_window_size(&window, width, height);
+
+                // 记下主窗口启动时的尺寸：阅读窗口按它开，不跟随之后的变化
+                let scale_factor = window.scale_factor().unwrap_or(1.0);
+                if let Ok(size) = window.inner_size() {
+                    let initial = (
+                        f64::from(size.width) / scale_factor,
+                        f64::from(size.height) / scale_factor,
+                    );
+                    app.manage(MainWindowInitialSize::new(initial));
+                }
             }
 
             app.manage(config);

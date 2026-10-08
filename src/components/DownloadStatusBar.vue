@@ -5,8 +5,10 @@ import { useStore } from '../store.ts'
 import { NIcon } from 'naive-ui'
 import { PhCaretDown, PhCaretUp, PhDownloadSimple } from '@phosphor-icons/vue'
 import { UnlistenFn } from '@tauri-apps/api/event'
+import { useI18n } from '../i18n.ts'
 
 const store = useStore()
+const { t } = useI18n()
 
 const expanded = defineModel<boolean>('expanded', { required: true })
 
@@ -67,18 +69,20 @@ onUnmounted(() => {
 <template>
   <div
     class="flex items-center gap-3 px-2 h-7 text-xs cursor-pointer select-none hover:bg-gray-1 shrink-0"
-    title="点击展开/收起下载与导出进度"
+    :title="t('statusBar.toggleTitle')"
     @click="expanded = !expanded">
     <n-icon size="14">
       <PhDownloadSimple />
     </n-icon>
-    <span class="text-gray-5">下载</span>
+    <span class="text-gray-5">{{ t('common.download') }}</span>
     <span class="whitespace-nowrap">{{ speed }}</span>
-    <span class="whitespace-nowrap">未完成 {{ uncompletedCount }}</span>
-    <span class="whitespace-nowrap">已完成 {{ completedCount }}</span>
-    <span v-if="exportCount > 0" class="text-orange-5 whitespace-nowrap">导出中 {{ exportCount }}</span>
+    <span class="whitespace-nowrap">{{ t('statusBar.uncompleted', { count: uncompletedCount }) }}</span>
+    <span class="whitespace-nowrap">{{ t('statusBar.completed', { count: completedCount }) }}</span>
+    <span v-if="exportCount > 0" class="text-orange-5 whitespace-nowrap">
+        {{ t('progressList.exporting', { count: exportCount }) }}
+      </span>
 
-    <span class="ml-auto text-gray-4">{{ expanded ? '收起' : '展开' }}</span>
+    <span class="ml-auto text-gray-4">{{ expanded ? t('statusBar.collapse') : t('statusBar.expand') }}</span>
     <n-icon size="14" class="text-gray-4">
       <PhCaretUp v-if="expanded" />
       <PhCaretDown v-else />

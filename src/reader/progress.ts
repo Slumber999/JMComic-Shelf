@@ -1,4 +1,5 @@
 import { ref } from 'vue'
+import { t } from '../i18n.ts'
 
 /// 阅读进度：存在 localStorage 的 `reader:<comicId>` 里
 /// - 只记多章漫画，而且只精确到章节：单章短篇每次都从头读，不记进度
@@ -106,7 +107,7 @@ function clearProgress(comicId: number) {
 
 /// 「读到第 3 话」
 export function progressLabel(progress: ReaderProgress): string {
-  return `读到第 ${progress.chapter + 1} 话`
+  return t('progress.readToChapter', { chapter: progress.chapter + 1 })
 }
 
 loadAllProgress()

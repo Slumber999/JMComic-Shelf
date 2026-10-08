@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
+import { showError, friendlyError } from '../../../errors.ts'
 import { commands, events, LocalLibrarySource, QuickReaderCandidate } from '../../../bindings.ts'
 import {
   MessageReactive,
@@ -15,7 +16,9 @@ import {
 import { UnlistenFn } from '@tauri-apps/api/event'
 import { open } from '@tauri-apps/plugin-dialog'
 import { useStore } from '../../../store.ts'
+import { useI18n } from '../../../i18n.ts'
 
+const { t } = useI18n()
 const showing = defineModel<boolean>('showing', { required: true })
 
 const message = useMessage()
@@ -24,7 +27,7 @@ const store = useStore()
 const TARGET_STORAGE_KEY = 'quickReader:target'
 
 const source = ref<LocalLibrarySource>('ExportDir')
-const dirName = ref<string>('快速阅读器')
+const dirName = ref<string>(t('quickReaderDialog.defaultName'))
 // 导出位置：跟随来源目录 / 自定义
 const targetMode = ref<'same' | 'custom'>('same')
 const customDir = ref<string>('')
@@ -49,7 +52,7 @@ const targetDir = computed(() =>
 const targetPreview = computed(() => {
   const base =
     targetDir.value ?? (source.value === 'ExportDir' ? store.config?.exportDir : store.config?.downloadDir)
-  const name = dirName.value.trim() === '' ? '快速阅读器' : dirName.value.trim()
+  const name = dirName.value.trim() === '' ? t('quickReaderDialog.defaultName') : dirName.value.trim()
   return base === undefined ? `${name}/` : `${base}\\${name}\\`
 })
 const allSelected = computed(
@@ -90,15 +93,15 @@ onMounted(async () => {
   unlistenQuickReader = await events.exportQuickReaderEvent.listen(({ payload }) => {
     if (payload.event === 'Start') {
       progressMessage?.destroy()
-      progressMessage = message.loading(`正在导出快速阅读器(0/${payload.data.total})`, { duration: 0 })
+      progressMessage = message.loading(t('quickReaderDialog.exportingStart', { total: payload.data.total }), { duration: 0 })
     } else if (payload.event === 'Progress' && progressMessage !== undefined) {
       const { current, total, indicator } = payload.data
-      progressMessage.content = `正在导出快速阅读器(${current}/${total}) ${indicator}`
+      progressMessage.content = t('quickReaderDialog.exporting', { current, total, indicator })
     } else if (payload.event === 'End') {
-      finishMessage('success', `快速阅读器已导出到：${payload.data.dir}`)
+      finishMessage('success', t('quickReaderDialog.exportedTo', { dir: payload.data.dir }))
       showing.value = false
     } else if (payload.event === 'Error') {
-      finishMessage('error', `导出快速阅读器失败：${payload.data.message}`)
+      finishMessage('error', t('quickReaderDialog.exportFailed', { message: payload.data.message }))
     }
   })
 })
@@ -127,7 +130,7 @@ async function loadCandidates() {
 
   if (result.status === 'error') {
     console.error(result.error)
-    message.error(result.error.message, { duration: 8000 })
+    showError(result.error)
     candidates.value = []
     selectedKeys.value = new Set()
     return
@@ -177,7 +180,7 @@ function saveTargetPreference() {
 
 async function exportReader() {
   if (selectedCount.value === 0) {
-    message.warning('请至少选中一部漫画')
+    message.warning(t('quickReaderDialog.pickComic'))
     return
   }
   if (exporting.value) {
@@ -185,7 +188,7 @@ async function exportReader() {
   }
 
   if (targetMode.value === 'custom' && targetDir.value === null) {
-    message.warning('请先选择自定义导出目录')
+    message.warning(t('quickReaderDialog.pickDir'))
     return
   }
 
@@ -203,7 +206,7 @@ async function exportReader() {
 
   if (result.status === 'error') {
     console.error(result.error)
-    finishMessage('error', result.error.message)
+    finishMessage('error', friendlyError(result.error))
   }
 }
 </script>
@@ -211,29 +214,29 @@ async function exportReader() {
 <template>
   <n-modal v-model:show="showing">
     <div class="w-160 max-w-90vw bg-white rounded-lg p-4 flex flex-col gap-3">
-      <div class="text-lg font-bold">导出快速阅读器</div>
+      <div class="text-lg font-bold">{{ t('quickReaderDialog.title') }}</div>
       <div class="text-xs text-gray-500 leading-5">
-        生成一个可以在电脑浏览器里直接打开的分享包（含 index.html 与漫画图片，cbz 会解压成图片目录）。<br />
-        对方拿到整个文件夹后双击 index.html 即可阅读，无需联网。
-        <span class="text-orange-5">注意：会把图片复制一份，占用额外磁盘空间。</span>
+        {{ t('quickReaderDialog.desc') }}<br />
+        {{ t('quickReaderDialog.share') }}
+        <span class="text-orange-5">{{ t('quickReaderDialog.warn') }}</span>
       </div>
 
       <div class="flex items-center gap-2">
-        <span class="text-sm shrink-0">收集目录</span>
+        <span class="text-sm shrink-0">{{ t('quickReaderDialog.collectDir') }}</span>
         <n-radio-group v-model:value="source" size="small">
-          <n-radio-button value="ExportDir">导出目录</n-radio-button>
-          <n-radio-button value="DownloadDir">下载目录</n-radio-button>
+          <n-radio-button value="ExportDir">{{ t('settings.export.dir') }}</n-radio-button>
+          <n-radio-button value="DownloadDir">{{ t('settings.download.dir') }}</n-radio-button>
         </n-radio-group>
 
-        <span class="text-sm shrink-0 ml-2">阅读器名称</span>
-        <n-input v-model:value="dirName" size="small" placeholder="快速阅读器" />
+        <span class="text-sm shrink-0 ml-2">{{ t('quickReaderDialog.readerName') }}</span>
+        <n-input v-model:value="dirName" size="small" :placeholder="t('quickReaderDialog.defaultName')" />
       </div>
 
       <div class="flex items-center gap-2">
-        <span class="text-sm shrink-0">导出位置</span>
+        <span class="text-sm shrink-0">{{ t('quickReaderDialog.target') }}</span>
         <n-radio-group v-model:value="targetMode" size="small" @update:value="saveTargetPreference">
-          <n-radio-button value="same">跟随来源目录</n-radio-button>
-          <n-radio-button value="custom">自定义目录</n-radio-button>
+          <n-radio-button value="same">{{ t('quickReaderDialog.sameAsSource') }}</n-radio-button>
+          <n-radio-button value="custom">{{ t('quickReaderDialog.customDir') }}</n-radio-button>
         </n-radio-group>
         <template v-if="targetMode === 'custom'">
           <n-input
@@ -241,26 +244,30 @@ async function exportReader() {
             v-model:value="customDir"
             size="small"
             readonly
-            placeholder="点击右侧按钮选择目录"
+            :placeholder="t('quickReaderDialog.pickDirPlaceholder')"
             @click="pickTargetDir" />
-          <n-button size="small" @click="pickTargetDir">选择目录</n-button>
+          <n-button size="small" @click="pickTargetDir">{{ t('quickReaderDialog.pickDirButton') }}</n-button>
         </template>
       </div>
 
       <div class="flex items-center gap-2">
-        <span class="text-sm text-gray-500">已选 {{ selectedCount }} / {{ candidates.length }} 部</span>
-        <n-button size="small" :disabled="allSelected || candidates.length === 0" @click="selectAll">全选</n-button>
-        <n-button size="small" :disabled="selectedCount === 0" @click="clearAll">全不选</n-button>
-        <span class="text-xs text-gray-400 ml-auto">重名会自动加 -2、-3，可同时存在多个阅读器</span>
+        <span class="text-sm text-gray-500">{{ t('quickReaderDialog.selectedCount', { selected: selectedCount, total: candidates.length }) }}</span>
+        <n-button size="small" :disabled="allSelected || candidates.length === 0" @click="selectAll">
+          {{ t('quickReaderDialog.selectAll') }}
+        </n-button>
+        <n-button size="small" :disabled="selectedCount === 0" @click="clearAll">
+          {{ t('quickReaderDialog.clearAll') }}
+        </n-button>
+        <span class="text-xs text-gray-400 ml-auto">{{ t('quickReaderDialog.nameHint') }}</span>
       </div>
 
       <div class="border border-gray-200 rounded-md overflow-auto" style="max-height: 46vh; min-height: 120px">
         <div v-if="loading" class="flex items-center justify-center py-10 text-gray-400">
           <n-spin size="small" />
-          <span class="ml-2 text-sm">正在扫描漫画…</span>
+          <span class="ml-2 text-sm">{{ t('quickReaderDialog.scanning') }}</span>
         </div>
         <div v-else-if="candidates.length === 0" class="text-center py-10 text-sm text-gray-400">
-          这个目录里没有找到可导出的漫画
+          {{ t('quickReaderDialog.noneFound') }}
         </div>
         <div
           v-else
@@ -272,7 +279,7 @@ async function exportReader() {
           <div class="flex flex-col overflow-hidden">
             <span class="text-sm truncate" :title="candidate.name">{{ candidate.name }}</span>
             <span class="text-xs text-gray-500">
-              {{ candidate.chapterCount }} 章 · {{ candidate.pageCount }} 页 ·
+              {{ t('quickReaderDialog.chapterPage', { chapters: candidate.chapterCount, pages: candidate.pageCount }) }}
               {{ formatBytes(candidate.estimatedBytes) }} · {{ candidate.kind }}
             </span>
           </div>
@@ -280,15 +287,17 @@ async function exportReader() {
       </div>
 
       <div class="flex items-center gap-2">
-        <span class="text-xs text-gray-400 truncate" :title="targetPreview">导出到：{{ targetPreview }}</span>
-        <n-button class="ml-auto" size="small" @click="showing = false">取消</n-button>
+        <span class="text-xs text-gray-400 truncate" :title="targetPreview">
+          {{ t('quickReaderDialog.targetPreview', { path: targetPreview }) }}
+        </span>
+        <n-button class="ml-auto" size="small" @click="showing = false">{{ t('common.cancel') }}</n-button>
         <n-button
           size="small"
           type="primary"
           :loading="exporting"
           :disabled="selectedCount === 0 || loading"
           @click="exportReader">
-          开始导出 ({{ selectedCount }})
+          {{ t('quickReaderDialog.start', { count: selectedCount }) }}
         </n-button>
       </div>
     </div>

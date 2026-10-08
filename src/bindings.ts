@@ -641,7 +641,17 @@ export type ComicInFavorite = { id: number; author: string; description: string 
 isExported: boolean; comicDownloadDir: string }
 export type ComicInSearch = { id: number; author: string; name: string; image: string; category: CategoryRespData; categorySub: CategorySubRespData; liked: boolean; isFavorite: boolean; updateAt: number; isDownloaded: boolean; comicDownloadDir: string }
 export type ComicInWeekly = { id: number; author: string; description: string; name: string; image: string; category: Category; category_sub: CategorySub; liked: boolean; is_favorite: boolean; update_at: number; is_downloaded: boolean; comic_download_dir: string }
-export type CommandError = { err_title: string; message: string }
+export type CommandError = { err_title: string; 
+/**
+ * 错误码：前端只认它，用它查多语言文案。
+ * 是稳定的英文短标识，跟着接口走——改名字等于改接口。
+ */
+code: string; 
+/**
+ * 给人看的错误说明：优先取报错里带中文的那一层原因，没有才退回英文层。
+ * 完整调用链在日志里。
+ */
+message: string }
 /**
  * 一条漫画评论（官方 App 接口 /forum 的返回）
  */
@@ -694,7 +704,11 @@ windowWidth: number; windowHeight: number; createPdfConcurrency: number; enableM
 /**
  * 导出跳过模式
  */
-exportSkipMode: ExportSkipMode }
+exportSkipMode: ExportSkipMode; 
+/**
+ * 界面语言
+ */
+language: Language }
 export type DownloadAllFavoritesEvent = { event: "GetFavoritesStart" } | { event: "GetComicsProgress"; data: { current: number; total: number } } | { event: "StartCreateDownloadTasks"; data: { comicId: number; comicTitle: string; current: number; total: number } } | { event: "CreatingDownloadTask"; data: { comicId: number; current: number } } | { event: "EndCreateDownloadTasks"; data: { comicId: number } } | { event: "GetComicsEnd" }
 export type DownloadEvent = { event: "Speed"; data: { speed: string } } | { event: "Sleeping"; data: { chapterId: number; remainingSec: number } } | { event: "TaskCreate"; data: { state: DownloadTaskState; comic: Comic; chapterInfo: ChapterInfo; downloadedImgCount: number; totalImgCount: number } } | { event: "TaskDelete"; data: { chapterId: number } } | { event: "TaskUpdate"; data: { chapterId: number; state: DownloadTaskState; downloadedImgCount: number; totalImgCount: number } }
 export type DownloadFormat = "Jpeg" | "Png" | "Webp"
@@ -757,6 +771,10 @@ export type GetWeeklyResult = { total: number; list: ComicInWeekly[] }
  */
 export type ImageLineProbeResult = { domain: string; ok: boolean; latencyMs: number | null; error: string | null }
 export type JsonValue = null | boolean | number | string | JsonValue[] | { [key in string]: JsonValue }
+/**
+ * 界面语言：值与前端 i18n 的 Locale 一一对应
+ */
+export type Language = "zh-CN" | "zh-TW"
 /**
  * 本地库存读取的目录
  * - 注意：这只是"看哪个目录"的视图偏好，由前端存在 localStorage 里，

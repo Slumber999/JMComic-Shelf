@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { computed, nextTick, onMounted, ref, watch } from 'vue'
+import { showError } from '../errors.ts'
 import { commands, LocalTag, SearchSort } from '../bindings.ts'
 import { scrollListToTop } from '../listScroll.ts'
 import {
@@ -18,19 +19,21 @@ import LoadingSpinner from '../components/LoadingSpinner.vue'
 import FloatLabelInput from '../components/FloatLabelInput.vue'
 import { PhClockCounterClockwise, PhMagnifyingGlass, PhTag } from '@phosphor-icons/vue'
 import { useStore } from '../store.ts'
+import { useI18n } from '../i18n.ts'
 
 const store = useStore()
+const { t } = useI18n()
 const message = useMessage()
 
 const HISTORY_KEY = 'search:history'
 const MAX_HISTORY = 20
 
-const sortOptions: SelectProps['options'] = [
-  { label: '最新', value: 'Latest' },
-  { label: '最多点击', value: 'View' },
-  { label: '最多图片', value: 'Picture' },
-  { label: '最多爱心', value: 'Like' },
-]
+const sortOptions = computed<SelectProps['options']>(() => [
+  { label: t('search.newest'), value: 'Latest' },
+  { label: t('search.mostView'), value: 'View' },
+  { label: t('search.mostPicture'), value: 'Picture' },
+  { label: t('search.mostLike'), value: 'Like' },
+])
 
 const searchInput = ref<string>('')
 const searching = ref<boolean>(false)
@@ -50,17 +53,17 @@ const tagsExpanded = ref<boolean>(true)
 
 // 年月筛选
 const currentYear = new Date().getFullYear()
-const yearOptions: SelectProps['options'] = [
-  { label: '不限年份', value: 0 },
+const yearOptions = computed<SelectProps['options']>(() => [
+  { label: t('search.yearAll'), value: 0 },
   ...Array.from({ length: 12 }, (_, index) => ({
-    label: `${currentYear - index} 年`,
+    label: t('search.year', { year: currentYear - index }),
     value: currentYear - index,
   })),
-]
-const monthOptions: SelectProps['options'] = [
-  { label: '不限月份', value: 0 },
-  ...Array.from({ length: 12 }, (_, index) => ({ label: `${index + 1} 月`, value: index + 1 })),
-]
+])
+const monthOptions = computed<SelectProps['options']>(() => [
+  { label: t('search.monthAll'), value: 0 },
+  ...Array.from({ length: 12 }, (_, index) => ({ label: t('search.month', { month: index + 1 }), value: index + 1 })),
+])
 const yearSelected = ref<number>(0)
 const monthSelected = ref<number>(0)
 
@@ -84,7 +87,9 @@ const tagsHeaderText = computed(() => {
   const official =
     categoryResp.value?.blocks.reduce((sum, block) => sum + block.content.length, 0) ?? 0
   const local = localTagStats.value.length
-  return local > 0 ? `常用标签（官方 ${official} 个 · 本地 ${local} 个）` : `常用标签（官方 ${official} 个）`
+  return local > 0
+    ? t('search.popularTagsWithLocal', { official, local })
+    : t('search.popularTags', { official })
 })
 
 async function loadLocalTags() {
@@ -152,7 +157,10 @@ const categoryEntries = computed(() => {
       key: `c:${category.id}`,
       keyword: category.name,
       groupLabel,
-      label: category.slug === '' ? `${category.name}（全部漫画）` : `${category.name}(整个分类)`,
+      label:
+        category.slug === ''
+          ? t('search.categoryAll', { name: category.name })
+          : t('search.categoryWhole', { name: category.name }),
       categorySlug,
     })
 
@@ -191,11 +199,11 @@ const categoryOptions = computed<SelectProps['options']>(() => {
 
 const historyOptions = computed(() =>
   history.value.length === 0
-    ? [{ label: '还没有搜索历史', key: 'empty', disabled: true }]
+    ? [{ label: t('search.noHistory'), key: 'empty', disabled: true }]
     : [
         ...history.value.map((keyword) => ({ label: keyword, key: keyword })),
         { type: 'divider' as const, key: 'divider' },
-        { label: '清空搜索历史', key: '__clear__' },
+        { label: t('search.clearHistory'), key: '__clear__' },
       ],
 )
 
@@ -222,7 +230,7 @@ onMounted(async () => {
   const result = await commands.getCategories()
   if (result.status === 'error') {
     console.error(result.error)
-    message.error(result.error.message, { duration: 6000 })
+    showError(result.error)
     return
   }
   store.categoryResp = result.data
@@ -268,12 +276,12 @@ async function search(keyword: string, page: number, sort: SearchSort) {
   if (trimmed === '') {
     store.searchResult = undefined
     searchPage.value = 1
-    message.info('请输入关键词（也可以直接点下方的常用标签、或选分类/年份）')
+    message.info(t('search.needKeyword'))
     return
   }
 
   if (searching.value) {
-    message.warning('有搜索正在进行，请稍后再试')
+    message.warning(t('search.searchingBusy'))
     return
   }
 
@@ -296,7 +304,7 @@ async function search(keyword: string, page: number, sort: SearchSort) {
 
   if (result.status === 'error') {
     console.error(result.error)
-    message.error(result.error.message, { duration: 6000 })
+    showError(result.error)
     searching.value = false
     return
   }
@@ -305,7 +313,7 @@ async function search(keyword: string, page: number, sort: SearchSort) {
   if ('SearchResult' in searchResultVariant) {
     const respData = searchResultVariant.SearchResult
     if (respData.content.length === 0) {
-      message.warning('什么都没有搜到，请尝试其他关键词或调整筛选条件')
+      message.warning(t('search.nothingFound'))
       searching.value = false
       return
     }
@@ -338,7 +346,7 @@ function sortToOrder(sort: SearchSort): string {
 /// - 官方接口不吃年月筛选，切分类浏览时年月不参与
 async function browseCategory(slug: string, page: number, sort: SearchSort) {
   if (searching.value) {
-    message.warning('有加载正在进行，请稍后再试')
+    message.warning(t('search.loadingBusy'))
     return
   }
 
@@ -350,13 +358,13 @@ async function browseCategory(slug: string, page: number, sort: SearchSort) {
 
   if (result.status === 'error') {
     console.error(result.error)
-    message.error(result.error.message, { duration: 6000 })
+    showError(result.error)
     searching.value = false
     return
   }
 
   if (result.data.content.length === 0) {
-    message.warning('这个分类下什么都没有')
+    message.warning(t('search.emptyCategory'))
     searching.value = false
     return
   }
@@ -448,7 +456,7 @@ function resetFilters() {
   <div class="h-full flex flex-col gap-2">
     <n-input-group class="box-border px-2 pt-2">
       <FloatLabelInput
-        label="关键词(jm号也可以)"
+        :label="t('search.keywordLabel')"
         size="small"
         v-model:value="searchInput"
         clearable
@@ -480,7 +488,7 @@ function resetFilters() {
         class="w-40%"
         size="small"
         clearable
-        placeholder="分类"
+        :placeholder="t('search.categoryPlaceholder')"
         :value="categorySelected"
         :options="categoryOptions"
         :show-checkmark="false"
@@ -511,7 +519,7 @@ function resetFilters() {
         </n-button>
       </n-dropdown>
 
-      <n-button size="small" @click="resetFilters">清空筛选</n-button>
+      <n-button size="small" @click="resetFilters">{{ t('search.resetFilters') }}</n-button>
     </div>
 
     <!-- 官方常用标签 -->
@@ -523,7 +531,7 @@ function resetFilters() {
           <PhTag />
         </n-icon>
         <span>{{ tagsHeaderText }}</span>
-        <span class="text-gray-4">{{ tagsExpanded ? '收起' : '展开' }}</span>
+        <span class="text-gray-4">{{ tagsExpanded ? t('common.collapse') : t('common.expand') }}</span>
       </div>
       <div v-if="tagsExpanded" class="flex flex-col gap-1">
         <div v-for="block in categoryResp.blocks" :key="block.title" class="flex items-start gap-1">
@@ -543,7 +551,7 @@ function resetFilters() {
 
         <!-- 本地标签云：来自已下载 / 已导出漫画的元数据，样式和官方标签一致，点一下就是按这个标签搜索 -->
         <div v-if="localTagStats.length > 0" class="flex items-start gap-1">
-          <span class="text-xs text-gray-400 shrink-0 w-18 text-right pt-0.5">本地</span>
+          <span class="text-xs text-gray-400 shrink-0 w-18 text-right pt-0.5">{{ t('search.local') }}</span>
           <div class="flex flex-wrap items-center gap-1">
             <n-button
               v-for="tag in visibleLocalTags"
@@ -558,7 +566,7 @@ function resetFilters() {
               v-if="localTagStats.length > LOCAL_TAG_PREVIEW_COUNT"
               class="text-xs text-gray-4 cursor-pointer select-none hover:text-gray-6"
               @click="localTagsExpanded = !localTagsExpanded">
-              {{ localTagsExpanded ? '收起' : `展开全部 ${localTagStats.length} 个` }}
+              {{ localTagsExpanded ? t('common.collapse') : t('search.expandAllLocal', { count: localTagStats.length }) }}
             </span>
           </div>
         </div>
@@ -567,7 +575,7 @@ function resetFilters() {
 
     <div v-if="searching" class="flex flex-col items-center gap-3 py-16 text-orange">
       <loading-spinner :size="14" />
-      <span class="text-sm text-gray-500">正在搜索…</span>
+      <span class="text-sm text-gray-500">{{ t('search.searching') }}</span>
     </div>
 
     <div
@@ -592,8 +600,9 @@ function resetFilters() {
 
     <div v-if="searchPageCount > 0" class="flex items-center justify-center gap-3 box-border p-2 pt-0 mt-auto">
       <span class="text-xs text-gray-500">
-        {{ browsingCategoryName === '' ? '' : `分类「${browsingCategoryName}」 · ` }}共
-        {{ store.searchResult?.total ?? 0 }} 条
+        {{ browsingCategoryName === '' ? '' : t('search.resultInCategory', { name: browsingCategoryName }) }}{{
+          t('search.resultTotalShort', { count: store.searchResult?.total ?? 0 })
+        }}
       </span>
       <n-pagination :page-count="searchPageCount" :page="searchPage" @update:page="loadPage" />
     </div>

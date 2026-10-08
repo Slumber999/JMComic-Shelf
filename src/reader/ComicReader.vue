@@ -1,7 +1,8 @@
 <script setup lang="ts">
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
+import { showError } from '../errors.ts'
 import { Comic, commands, ReaderComic } from '../bindings.ts'
-import { NButton, NIcon, NSelect, NSlider, SelectProps, useMessage } from 'naive-ui'
+import { NButton, NIcon, NSelect, NSlider, SelectProps } from 'naive-ui'
 import {
   PhCaretDoubleLeft,
   PhCaretDoubleRight,
@@ -12,6 +13,7 @@ import {
 } from '@phosphor-icons/vue'
 import { getProgress, saveProgress as saveReaderProgress } from './progress.ts'
 import { readerPageUrl } from './protocol.ts'
+import { useI18n } from '../i18n.ts'
 import FavoriteButton from '../components/FavoriteButton.vue'
 import LoadingSpinner from '../components/LoadingSpinner.vue'
 import CommentDrawer from './CommentDrawer.vue'
@@ -20,7 +22,7 @@ import CommentDrawer from './CommentDrawer.vue'
 const props = defineProps<{ comic?: Comic; comicId?: number; keepSessionOnUnmount?: boolean }>()
 const showing = defineModel<boolean>('showing', { required: true })
 
-const message = useMessage()
+const { t } = useI18n()
 
 type ReadingMode = 'paged' | 'scroll'
 
@@ -57,7 +59,7 @@ const loadingChapter = computed(() => opening.value || preparing.value)
 
 const chapterOptions = computed<SelectProps['options']>(() =>
   chapters.value.map((chapter, index) => ({
-    label: `${index + 1}. ${chapter.title}(${chapter.pageCount}页)`,
+    label: t('reader.chapterOption', { index: index + 1, title: chapter.title, pages: chapter.pageCount }),
     value: index,
   })),
 )
@@ -77,11 +79,15 @@ const comicTitle = computed(() => props.comic?.name ?? readerComic.value?.title 
 const hasMultipleChapters = computed(() => chapters.value.length > 1)
 const prevChapterTitle = computed(() => {
   const chapter = chapters.value[chapterIndex.value - 1]
-  return chapter === undefined ? '已经是第一章' : `上一章：${chapter.title}`
+  return chapter === undefined
+    ? t('reader.firstChapter')
+    : t('reader.prevChapter', { title: chapter.title })
 })
 const nextChapterTitle = computed(() => {
   const chapter = chapters.value[chapterIndex.value + 1]
-  return chapter === undefined ? '已经是最后一章' : `下一章：${chapter.title}`
+  return chapter === undefined
+    ? t('reader.lastChapter')
+    : t('reader.nextChapter', { title: chapter.title })
 })
 const prevDisabled = computed(() => pageIndex.value === 0 && chapterIndex.value === 0)
 const nextDisabled = computed(
@@ -118,7 +124,7 @@ async function open() {
   if (result.status === 'error') {
     opening.value = false
     console.error(result.error)
-    message.error(result.error.message, { duration: 8000 })
+    showError(result.error)
     showing.value = false
     return
   }
@@ -181,7 +187,7 @@ async function ensureChapterReady(index: number): Promise<boolean> {
 
   if (result.status === 'error') {
     console.error(result.error)
-    message.error(result.error.message, { duration: 8000 })
+    showError(result.error)
     return false
   }
 
@@ -452,7 +458,7 @@ onBeforeUnmount(() => {
 
         <span class="truncate flex-1 font-medium" :title="comicTitle">{{ comicTitle }}</span>
 
-        <span v-if="opening" class="text-orange-4 whitespace-nowrap">打开中…</span>
+        <span v-if="opening" class="text-orange-4 whitespace-nowrap">{{ t('reader.opening') }}</span>
         <span class="text-gray-400 whitespace-nowrap">
           {{ pageIndex + 1 }} / {{ pageCount || '…' }}
         </span>
@@ -501,20 +507,20 @@ onBeforeUnmount(() => {
           size="small"
           :type="readingMode === 'scroll' ? 'primary' : 'default'"
           @click="setReadingMode('scroll')">
-          上下滑动
+          {{ t('reader.scrollMode') }}
         </n-button>
         <n-button
           size="small"
           :type="readingMode === 'paged' ? 'primary' : 'default'"
           @click="setReadingMode('paged')">
-          左右翻页
+          {{ t('reader.pagedMode') }}
         </n-button>
 
         <!-- 和收藏按钮一样的默认带边框样式，抽屉打开时高亮 -->
         <n-button
           size="small"
           :type="commentDrawerShowing ? 'primary' : 'default'"
-          title="评论"
+          :title="t('commentDrawer.title')"
           :disabled="commentComicId === undefined"
           @click="commentDrawerShowing = true">
           <template #icon>
@@ -537,9 +543,11 @@ onBeforeUnmount(() => {
       @scroll="onScroll">
       <div v-if="loadingChapter" class="flex flex-col items-center gap-5 py-20 text-white">
         <loading-spinner :size="14" />
-        <span class="text-gray-400">{{ preparing ? '正在加载章节…' : '正在打开…' }}</span>
+        <span class="text-gray-400">
+        {{ preparing ? t('reader.preparing') : t('reader.openingShort') }}
+      </span>
       </div>
-      <div v-else-if="pageCount === 0" class="text-gray-500 py-20">没有可显示的图片</div>
+      <div v-else-if="pageCount === 0" class="text-gray-500 py-20">{{ t('reader.noImages') }}</div>
 
       <!-- 左右翻页：只渲染当前页 -->
       <template v-else-if="readingMode === 'paged'">

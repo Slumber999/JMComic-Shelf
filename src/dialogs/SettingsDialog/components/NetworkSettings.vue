@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { computed, onMounted, ref, watch } from 'vue'
+import { showError } from '../../../errors.ts'
 import { useStore } from '../../../store.ts'
 import { ApiLineProbeResult, ImageLineProbeResult, commands } from '../../../bindings.ts'
 import {
@@ -13,8 +14,10 @@ import {
   NTag,
   useMessage,
 } from 'naive-ui'
+import { useI18n } from '../../../i18n.ts'
 
 const store = useStore()
+const { t } = useI18n()
 
 const message = useMessage()
 
@@ -22,7 +25,7 @@ const proxyHost = ref<string>(store.config?.proxyHost ?? '')
 const customApiDomain = ref<string>(store.config?.customApiDomain ?? '')
 
 watch([() => store.config?.apiDomainMode, () => store.config?.customApiDomain], () => {
-  message.warning('切换线路后可能需要重新登录')
+  message.warning(t('settings.network.apiLineChanged'))
 })
 
 // ---------- 线路测速 ----------
@@ -45,7 +48,7 @@ async function probeApiLines() {
   try {
     const result = await commands.probeApiLines()
     if (result.status === 'error') {
-      message.error(result.error.message, { duration: 8000 })
+      showError(result.error)
       return
     }
     apiLineResults.value = result.data
@@ -59,7 +62,7 @@ async function probeImageLines() {
   try {
     const result = await commands.probeImageLines()
     if (result.status === 'error') {
-      message.error(result.error.message, { duration: 8000 })
+      showError(result.error)
       return
     }
     imageLineResults.value = result.data
@@ -83,7 +86,7 @@ function selectApiLine(item: ApiLineProbeResult) {
     store.config.customApiDomain = item.domain
     customApiDomain.value = item.domain
   }
-  message.success(`已选用 ${item.label}（${item.domain}）`)
+  message.success(t('settings.network.probeSuccess', { label: item.label, domain: item.domain }))
 }
 
 function useFastestApiLine() {
@@ -99,85 +102,85 @@ onMounted(loadActiveImageDomain)
 
 <template>
   <div v-if="store.config !== undefined" class="flex flex-col">
-    <span class="font-bold">下载速度</span>
+    <span class="font-bold">{{ t('settings.network.speed') }}</span>
     <div class="flex flex-col gap-1">
       <div class="flex gap-1">
         <n-input-group class="w-35%">
-          <n-input-group-label size="small">章节并发数</n-input-group-label>
+          <n-input-group-label size="small">{{ t('settings.network.chapterConcurrency') }}</n-input-group-label>
           <n-input-number
             class="w-full"
             v-model:value="store.config.chapterConcurrency"
             size="small"
-            @update:value="message.warning('对章节并发数的修改需要重启才能生效')"
+            @update:value="message.warning(t('settings.network.chapterConcurrencyRestart'))"
             :min="1"
             :parse="(x: string) => Number(x)" />
         </n-input-group>
         <n-input-group class="w-65%">
-          <n-input-group-label size="small">每个章节下载完成后休息</n-input-group-label>
+          <n-input-group-label size="small">{{ t('settings.network.chapterInterval') }}</n-input-group-label>
           <n-input-number
             class="w-full"
             v-model:value="store.config.chapterDownloadIntervalSec"
             size="small"
             :min="0"
             :parse="(x: string) => Number(x)" />
-          <n-input-group-label size="small">秒</n-input-group-label>
+          <n-input-group-label size="small">{{ t('settings.network.seconds') }}</n-input-group-label>
         </n-input-group>
       </div>
       <div class="flex gap-1">
         <n-input-group class="w-35%">
-          <n-input-group-label size="small">图片并发数</n-input-group-label>
+          <n-input-group-label size="small">{{ t('settings.network.imageConcurrency') }}</n-input-group-label>
           <n-input-number
             class="w-full"
             v-model:value="store.config.imgConcurrency"
             size="small"
-            @update-value="message.warning('对图片并发数的修改需要重启才能生效')"
+            @update-value="message.warning(t('settings.network.imageConcurrencyRestart'))"
             :min="1"
             :parse="(x: string) => Number(x)" />
         </n-input-group>
         <n-input-group class="w-65%">
-          <n-input-group-label size="small">每张图片下载完成后休息</n-input-group-label>
+          <n-input-group-label size="small">{{ t('settings.network.imageInterval') }}</n-input-group-label>
           <n-input-number
             class="w-full"
             v-model:value="store.config.imgDownloadIntervalSec"
             size="small"
             :min="0"
             :parse="(x: string) => Number(x)" />
-          <n-input-group-label size="small">秒</n-input-group-label>
+          <n-input-group-label size="small">{{ t('settings.network.seconds') }}</n-input-group-label>
         </n-input-group>
       </div>
       <n-input-group>
-        <n-input-group-label size="small">下载整个收藏夹时，每处理完一个收藏夹中的漫画后休息</n-input-group-label>
+        <n-input-group-label size="small">{{ t('settings.network.favoritesInterval') }}</n-input-group-label>
         <n-input-number
           class="w-full"
           v-model:value="store.config.downloadAllFavoritesIntervalSec"
           size="small"
           :min="0"
           :parse="(x: string) => Number(x)" />
-        <n-input-group-label size="small">秒</n-input-group-label>
+        <n-input-group-label size="small">{{ t('settings.network.seconds') }}</n-input-group-label>
       </n-input-group>
       <n-input-group>
-        <n-input-group-label size="small">更新库存时，每处理完一个已下载的漫画后休息</n-input-group-label>
+        <n-input-group-label size="small">{{ t('settings.network.updateInterval') }}</n-input-group-label>
         <n-input-number
           class="w-full"
           v-model:value="store.config.updateDownloadedComicsIntervalSec"
           size="small"
           :min="0"
           :parse="(x: string) => Number(x)" />
-        <n-input-group-label size="small">秒</n-input-group-label>
+        <n-input-group-label size="small">{{ t('settings.network.seconds') }}</n-input-group-label>
       </n-input-group>
     </div>
 
-    <span class="font-bold mt-2">API域名</span>
+    <span class="font-bold mt-2">{{ t('settings.network.apiDomain') }}</span>
     <n-radio-group v-model:value="store.config.apiDomainMode" size="small">
-      <n-radio-button value="Domain1">线路1</n-radio-button>
-      <n-radio-button value="Domain2">线路2</n-radio-button>
-      <n-radio-button value="Domain3">线路3</n-radio-button>
-      <n-radio-button value="Domain4">线路4</n-radio-button>
-      <n-radio-button value="Domain5">线路5</n-radio-button>
-      <n-radio-button value="Custom">自定义</n-radio-button>
+      <n-radio-button value="Domain1">{{ t('settings.network.line', { index: 1 }) }}</n-radio-button>
+      <n-radio-button value="Domain2">{{ t('settings.network.line', { index: 2 }) }}</n-radio-button>
+      <n-radio-button value="Domain3">{{ t('settings.network.line', { index: 3 }) }}</n-radio-button>
+      <n-radio-button value="Domain4">{{ t('settings.network.line', { index: 4 }) }}</n-radio-button>
+      <n-radio-button value="Domain5">{{ t('settings.network.line', { index: 5 }) }}</n-radio-button>
+      <n-radio-button value="Custom">{{ t('settings.network.custom') }}</n-radio-button>
     </n-radio-group>
     <n-input-group v-if="store.config.apiDomainMode === 'Custom'" class="mt-1">
-      <n-input-group-label size="small">自定义API域名</n-input-group-label>
+      <n-input-group-label size="small">{{ t('settings.network.customDomain') }}</n-input-group-label>
       <n-input
         v-model:value="customApiDomain"
         size="small"
@@ -187,12 +190,12 @@ onMounted(loadActiveImageDomain)
     </n-input-group>
 
     <div class="flex items-center gap-2 mt-2">
-      <span class="font-bold">线路测速</span>
-      <n-button size="small" :loading="probing" @click="probeAll">开始测速</n-button>
+      <span class="font-bold">{{ t('settings.network.lineProbe') }}</span>
+      <n-button size="small" :loading="probing" @click="probeAll">{{ t('settings.network.startProbe') }}</n-button>
       <n-button size="small" type="primary" :disabled="fastestApiLine === undefined" @click="useFastestApiLine">
-        一键选最快
+        {{ t('settings.network.pickFastest') }}
       </n-button>
-      <span v-if="apiLineResults.length > 0" class="text-xs text-gray-500">点下面任意一条可以手动选用</span>
+      <span v-if="apiLineResults.length > 0" class="text-xs text-gray-500">{{ t('settings.network.clickToPick') }}</span>
     </div>
     <div v-if="apiLineResults.length > 0" class="flex flex-col gap-1 mt-1">
       <div
@@ -202,29 +205,29 @@ onMounted(loadActiveImageDomain)
         :class="store.config.apiDomainMode === item.mode ? 'bg-blue-1' : 'hover:bg-gray-1'"
         @click="selectApiLine(item)">
         <n-tag size="small" :type="item.ok ? 'success' : 'error'">
-          {{ item.ok ? `${item.latencyMs}ms` : '不可用' }}
+          {{ item.ok ? `${item.latencyMs}ms` : t('settings.network.unavailable') }}
         </n-tag>
         <span class="w-12">{{ item.label }}</span>
         <span class="w-56 truncate">{{ item.domain }}</span>
         <span v-if="!item.ok" class="flex-1 text-gray-500 truncate">{{ item.error }}</span>
-        <span v-else-if="store.config.apiDomainMode === item.mode" class="flex-1 text-blue-6">当前使用</span>
+        <span v-else-if="store.config.apiDomainMode === item.mode" class="flex-1 text-blue-6">{{ t('settings.network.inUse') }}</span>
         <span v-else class="flex-1" />
       </div>
     </div>
     <div class="flex flex-wrap items-center gap-1 mt-1">
       <span class="text-xs text-gray-500">
-        图片线路：{{ activeImageDomain }}（失败自动换线路，不用手动选）
+        {{ t('settings.network.imageLine', { domain: activeImageDomain }) }}
       </span>
       <n-tag v-for="item in imageLineResults" :key="item.domain" size="small" :type="item.ok ? 'success' : 'error'">
-        {{ item.domain }} {{ item.ok ? `${item.latencyMs}ms` : '不可用' }}
+        {{ item.domain }} {{ item.ok ? `${item.latencyMs}ms` : t('settings.network.unavailable') }}
       </n-tag>
     </div>
 
-    <span class="font-bold mt-2">代理类型</span>
+    <span class="font-bold mt-2">{{ t('settings.network.proxyMode') }}</span>
     <n-radio-group v-model:value="store.config.proxyMode" size="small">
-      <n-radio-button value="System">系统代理</n-radio-button>
-      <n-radio-button value="NoProxy">直连</n-radio-button>
-      <n-radio-button value="Custom">自定义</n-radio-button>
+      <n-radio-button value="System">{{ t('settings.network.proxySystem') }}</n-radio-button>
+      <n-radio-button value="NoProxy">{{ t('settings.network.proxyNone') }}</n-radio-button>
+      <n-radio-button value="Custom">{{ t('settings.network.custom') }}</n-radio-button>
     </n-radio-group>
     <n-input-group v-if="store.config.proxyMode === 'Custom'" class="mt-1">
       <n-input-group-label size="small">http://</n-input-group-label>

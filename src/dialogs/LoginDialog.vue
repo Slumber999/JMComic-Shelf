@@ -4,8 +4,10 @@ import { commands } from '../bindings.ts'
 import { NButton, NCheckbox, NDialog, NModal, NTooltip, useMessage } from 'naive-ui'
 import FloatLabelInput from '../components/FloatLabelInput.vue'
 import { useStore } from '../store.ts'
+import { useI18n } from '../i18n.ts'
 
 const store = useStore()
+const { t } = useI18n()
 
 const message = useMessage()
 
@@ -20,11 +22,11 @@ async function onLogin() {
     return
   }
   if (username.value === '') {
-    message.error('请输入用户名')
+    message.error(t('login.needUsername'))
     return
   }
   if (password.value === '') {
-    message.error('请输入密码')
+    message.error(t('login.needPassword'))
     return
   }
 
@@ -34,7 +36,7 @@ async function onLogin() {
     return
   }
   store.userProfile = result.data
-  message.success('登录成功')
+  message.success(t('login.success'))
   if (remember.value) {
     store.config.username = username.value
     store.config.password = password.value
@@ -56,23 +58,23 @@ function clearUsernameAndPasswordInConfig() {
   <n-modal v-model:show="showing">
     <n-dialog
       :showIcon="false"
-      title="账号登录"
-      positive-text="登录"
+      :title="t('login.title')"
+      :positive-text="t('login.submit')"
       @positive-click="onLogin"
       @close="showing = false"
       @keydown.enter="onLogin">
       <div class="flex flex-col gap-2">
-        <FloatLabelInput label="用户名" v-model:value="username" />
-        <FloatLabelInput label="密码" v-model:value="password" type="password" />
+        <FloatLabelInput :label="t('login.username')" v-model:value="username" />
+        <FloatLabelInput :label="t('login.password')" v-model:value="password" type="password" />
         <div class="flex justify-between">
           <n-tooltip>
-            用户名和密码将以明文保存在配置文件中
+            {{ t('login.plaintextWarning') }}
             <template #trigger>
-              <n-checkbox v-model:checked="remember">记住我</n-checkbox>
+              <n-checkbox v-model:checked="remember">{{ t('login.remember') }}</n-checkbox>
             </template>
           </n-tooltip>
           <n-button type="primary" size="tiny" secondary @click="clearUsernameAndPasswordInConfig">
-            清除配置文件中的用户名和密码
+            {{ t('login.clearSaved') }}
           </n-button>
         </div>
       </div>

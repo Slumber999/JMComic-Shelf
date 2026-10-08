@@ -1,9 +1,11 @@
 <script setup lang="tsx">
 import { SelectionArea } from '@viselect/vue'
+import { showError } from '../../../errors.ts'
 import { computed, defineComponent, nextTick, PropType, ref, watch, watchEffect } from 'vue'
 import { ChapterInfo, commands, DownloadTaskState } from '../../../bindings.ts'
 import { useStore } from '../../../store.ts'
 import { useMarqueeSelection } from '../../../marqueeSelection.ts'
+import { useI18n } from '../../../i18n.ts'
 import {
   DropdownOption,
   NButton,
@@ -21,6 +23,7 @@ import { PhPalette } from '@phosphor-icons/vue'
 type State = DownloadTaskState | 'Idle'
 
 const store = useStore()
+const { t } = useI18n()
 const message = useMessage()
 
 // 注意：这个组件的脚本块是 tsx，props 只能用运行时对象写法：
@@ -82,7 +85,7 @@ const dropdownY = ref<number>(0)
 const dropdownShowing = ref<boolean>(false)
 const dropdownOptions: DropdownOption[] = [
   {
-    label: '勾选',
+    label: t('chapterExport.check'),
     key: 'check',
     props: {
       onClick: () => {
@@ -92,7 +95,7 @@ const dropdownOptions: DropdownOption[] = [
     },
   },
   {
-    label: '取消勾选',
+    label: t('chapterExport.uncheck'),
     key: 'uncheck',
     props: {
       onClick: () => {
@@ -102,7 +105,7 @@ const dropdownOptions: DropdownOption[] = [
     },
   },
   {
-    label: '全选',
+    label: t('chapterExport.selectAll'),
     key: 'check-all',
     props: {
       onClick: () => {
@@ -114,7 +117,7 @@ const dropdownOptions: DropdownOption[] = [
     },
   },
   {
-    label: '取消全选',
+    label: t('chapterExport.unselectAll'),
     key: 'uncheck-all',
     props: {
       onClick: () => {
@@ -147,12 +150,12 @@ async function exportPdf() {
 
   if (downloaded.length === 0) {
     if (skipped > 0) {
-      message.warning('选中的章节都还没下载，导出 pdf 需要先下载图片')
+      message.warning(t('chapterExport.pdfNoDownloaded'))
     }
     return
   }
   if (skipped > 0) {
-    message.warning('有 ' + skipped + ' 章还没下载，已跳过（导出 pdf 需要先下载图片）')
+    message.warning(t('chapterExport.pdfSkipped', { count: skipped }))
   }
 
   const chapterIds = downloaded.map((chapter) => chapter.chapterId)
@@ -194,7 +197,7 @@ async function exportCbz() {
     const result = await commands.exportCbzChapters(store.pickedComic, downloadedIds)
     if (result.status === 'error') {
       console.error(result.error)
-      message.error(result.error.message, { duration: 8000 })
+      showError(result.error)
       downloadedIds.forEach((id) => exportingChapterIds.value.delete(id))
     }
   }
@@ -203,7 +206,7 @@ async function exportCbz() {
     const result = await commands.exportCbzChaptersWithoutDownload(store.pickedComic, directIds)
     if (result.status === 'error') {
       console.error(result.error)
-      message.error(result.error.message, { duration: 8000 })
+      showError(result.error)
       directIds.forEach((id) => exportingChapterIds.value.delete(id))
     }
   }
@@ -277,8 +280,8 @@ const ChapterCheckbox = defineComponent({
   <div v-if="store.pickedComic !== undefined" class="flex-1 flex flex-col overflow-auto">
     <div class="flex items-center select-none pt-2 gap-1 px-2">
       <n-radio-group v-model:value="chapterPaneMode" size="small">
-        <n-radio-button value="download">下载</n-radio-button>
-        <n-radio-button value="export">导出</n-radio-button>
+        <n-radio-button value="download">{{ t('chapterExport.tabDownload') }}</n-radio-button>
+        <n-radio-button value="export">{{ t('chapterExport.tabExport') }}</n-radio-button>
       </n-radio-group>
       <n-popover placement="bottom" trigger="hover" raw>
         <template #trigger>
@@ -287,24 +290,24 @@ const ChapterCheckbox = defineComponent({
         <div class="flex flex-col gap-1 text-xs leading-5 bg-white p-2 rounded-lg">
           <div class="flex items-center gap-2">
             <span class="h-3.5 w-3.5 shrink-0 rounded border border-solid border-orange bg-orange-1" />
-            <span>仅 曾导出过PDF</span>
+            <span>{{ t('chapterExport.legendPdf') }}</span>
           </div>
           <div class="flex items-center gap-2">
             <span class="h-3.5 w-3.5 shrink-0 rounded border border-solid border-fuchsia bg-fuchsia-1" />
-            <span>仅 曾导出过CBZ</span>
+            <span>{{ t('chapterExport.legendCbz') }}</span>
           </div>
           <div class="flex items-center gap-2">
             <span class="h-3.5 w-3.5 shrink-0 rounded border border-solid border-indigo bg-indigo-2" />
-            <span>曾导出过PDF+CBZ</span>
+            <span>{{ t('chapterExport.legendBoth') }}</span>
           </div>
           <div class="border-t border-gray-2 pt-1 text-gray-500">
-            cbz 未下载也能直接导出（免下载直出）；pdf 需要先下载图片
+            {{ t('chapterExport.legendHint') }}
           </div>
         </div>
       </n-popover>
-      <n-button class="ml-auto" size="small" @click="props.reload">刷新</n-button>
-      <n-button size="small" type="primary" @click="exportCbz">导出cbz</n-button>
-      <n-button size="small" type="primary" @click="exportPdf">导出pdf</n-button>
+      <n-button class="ml-auto" size="small" @click="props.reload">{{ t('common.refresh') }}</n-button>
+      <n-button size="small" type="primary" @click="exportCbz">{{ t('downloaded.exportCbz') }}</n-button>
+      <n-button size="small" type="primary" @click="exportPdf">{{ t('downloaded.exportPdf') }}</n-button>
     </div>
 
     <SelectionArea ref="selectionAreaRef" :options="selectionOptions" @move="updateSelectedIds" @start="unselectAll" />

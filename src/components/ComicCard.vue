@@ -1,5 +1,6 @@
 <script setup lang="ts">
-import { NCard, useDialog, useMessage } from 'naive-ui'
+import { NCard, useDialog } from 'naive-ui'
+import { showError } from '../errors.ts'
 import { CategoryRespData, CategorySubRespData, commands } from '../bindings.ts'
 import { useStore } from '../store.ts'
 import IconButton from './IconButton.vue'
@@ -9,9 +10,10 @@ import { localCoverUrl } from '../reader/protocol.ts'
 import { PhBookOpen, PhDownloadSimple, PhFileZip, PhFolderOpen } from '@phosphor-icons/vue'
 import { hoverCover, unhoverCover } from './coverPreview.ts'
 import { ComicLayout } from '../types.ts'
+import { useI18n } from '../i18n.ts'
 
 const store = useStore()
-const message = useMessage()
+const { t } = useI18n()
 const dialog = useDialog()
 
 const props = withDefaults(
@@ -46,19 +48,19 @@ async function pickComic() {
 }
 
 function downloadComic() {
-  confirmWholeComic('下载', startDownload)
+  confirmWholeComic(t('favorite.download'), startDownload)
 }
 
 /// 免下载直出 cbz：图片在内存里取回、还原后直接打包，不落下载目录
 function exportCbzWithoutDownload() {
-  confirmWholeComic('导出', startExportCbz)
+  confirmWholeComic(t('comic.export'), startExportCbz)
 }
 
 /// 整本下载/导出前先确认：一本多话量级不小，单章直接执行
 async function confirmWholeComic(verb: string, run: () => Promise<void>) {
   const detail = await commands.getComic(props.comicId)
   if (detail.status === 'error') {
-    message.error(detail.error.message, { duration: 8000 })
+    showError(detail.error)
     return
   }
 
@@ -69,10 +71,10 @@ async function confirmWholeComic(verb: string, run: () => Promise<void>) {
   }
 
   dialog.warning({
-    title: `整本${verb}`,
-    content: `《${detail.data.name}》共 ${chapterCount} 话，确定全部${verb}吗？`,
-    positiveText: '确定',
-    negativeText: '取消',
+    title: t('comic.wholeTitle', { verb }),
+    content: t('comic.wholeContent', { name: detail.data.name, count: chapterCount, verb }),
+    positiveText: t('comic.confirm'),
+    negativeText: t('common.cancel'),
     onPositiveClick: () => void run(),
   })
 }
@@ -80,7 +82,7 @@ async function confirmWholeComic(verb: string, run: () => Promise<void>) {
 async function startDownload() {
   const result = await commands.downloadComic(props.comicId)
   if (result.status === 'error') {
-    message.error(result.error.message, { duration: 8000 })
+    showError(result.error)
     return
   }
   store.showProgressesTab('uncompleted')
@@ -92,7 +94,7 @@ async function startExportCbz() {
 
   const result = await commands.exportCbzWithoutDownload([props.comicId])
   if (result.status === 'error') {
-    message.error(result.error.message, { duration: 8000 })
+    showError(result.error)
   }
 }
 
@@ -153,20 +155,26 @@ function onCoverPointerEnter(event: PointerEvent) {
             :class="layout === 'list' ? '' : 'truncate'"
             :author="comicAuthor" />
           <span v-if="layout === 'list'" class="text-xs text-gray">
-            分类：{{ comicCategory.title }} {{ comicCategorySub.title }}
+            {{ t('comic.category') }}{{ comicCategory.title }} {{ comicCategorySub.title }}
           </span>
         </div>
         <div :class="layout === 'list' ? 'flex' : 'flex opacity-0 transition-opacity duration-150 group-hover:opacity-100'">
-          <IconButton v-if="comicDownloaded" title="打开下载目录" @click="showComicDownloadDirInFileManager">
+          <IconButton
+            v-if="comicDownloaded"
+            :title="t('comic.openDownloadDir')"
+            @click="showComicDownloadDirInFileManager">
             <PhFolderOpen :size="20" />
           </IconButton>
-          <IconButton class="ml-auto" title="导出cbz（不下载图片，直出cbz）" @click="exportCbzWithoutDownload">
+          <IconButton
+            class="ml-auto"
+            :title="t('comic.exportCbzDirect')"
+            @click="exportCbzWithoutDownload">
             <PhFileZip :size="20" />
           </IconButton>
-          <IconButton title="一键下载所有章节" @click="downloadComic">
+          <IconButton :title="t('comic.downloadAllChapters')" @click="downloadComic">
             <PhDownloadSimple :size="20" />
           </IconButton>
-          <IconButton title="阅读" @click="readComic">
+          <IconButton :title="t('comic.read')" @click="readComic">
             <PhBookOpen :size="20" />
           </IconButton>
           <FavoriteButton :comic-id="comicId" :is-favorite="isFavorite" @favorite-changed="onFavoriteChanged" />
