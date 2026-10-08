@@ -137,7 +137,13 @@ pnpm tauri build --target universal-apple-darwin
 
 ## Star History
 
-[![Star History Chart](https://api.star-history.com/svg?repos=Slumber999/JMComic-Shelf&type=Date)](https://star-history.com/#Slumber999/JMComic-Shelf&Date)
+<a href="https://www.star-history.com/?type=date&repos=Slumber999%2FJMComic-Shelf">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="https://api.star-history.com/chart?repos=Slumber999/JMComic-Shelf&type=date&theme=dark&legend=top-left" />
+    <source media="(prefers-color-scheme: light)" srcset="https://api.star-history.com/chart?repos=Slumber999/JMComic-Shelf&type=date&legend=top-left" />
+    <img alt="Star History Chart" src="https://api.star-history.com/chart?repos=Slumber999/JMComic-Shelf&type=date&legend=top-left" />
+  </picture>
+</a>
 
 ## 许可证与致谢
 
