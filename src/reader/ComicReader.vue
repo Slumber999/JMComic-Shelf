@@ -129,6 +129,11 @@ async function open() {
     return
   }
 
+  // 加载期间用户可能已经关掉阅读器，此时不能再往已释放的会话里写状态
+  if (closed) {
+    return
+  }
+
   readerComic.value = result.data
   restoreProgress()
 
@@ -145,6 +150,9 @@ async function open() {
 
   // 在线章节要先取页数（会产生一次请求）
   await ensureChapterReady(chapterIndex.value)
+  if (closed) {
+    return
+  }
   saveProgress()
   opening.value = false
 
@@ -227,7 +235,7 @@ function goToPage(index: number) {
   }
 
   const next = Math.min(Math.max(index, 0), count - 1)
-  if (next === pageIndex.value && readerComic.value !== undefined) {
+  if (next === pageIndex.value) {
     return
   }
 

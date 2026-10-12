@@ -1,14 +1,12 @@
 <script setup lang="tsx">
 import { SelectionArea } from '@viselect/vue'
-import { computed, defineComponent, nextTick, PropType, ref, watch, watchEffect } from 'vue'
-import { ChapterInfo, commands, DownloadTaskState } from '../../../bindings.ts'
+import { PropType } from 'vue'
+import { commands } from '../../../bindings.ts'
 import { useStore } from '../../../store.ts'
-import { useMarqueeSelection } from '../../../marqueeSelection.ts'
-import { DropdownOption, NButton, NCheckbox, NDropdown, NRadioButton, NRadioGroup } from 'naive-ui'
 import { ChapterPaneMode } from '../ChapterPane.vue'
+import { NButton, NDropdown, NRadioButton, NRadioGroup } from 'naive-ui'
 import { useI18n } from '../../../i18n.ts'
-
-type State = DownloadTaskState | 'Idle'
+import { isDownloadedChapter, useChapterCheckbox } from '../useChapterCheckbox.ts'
 
 const store = useStore()
 const { t } = useI18n()
@@ -22,104 +20,28 @@ const props = defineProps({
 
 const chapterPaneMode = defineModel<ChapterPaneMode>('chapterPaneMode', { required: true })
 
-const chapterInfos = computed<ChapterInfo[]>(() => store.pickedComic?.chapterInfos ?? [])
-const checkedIds = ref<Set<number>>(new Set())
-/// 拖拽框选：只认 chapterInfos 里真实存在的章节
-const { selectedIds, selectionOptions, updateSelectedIds, unselectAll, clearSelection } =
-  useMarqueeSelection<number>({
-    boundary: '.chapter-download-pane-selection-container',
-    accept: (id) => chapterInfos.value.some((chapter) => chapter.chapterId === id),
-  })
-
-function clearCheckedAndSelected() {
-  checkedIds.value.clear()
-  clearSelection()
-}
-
-watch(
-  () => store.pickedComic,
-  () => {
-    clearCheckedAndSelected()
-  },
-)
-
-watchEffect(() => {
-  if (store.pickedComic === undefined) {
-    return
-  }
-
-  const selectableChapterIds = new Set(
-    chapterInfos.value.filter((chapter) => isChapterSelectable(chapter)).map((chapter) => chapter.chapterId),
-  )
-
-  for (const id of checkedIds.value) {
-    if (!selectableChapterIds.has(id)) {
-      checkedIds.value.delete(id)
-    }
-  }
-
-  for (const id of selectedIds.value) {
-    if (!selectableChapterIds.has(id)) {
-      selectedIds.value.delete(id)
-    }
-  }
+const {
+  chapterInfos,
+  checkedIds,
+  selectionOptions,
+  updateSelectedIds,
+  unselectAll,
+  isChapterSelectable,
+  dropdownX,
+  dropdownY,
+  dropdownShowing,
+  dropdownOptions,
+  showDropdown,
+  ChapterCheckbox,
+} = useChapterCheckbox({
+  boundary: '.chapter-download-pane-selection-container',
+  // 可选条件：正在下载的不行，已下载的也不用再勾（这里只看下载）
+  isExcludedFromSelection: isDownloadedChapter,
+  checkboxStateClass: (chapter, isDownloadingChapter) => ({
+    downloaded: isDownloadedChapter(chapter),
+    downloading: !isDownloadedChapter(chapter) && isDownloadingChapter(chapter),
+  }),
 })
-
-const dropdownX = ref<number>(0)
-const dropdownY = ref<number>(0)
-const dropdownShowing = ref<boolean>(false)
-const dropdownOptions: DropdownOption[] = [
-  {
-    label: t('chapterExport.check'),
-    key: 'check',
-    props: {
-      onClick: () => {
-        selectedIds.value.forEach((id) => checkedIds.value.add(id))
-        dropdownShowing.value = false
-      },
-    },
-  },
-  {
-    label: t('chapterExport.uncheck'),
-    key: 'uncheck',
-    props: {
-      onClick: () => {
-        selectedIds.value.forEach((id) => checkedIds.value.delete(id))
-        dropdownShowing.value = false
-      },
-    },
-  },
-  {
-    label: t('chapterExport.selectAll'),
-    key: 'check-all',
-    props: {
-      onClick: () => {
-        chapterInfos.value
-          .filter((chapter) => isChapterSelectable(chapter))
-          .forEach((chapter) => checkedIds.value.add(chapter.chapterId))
-        dropdownShowing.value = false
-      },
-    },
-  },
-  {
-    label: t('chapterExport.unselectAll'),
-    key: 'uncheck-all',
-    props: {
-      onClick: () => {
-        checkedIds.value.clear()
-        dropdownShowing.value = false
-      },
-    },
-  },
-]
-
-async function showDropdown(e: MouseEvent) {
-  dropdownShowing.value = false
-  await nextTick()
-  dropdownShowing.value = true
-  dropdownX.value = e.clientX
-  dropdownY.value = e.clientY
-}
 
 async function downloadCheckedChapters() {
   if (store.pickedComic === undefined) {
@@ -135,59 +57,6 @@ async function downloadCheckedChapters() {
 
   await commands.createDownloadTasks(store.pickedComic, chapterIdsToDownload)
 }
-
-function getChapterState(chapter: ChapterInfo): State {
-  return store.progresses.get(chapter.chapterId)?.state ?? 'Idle'
-}
-
-function isDownloadingChapter(chapter: ChapterInfo) {
-  const state = getChapterState(chapter)
-  return state === 'Pending' || state === 'Downloading' || state === 'Paused'
-}
-
-function isDownloadedChapter(chapter: ChapterInfo) {
-  return chapter.isDownloaded === true
-}
-
-function isChapterSelectable(chapter: ChapterInfo) {
-  return !isDownloadingChapter(chapter) && !isDownloadedChapter(chapter)
-}
-
-const ChapterCheckbox = defineComponent({
-  name: 'ChapterCheckbox',
-  props: {
-    chapter: {
-      type: Object as PropType<ChapterInfo>,
-      required: true,
-    },
-  },
-  setup(props) {
-    return () => (
-      <NCheckbox
-        data-key={props.chapter.chapterId}
-        class={[
-          'hover:bg-gray-200!',
-          {
-            selectable: isChapterSelectable(props.chapter),
-            selected: selectedIds.value.has(props.chapter.chapterId),
-            downloaded: isDownloadedChapter(props.chapter),
-            downloading: !isDownloadedChapter(props.chapter) && isDownloadingChapter(props.chapter),
-          },
-        ]}
-        checked={checkedIds.value.has(props.chapter.chapterId)}
-        onUpdate:checked={(checked: boolean) => {
-          if (checked) {
-            checkedIds.value.add(props.chapter.chapterId)
-          } else {
-            checkedIds.value.delete(props.chapter.chapterId)
-          }
-        }}
-        label={props.chapter.chapterTitle}
-        disabled={!isChapterSelectable(props.chapter)}
-      />
-    )
-  },
-})
 </script>
 
 <template>
@@ -249,4 +118,3 @@ const ChapterCheckbox = defineComponent({
   @apply bg-[rgba(46,115,252,0.5)];
 }
 </style>
-

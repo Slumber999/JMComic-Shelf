@@ -107,15 +107,63 @@ impl JmClient {
             .await
     }
 
-    async fn jm_post(
+    /// 各接口通用的响应处理：状态码 → JmResp → code → data → 解密，返回解密后的 JSON 文本
+    /// - `err_title`：状态码 / code / data 失败时的文案前缀，各接口自己的说法
+    /// - `unauthorized_err`：401 的专属文案；None 时 401 按普通状态码处理
+    async fn request_decrypted_data(
         &self,
+        method: reqwest::Method,
         path: ApiPath,
         query: Option<serde_json::Value>,
-        payload: Option<serde_json::Value>,
-        ts: u64,
-    ) -> eyre::Result<reqwest::Response> {
-        self.jm_request(reqwest::Method::POST, path, query, payload, ts)
-            .await
+        form: Option<serde_json::Value>,
+        err_title: &str,
+        unauthorized_err: Option<&str>,
+    ) -> eyre::Result<String> {
+        let ts = SystemTime::now().duration_since(UNIX_EPOCH)?.as_secs();
+        let http_resp = self.jm_request(method, path, query, form, ts).await?;
+        // 检查http响应状态码
+        let status = http_resp.status();
+        let body = http_resp.text().await?;
+        if let Some(message) = unauthorized_err {
+            if status == reqwest::StatusCode::UNAUTHORIZED {
+                return Err(eyre!("{message}"));
+            }
+        }
+        if status != reqwest::StatusCode::OK {
+            return Err(eyre!("{err_title}，预料之外的状态码({status}): {body}"));
+        }
+        // 尝试将body解析为JmResp
+        let jm_resp = serde_json::from_str::<JmResp>(&body)
+            .wrap_err(format!("将body解析为JmResp失败: {body}"))?;
+        // 检查JmResp的code字段
+        if jm_resp.code != 200 {
+            return Err(eyre!("{err_title}，预料之外的code: {jm_resp:?}"));
+        }
+        // 检查JmResp的data字段
+        let data = jm_resp
+            .data
+            .as_str()
+            .ok_or_eyre(format!("{err_title}，data字段不是字符串: {jm_resp:?}"))?;
+        // 解密data字段
+        decrypt_data(ts, data)
+    }
+
+    /// 在 request_decrypted_data 之后把解密后的 JSON 文本反序列化为 T
+    /// - `parse_err_title`：反序列化失败的文案前缀，最终文案是 `{parse_err_title}失败: {data}`
+    async fn request_decrypted<T: serde::de::DeserializeOwned>(
+        &self,
+        method: reqwest::Method,
+        path: ApiPath,
+        query: Option<serde_json::Value>,
+        form: Option<serde_json::Value>,
+        err_title: &str,
+        parse_err_title: &str,
+    ) -> eyre::Result<T> {
+        let data = self
+            .request_decrypted_data(method, path, query, form, err_title, None)
+            .await?;
+        // 尝试将解密后的数据解析为T
+        serde_json::from_str::<T>(&data).wrap_err(format!("{parse_err_title}失败: {data}"))
     }
 
     /// 退出登录：丢掉登录态 AVS，之后的请求退回游客身份
@@ -221,35 +269,17 @@ impl JmClient {
 
     #[instrument(level = "error", skip_all)]
     pub async fn get_user_profile(&self) -> eyre::Result<GetUserProfileRespData> {
-        let ts = SystemTime::now().duration_since(UNIX_EPOCH)?.as_secs();
         // 发送获取用户信息请求
-        let http_resp = self
-            .jm_post(ApiPath::GetUserProfile, None, None, ts)
+        let data = self
+            .request_decrypted_data(
+                reqwest::Method::POST,
+                ApiPath::GetUserProfile,
+                None,
+                None,
+                "获取用户信息失败",
+                Some("获取用户信息失败，Cookie无效或已过期，请重新登录"),
+            )
             .await?;
-        // 检查http响应状态码
-        let status = http_resp.status();
-        let body = http_resp.text().await?;
-        if status == reqwest::StatusCode::UNAUTHORIZED {
-            return Err(eyre!("获取用户信息失败，Cookie无效或已过期，请重新登录"));
-        } else if status != reqwest::StatusCode::OK {
-            return Err(eyre!(
-                "获取用户信息失败，预料之外的状态码({status}): {body}"
-            ));
-        }
-        // 尝试将body解析为JmResp
-        let jm_resp = serde_json::from_str::<JmResp>(&body)
-            .wrap_err(format!("将body解析为JmResp失败: {body}"))?;
-        // 检查JmResp的code字段
-        if jm_resp.code != 200 {
-            return Err(eyre!("获取用户信息失败，预料之外的code: {jm_resp:?}"));
-        }
-        // 检查JmResp的data字段
-        let data = jm_resp
-            .data
-            .as_str()
-            .ok_or_eyre(format!("获取用户信息失败，data字段不是字符串: {jm_resp:?}"))?;
-        // 解密data字段
-        let data = decrypt_data(ts, data)?;
         // 尝试将解密后的data字段解析为GetUserProfileRespData
         let mut user_profile = serde_json::from_str::<GetUserProfileRespData>(&data).wrap_err(
             format!("将解密后的data字段解析为GetUserProfileRespData失败: {data}"),
@@ -281,29 +311,17 @@ impl JmClient {
             "y": year.unwrap_or(0),
             "m": month.unwrap_or(0),
         });
-        let ts = SystemTime::now().duration_since(UNIX_EPOCH)?.as_secs();
         // 发送搜索请求
-        let http_resp = self.jm_get(ApiPath::Search, Some(query), ts).await?;
-        // 检查http响应状态码
-        let status = http_resp.status();
-        let body = http_resp.text().await?;
-        if status != reqwest::StatusCode::OK {
-            return Err(eyre!("搜索失败，预料之外的状态码({status}): {body}"));
-        }
-        // 尝试将body解析为JmResp
-        let jm_resp = serde_json::from_str::<JmResp>(&body)
-            .wrap_err(format!("将body解析为JmResp失败: {body}"))?;
-        // 检查JmResp的code字段
-        if jm_resp.code != 200 {
-            return Err(eyre!("搜索失败，预料之外的code: {jm_resp:?}"));
-        }
-        // 检查JmResp的data字段
-        let data = jm_resp
-            .data
-            .as_str()
-            .ok_or_eyre(format!("搜索失败，data字段不是字符串: {jm_resp:?}"))?;
-        // 解密data字段
-        let data = decrypt_data(ts, data)?;
+        let data = self
+            .request_decrypted_data(
+                reqwest::Method::GET,
+                ApiPath::Search,
+                Some(query),
+                None,
+                "搜索失败",
+                None,
+            )
+            .await?;
         // 尝试将解密后的数据解析为 RedirectRespData
         if let Ok(redirect_resp_data) = serde_json::from_str::<RedirectRespData>(&data) {
             let comic_resp_data = self.get_comic(redirect_resp_data.redirect_aid).await?;
@@ -334,26 +352,15 @@ impl JmClient {
             "o": order,
             "page": page,
         });
-        let ts = SystemTime::now().duration_since(UNIX_EPOCH)?.as_secs();
-        let http_resp = self.jm_get(ApiPath::GetRanking, Some(query), ts).await?;
-        let status = http_resp.status();
-        let body = http_resp.text().await?;
-        if status != reqwest::StatusCode::OK {
-            return Err(eyre!("获取排行榜失败，预料之外的状态码({status}): {body}"));
-        }
-        let jm_resp = serde_json::from_str::<JmResp>(&body)
-            .wrap_err(format!("将body解析为JmResp失败: {body}"))?;
-        if jm_resp.code != 200 {
-            return Err(eyre!("获取排行榜失败，预料之外的code: {jm_resp:?}"));
-        }
-        let data = jm_resp
-            .data
-            .as_str()
-            .ok_or_eyre(format!("获取排行榜失败，data字段不是字符串: {jm_resp:?}"))?;
-        let data = decrypt_data(ts, data)?;
-        let ranking_resp_data = serde_json::from_str::<SearchRespData>(&data)
-            .wrap_err(format!("将解密后的数据解析为SearchRespData失败: {data}"))?;
-        Ok(ranking_resp_data)
+        self.request_decrypted(
+            reqwest::Method::GET,
+            ApiPath::GetRanking,
+            Some(query),
+            None,
+            "获取排行榜失败",
+            "将解密后的数据解析为SearchRespData",
+        )
+        .await
     }
 
     /// 漫画评论：aid 传漫画 id 就是单本评论，不传就是全站最新评论
@@ -413,31 +420,16 @@ impl JmClient {
             query.insert("aid".to_string(), serde_json::Value::from(aid));
         }
 
-        let ts = SystemTime::now().duration_since(UNIX_EPOCH)?.as_secs();
-        let http_resp = self
-            .jm_get(ApiPath::GetComments, Some(serde_json::Value::Object(query)), ts)
+        let mut comment_page: CommentPage = self
+            .request_decrypted(
+                reqwest::Method::GET,
+                ApiPath::GetComments,
+                Some(serde_json::Value::Object(query)),
+                None,
+                "获取评论失败",
+                "将解密后的数据解析为CommentPage",
+            )
             .await?;
-
-        let status = http_resp.status();
-        let body = http_resp.text().await?;
-        if status != reqwest::StatusCode::OK {
-            return Err(eyre!("获取评论失败，预料之外的状态码({status}): {body}"));
-        }
-
-        let jm_resp =
-            serde_json::from_str::<JmResp>(&body).wrap_err(format!("将body解析为JmResp失败: {body}"))?;
-        if jm_resp.code != 200 {
-            return Err(eyre!("获取评论失败，预料之外的code: {jm_resp:?}"));
-        }
-
-        let data = jm_resp
-            .data
-            .as_str()
-            .ok_or_eyre(format!("获取评论失败，data字段不是字符串: {jm_resp:?}"))?;
-        let data = decrypt_data(ts, data)?;
-
-        let mut comment_page = serde_json::from_str::<CommentPage>(&data)
-            .wrap_err(format!("将解密后的数据解析为CommentPage失败: {data}"))?;
         // 正文是 HTML，统一转成纯文本
         comment_page.strip_html();
         Ok(comment_page)
@@ -445,68 +437,32 @@ impl JmClient {
 
     #[instrument(level = "error", skip_all, fields(aid = aid))]
     pub async fn get_comic(&self, aid: i64) -> eyre::Result<GetComicRespData> {
-        let ts = SystemTime::now().duration_since(UNIX_EPOCH)?.as_secs();
         let query = json!({"id": aid,});
         // 发送获取漫画请求
-        let http_resp = self.jm_get(ApiPath::GetComic, Some(query), ts).await?;
-        // 检查http响应状态码
-        let status = http_resp.status();
-        let body = http_resp.text().await?;
-        if status != reqwest::StatusCode::OK {
-            return Err(eyre!("获取漫画失败，预料之外的状态码({status}): {body}"));
-        }
-        // 尝试将body解析为JmResp
-        let jm_resp = serde_json::from_str::<JmResp>(&body)
-            .wrap_err(format!("将body解析为JmResp失败: {body}"))?;
-        // 检查JmResp的code字段
-        if jm_resp.code != 200 {
-            return Err(eyre!("获取漫画失败，预料之外的code: {jm_resp:?}"));
-        }
-        // 检查JmResp的data字段
-        let data = jm_resp
-            .data
-            .as_str()
-            .ok_or_eyre(format!("获取漫画失败，data字段不是字符串: {jm_resp:?}"))?;
-        // 解密data字段
-        let data = decrypt_data(ts, data)?;
-        // 尝试将解密后的data字段解析为GetComicRespData
-        let comic = serde_json::from_str::<GetComicRespData>(&data).wrap_err(format!(
-            "将解密后的data字段解析为GetComicRespData失败: {data}"
-        ))?;
-        Ok(comic)
+        self.request_decrypted(
+            reqwest::Method::GET,
+            ApiPath::GetComic,
+            Some(query),
+            None,
+            "获取漫画失败",
+            "将解密后的data字段解析为GetComicRespData",
+        )
+        .await
     }
 
     #[instrument(level = "error", skip_all, fields(chapter_id = id))]
     pub async fn get_chapter(&self, id: i64) -> eyre::Result<GetChapterRespData> {
-        let ts = SystemTime::now().duration_since(UNIX_EPOCH)?.as_secs();
         let query = json!({"id": id,});
         // 发送获取章节请求
-        let http_resp = self.jm_get(ApiPath::GetChapter, Some(query), ts).await?;
-        // 检查http响应状态码
-        let status = http_resp.status();
-        let body = http_resp.text().await?;
-        if status != reqwest::StatusCode::OK {
-            return Err(eyre!("获取章节失败，预料之外的状态码({status}): {body}"));
-        }
-        // 尝试将body解析为JmResp
-        let jm_resp = serde_json::from_str::<JmResp>(&body)
-            .wrap_err(format!("将body解析为JmResp失败: {body}"))?;
-        // 检查JmResp的code字段
-        if jm_resp.code != 200 {
-            return Err(eyre!("获取章节失败，预料之外的code: {jm_resp:?}"));
-        }
-        // 检查JmResp的data字段
-        let data = jm_resp
-            .data
-            .as_str()
-            .ok_or_eyre(format!("获取章节失败，data字段不是字符串: {jm_resp:?}"))?;
-        // 解密data字段
-        let data = decrypt_data(ts, data)?;
-        // 尝试将解密后的data字段解析为GetChapterRespData
-        let chapter = serde_json::from_str::<GetChapterRespData>(&data).wrap_err(format!(
-            "将解密后的data字段解析为GetChapterRespData失败: {data}"
-        ))?;
-        Ok(chapter)
+        self.request_decrypted(
+            reqwest::Method::GET,
+            ApiPath::GetChapter,
+            Some(query),
+            None,
+            "获取章节失败",
+            "将解密后的data字段解析为GetChapterRespData",
+        )
+        .await
     }
 
     #[instrument(level = "error", skip_all, fields(chapter_id = id))]
@@ -551,73 +507,34 @@ impl JmClient {
         page: i64,
         sort: FavoriteSort,
     ) -> eyre::Result<GetFavoriteRespData> {
-        let ts = SystemTime::now().duration_since(UNIX_EPOCH)?.as_secs();
         let query = json!({
             "page": page,
             "o": sort.as_str(),
             "folder_id": folder_id,
         });
         // 发送获取收藏夹请求
-        let http_resp = self
-            .jm_get(ApiPath::GetFavoriteFolder, Some(query), ts)
-            .await?;
-        // 检查http响应状态码
-        let status = http_resp.status();
-        let body = http_resp.text().await?;
-        if status != reqwest::StatusCode::OK {
-            return Err(eyre!("获取收藏夹失败，预料之外的状态码({status}): {body}"));
-        }
-        // 尝试将body解析为JmResp
-        let jm_resp = serde_json::from_str::<JmResp>(&body)
-            .wrap_err(format!("将body解析为JmResp失败: {body}"))?;
-        // 检查JmResp的code字段
-        if jm_resp.code != 200 {
-            return Err(eyre!("获取收藏夹失败，预料之外的code: {jm_resp:?}"));
-        }
-        // 检查JmResp的data字段
-        let data = jm_resp
-            .data
-            .as_str()
-            .ok_or_eyre(format!("获取收藏夹失败，data字段不是字符串: {jm_resp:?}"))?;
-        // 解密data字段
-        let data = decrypt_data(ts, data)?;
-        // 尝试将解密后的data字段解析为GetFavoriteRespData
-        let favorite = serde_json::from_str::<GetFavoriteRespData>(&data).wrap_err(format!(
-            "将解密后的data字段解析为GetFavoriteRespData失败: {data}"
-        ))?;
-        Ok(favorite)
+        self.request_decrypted(
+            reqwest::Method::GET,
+            ApiPath::GetFavoriteFolder,
+            Some(query),
+            None,
+            "获取收藏夹失败",
+            "将解密后的data字段解析为GetFavoriteRespData",
+        )
+        .await
     }
 
     #[instrument(level = "error", skip_all)]
     pub async fn get_weekly_info(&self) -> eyre::Result<GetWeeklyInfoRespData> {
-        let ts = SystemTime::now().duration_since(UNIX_EPOCH)?.as_secs();
-        let http_resp = self.jm_get(ApiPath::GetWeeklyInfo, None, ts).await?;
-        // 检查http响应状态码
-        let status = http_resp.status();
-        let body = http_resp.text().await?;
-        if status != reqwest::StatusCode::OK {
-            return Err(eyre!(
-                "获取每周必看信息失败，预料之外的状态码({status}): {body}"
-            ));
-        }
-        // 尝试将body解析为JmResp
-        let jm_resp = serde_json::from_str::<JmResp>(&body)
-            .wrap_err(format!("将body解析为JmResp失败: {body}"))?;
-        // 检查JmResp的code字段
-        if jm_resp.code != 200 {
-            return Err(eyre!("获取每周必看信息失败，预料之外的code: {jm_resp:?}"));
-        }
-        // 检查JmResp的data字段
-        let data = jm_resp.data.as_str().ok_or_eyre(format!(
-            "获取每周必看信息失败，data字段不是字符串: {jm_resp:?}"
-        ))?;
-        // 解密data字段
-        let data = decrypt_data(ts, data)?;
-        // 尝试将解密后的data字段解析为GetWeeklyInfoRespData
-        let weekly_info = serde_json::from_str::<GetWeeklyInfoRespData>(&data).wrap_err(
-            format!("将解密后的data字段解析为GetWeeklyInfoRespData失败: {data}"),
-        )?;
-        Ok(weekly_info)
+        self.request_decrypted(
+            reqwest::Method::GET,
+            ApiPath::GetWeeklyInfo,
+            None,
+            None,
+            "获取每周必看信息失败",
+            "将解密后的data字段解析为GetWeeklyInfoRespData",
+        )
+        .await
     }
 
     #[instrument(
@@ -630,105 +547,55 @@ impl JmClient {
         category_id: &str,
         type_id: &str,
     ) -> eyre::Result<GetWeeklyRespData> {
-        let ts = SystemTime::now().duration_since(UNIX_EPOCH)?.as_secs();
         let query = json!({
             "id": category_id,
             "type": type_id,
         });
-        let http_resp = self.jm_get(ApiPath::GetWeekly, Some(query), ts).await?;
-        // 检查http响应状态码
-        let status = http_resp.status();
-        let body = http_resp.text().await?;
-        if status != reqwest::StatusCode::OK {
-            return Err(eyre!(
-                "获取每周必看信息失败，预料之外的状态码({status}): {body}"
-            ));
-        }
-        // 尝试将body解析为JmResp
-        let jm_resp = serde_json::from_str::<JmResp>(&body)
-            .wrap_err(format!("将body解析为JmResp失败: {body}"))?;
-        // 检查JmResp的code字段
-        if jm_resp.code != 200 {
-            return Err(eyre!("获取每周必看信息失败，预料之外的code: {jm_resp:?}"));
-        }
-        // 检查JmResp的data字段
-        let data = jm_resp.data.as_str().ok_or_eyre(format!(
-            "获取每周必看信息失败，data字段不是字符串: {jm_resp:?}"
-        ))?;
-        // 解密data字段
-        let data = decrypt_data(ts, data)?;
-        // 尝试将解密后的data字段解析为GetWeeklyRespData
-        let get_weekly_resp_data = serde_json::from_str::<GetWeeklyRespData>(&data).wrap_err(
-            format!("将解密后的data字段解析为GetWeeklyRespData失败: {data}"),
-        )?;
-        Ok(get_weekly_resp_data)
+        self.request_decrypted(
+            reqwest::Method::GET,
+            ApiPath::GetWeekly,
+            Some(query),
+            None,
+            "获取每周必看信息失败",
+            "将解密后的data字段解析为GetWeeklyRespData",
+        )
+        .await
     }
 
     #[instrument(level = "error", skip_all, fields(aid = aid))]
     pub async fn toggle_favorite_comic(&self, aid: i64) -> eyre::Result<ToggleFavoriteRespData> {
-        let ts = SystemTime::now().duration_since(UNIX_EPOCH)?.as_secs();
         let form = json!({
             "aid": aid,
         });
         // 发送 收藏/取消收藏 请求
-        let http_resp = self
-            .jm_post(ApiPath::GetFavoriteFolder, None, Some(form), ts)
-            .await?;
-        // 检查http响应状态码
-        let status = http_resp.status();
-        let body = http_resp.text().await?;
-        if status != reqwest::StatusCode::OK {
-            return Err(eyre!(
-                "收藏/取消收藏 失败，预料之外的状态码({status}): {body}"
-            ));
-        }
-        // 尝试将body解析为JmResp
-        let jm_resp = serde_json::from_str::<JmResp>(&body)
-            .wrap_err(format!("将body解析为JmResp失败: {body}"))?;
-        // 检查JmResp的code字段
-        if jm_resp.code != 200 {
-            return Err(eyre!("收藏/取消收藏 失败，预料之外的code: {jm_resp:?}"));
-        }
-        // 检查JmResp的data字段
-        let data = jm_resp.data.as_str().ok_or_eyre(format!(
-            "收藏/取消收藏 失败，data字段不是字符串: {jm_resp:?}"
-        ))?;
-        // 解密data字段
-        let data = decrypt_data(ts, data)?;
-        // 尝试将解密后的data字段解析为ToggleFavoriteRespData
-        let toggle_favorite_resp_data = serde_json::from_str::<ToggleFavoriteRespData>(&data)
-            .wrap_err(format!(
-                "将解密后的data字段解析为ToggleFavoriteRespData失败: {data}"
-            ))?;
-        Ok(toggle_favorite_resp_data)
+        self.request_decrypted(
+            reqwest::Method::POST,
+            ApiPath::GetFavoriteFolder,
+            None,
+            Some(form),
+            "收藏/取消收藏 失败",
+            "将解密后的data字段解析为ToggleFavoriteRespData",
+        )
+        .await
     }
 
     #[instrument(level = "error", skip_all, fields(aid = aid, folder_id = folder_id))]
     pub async fn move_favorite_to_folder(&self, aid: i64, folder_id: &str) -> eyre::Result<()> {
-        let ts = SystemTime::now().duration_since(UNIX_EPOCH)?.as_secs();
         let form = json!({
             "type": "move",
             "folder_id": folder_id,
             "aid": aid,
         });
-        let http_resp = self
-            .jm_post(ApiPath::ManageFavoriteFolder, None, Some(form), ts)
+        let data = self
+            .request_decrypted_data(
+                reqwest::Method::POST,
+                ApiPath::ManageFavoriteFolder,
+                None,
+                Some(form),
+                "移动收藏夹失败",
+                None,
+            )
             .await?;
-        let status = http_resp.status();
-        let body = http_resp.text().await?;
-        if status != reqwest::StatusCode::OK {
-            return Err(eyre!("移动收藏夹失败，预料之外的状态码({status}): {body}"));
-        }
-        let jm_resp = serde_json::from_str::<JmResp>(&body)
-            .wrap_err(format!("将body解析为JmResp失败: {body}"))?;
-        if jm_resp.code != 200 {
-            return Err(eyre!("移动收藏夹失败，预料之外的code: {jm_resp:?}"));
-        }
-        let data = jm_resp
-            .data
-            .as_str()
-            .ok_or_eyre(format!("移动收藏夹失败，data字段不是字符串: {jm_resp:?}"))?;
-        let data = decrypt_data(ts, data)?;
         // 这个接口即使操作没生效也可能返回 code 200，要自己看 status
         let action_resp_data: FavoriteFolderActionRespData =
             serde_json::from_str(&data).unwrap_or_default();
@@ -750,29 +617,16 @@ impl JmClient {
     /// - blocks: 官方常用标签，按主题分组（主题A漫 / 角色扮演 / 特殊PLAY / 其他）
     #[instrument(level = "error", skip_all)]
     pub async fn get_categories(&self) -> eyre::Result<CategoryResp> {
-        let ts = SystemTime::now().duration_since(UNIX_EPOCH)?.as_secs();
-        let http_resp = self.jm_get(ApiPath::GetCategories, None, ts).await?;
-
-        let status = http_resp.status();
-        let body = http_resp.text().await?;
-        if status != reqwest::StatusCode::OK {
-            return Err(eyre!("获取分类失败，预料之外的状态码({status}): {body}"));
-        }
-
-        let jm_resp = serde_json::from_str::<JmResp>(&body)
-            .wrap_err(format!("将body解析为JmResp失败: {body}"))?;
-        if jm_resp.code != 200 {
-            return Err(eyre!("获取分类失败，预料之外的code: {jm_resp:?}"));
-        }
-
-        let data = jm_resp
-            .data
-            .as_str()
-            .ok_or_eyre(format!("获取分类失败，data字段不是字符串: {jm_resp:?}"))?;
-        let data = decrypt_data(ts, data)?;
-
-        let value: serde_json::Value = serde_json::from_str(&data)
-            .wrap_err(format!("将解密后的分类数据解析为JSON失败: {data}"))?;
+        let value: serde_json::Value = self
+            .request_decrypted(
+                reqwest::Method::GET,
+                ApiPath::GetCategories,
+                None,
+                None,
+                "获取分类失败",
+                "将解密后的分类数据解析为JSON",
+            )
+            .await?;
 
         Ok(parse_categories(&value))
     }
@@ -829,7 +683,7 @@ impl JmClient {
         let status = http_resp.status();
         if status != StatusCode::OK {
             let text = http_resp.text().await?;
-            let err = eyre!("下载图片失败，预料之外的状态码: {text}");
+            let err = eyre!("下载图片失败，预料之外的状态码({status}): {text}");
             return Err(err);
         }
 
@@ -845,7 +699,7 @@ impl JmClient {
             let status = http_resp.status();
             if status != StatusCode::OK {
                 let text = http_resp.text().await?;
-                let err = eyre!("下载图片失败，预料之外的状态码: {text}");
+                let err = eyre!("下载图片失败，预料之外的状态码({status}): {text}");
                 return Err(err);
             }
 

@@ -5,6 +5,7 @@ import { NButton, NCheckbox, NDialog, NModal, NTooltip, useMessage } from 'naive
 import FloatLabelInput from '../components/FloatLabelInput.vue'
 import { useStore } from '../store.ts'
 import { useI18n } from '../i18n.ts'
+import { showError } from '../errors.ts'
 
 const store = useStore()
 const { t } = useI18n()
@@ -32,7 +33,7 @@ async function onLogin() {
 
   const result = await commands.login(username.value, password.value)
   if (result.status === 'error') {
-    console.error(result.error)
+    showError(result.error)
     return
   }
   store.userProfile = result.data

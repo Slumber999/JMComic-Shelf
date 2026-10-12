@@ -1,54 +1,22 @@
 <script setup lang="ts">
-import { computed, ref, watch } from 'vue'
-import { showError } from '../errors.ts'
+import { ref, watch } from 'vue'
 import { NButton, NDrawer, NDrawerContent } from 'naive-ui'
-import { commands, Comment } from '../bindings.ts'
 import LoadingSpinner from '../components/LoadingSpinner.vue'
 import { useI18n } from '../i18n.ts'
+import CommentList from '../comments/CommentList.vue'
+import { useComments } from '../comments/useComments.ts'
 
 const props = defineProps<{ comicId: number }>()
 const showing = defineModel<boolean>('showing', { required: true })
 
 const { t } = useI18n()
 
-/// 后端一次请求 30 条（官方接口每页只有 10 条，后端并发拉 3 页合并）
-const PAGE_SIZE = 30
-
-const loading = ref<boolean>(false)
-const comments = ref<Comment[]>([])
-const total = ref<number>(0)
+/// 抽屉的页码是组件内的：每次打开都从第一页重新开始
 const page = ref<number>(1)
-
-const pageCount = computed(() => Math.max(1, Math.ceil(total.value / PAGE_SIZE)))
-
-async function loadComments() {
-  if (loading.value) {
-    return
-  }
-
-  loading.value = true
-  const result = await commands.getComments(props.comicId, page.value)
-  loading.value = false
-
-  if (result.status === 'error') {
-    console.error(result.error)
-    showError(result.error)
-    return
-  }
-
-  comments.value = result.data.list ?? []
-  total.value = result.data.total ?? 0
-}
-
-function goToPage(next: number) {
-  page.value = Math.min(Math.max(1, next), pageCount.value)
-  void loadComments()
-}
-
-function userName(comment: Comment): string {
-  const nickname = comment.nickname ?? ''
-  return nickname === '' ? (comment.username ?? '') : nickname
-}
+const { loading, comments, total, pageCount, loadComments, goToPage } = useComments({
+  comicId: () => props.comicId,
+  page,
+})
 
 // 每次打开抽屉都重新拉第一页
 watch(
@@ -83,17 +51,11 @@ watch(
         {{ t('commentDrawer.empty') }}
       </div>
 
-      <div v-else class="flex flex-col">
-        <div v-for="comment in comments" :key="comment.CID" class="border-b border-gray-1 py-2 last:border-b-0">
-          <div class="text-xs text-gray-500">{{ comment.addtime }}</div>
-          <div class="text-sm whitespace-pre-wrap break-words">{{ comment.content }}</div>
-          <!-- 子评论：只带出用户名 -->
-          <div v-for="reply in comment.replies" :key="reply.CID" class="mt-1 pl-4 text-sm text-gray-600">
-            <span class="text-gray-5">↳ {{ userName(reply) }}：</span>
-            <span class="whitespace-pre-wrap break-words">{{ reply.content }}</span>
-          </div>
-        </div>
-      </div>
+      <comment-list
+        v-else
+        :comments="comments"
+        list-class="flex flex-col"
+        item-class="border-b border-gray-1 py-2 last:border-b-0" />
 
       <template #footer>
         <div class="flex w-full items-center justify-center gap-2">

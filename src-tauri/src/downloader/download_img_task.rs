@@ -128,7 +128,8 @@ impl DownloadImgTask {
 
         tracing::trace!("开始下载图片");
 
-        let (img_data, format) = match self.app.get_jm_client().get_img_data_and_format(url).await {
+        // 普通下载失败即放弃：只取一次，不重试
+        let (img_data, format) = match fetch_img_data(&self.app, url, 1, Duration::ZERO).await {
             Ok(data) => data,
             Err(err) => {
                 let err_title = "下载图片失败";
@@ -258,6 +259,54 @@ pub fn calculate_block_num(scramble_id: i64, id: i64, filename: &str) -> u32 {
         block_num = block_num * 2 + 2;
         block_num
     }
+}
+
+/// 取一张图片的原始数据：失败按 `attempt * retry_interval` 退避后重试，最多尝试 `retry_times` 次
+/// - 重试次数与退避间隔由调用方决定，两条下载路径的策略不一样
+pub async fn fetch_img_data(
+    app: &AppHandle,
+    url: &str,
+    retry_times: u32,
+    retry_interval: Duration,
+) -> eyre::Result<(Bytes, ImageFormat)> {
+    fetch_img_with_retry(app, url, retry_times, retry_interval, |img_data, format| {
+        async move { Ok((img_data, format)) }
+    })
+    .await
+}
+
+/// 取一张图片并交给 `process` 处理：下载失败或处理失败都会按 `attempt * retry_interval`
+/// 退避后重试，最多尝试 `retry_times` 次
+/// - 重试次数与退避间隔由调用方决定：导出路径连解码失败一起重试，普通下载只取一次
+pub async fn fetch_img_with_retry<T, F, Fut>(
+    app: &AppHandle,
+    url: &str,
+    retry_times: u32,
+    retry_interval: Duration,
+    mut process: F,
+) -> eyre::Result<T>
+where
+    F: FnMut(Bytes, ImageFormat) -> Fut,
+    Fut: std::future::Future<Output = eyre::Result<T>>,
+{
+    let mut last_err = None;
+    for attempt in 1..=retry_times {
+        let result = match app.get_jm_client().get_img_data_and_format(url).await {
+            Ok((img_data, format)) => process(img_data, format).await,
+            Err(err) => Err(err),
+        };
+        match result {
+            Ok(value) => return Ok(value),
+            Err(err) => {
+                last_err = Some(err);
+                if attempt < retry_times {
+                    sleep(retry_interval * attempt).await;
+                }
+            }
+        }
+    }
+
+    Err(last_err.unwrap_or_else(|| eyre::eyre!("下载图片`{url}`失败")))
 }
 
 #[instrument(

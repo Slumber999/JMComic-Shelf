@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, watch } from 'vue'
+import { ref } from 'vue'
 import { open } from '@tauri-apps/plugin-dialog'
 import { path } from '@tauri-apps/api'
 import { appDataDir } from '@tauri-apps/api/path'
@@ -53,10 +53,6 @@ async function resetDownloadDir() {
 }
 
 const dirFmt = ref<string>(store.config?.dirFmt ?? '')
-
-watch([() => store.config?.apiDomainMode, () => store.config?.customApiDomain], () => {
-  message.warning(t('settings.download.apiLineChanged'))
-})
 </script>
 
 <template>

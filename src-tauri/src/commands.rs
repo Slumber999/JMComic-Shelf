@@ -2,11 +2,11 @@ use std::sync::Arc;
 use std::time::Duration;
 use std::{
     fs::File,
+    future::Future,
     io::{BufRead, BufReader},
     path::{Path, PathBuf},
 };
 
-// TODO: 用`#![allow(clippy::used_underscore_binding)]`来消除警告
 use eyre::{eyre, OptionExt, WrapErr};
 use indexmap::IndexMap;
 use tauri::{AppHandle, Manager};
@@ -16,7 +16,6 @@ use tokio::sync::Semaphore;
 use tokio::task::JoinSet;
 use tokio::time::sleep;
 use tracing::{instrument, Instrument};
-use walkdir::WalkDir;
 
 use crate::config::{api_line_domains, ApiDomainMode, Config, ExportSkipMode, LocalLibrarySource};
 use crate::export::manager::{ExportTaskKind, ExportTaskState};
@@ -136,6 +135,50 @@ pub async fn get_categories(app: AppHandle) -> CommandResult<CategoryResp> {
     Ok(categories)
 }
 
+/// 探测耗时转毫秒；极端大值按 u64::MAX 处理
+fn probe_latency_ms(elapsed: &Duration) -> u64 {
+    u64::try_from(elapsed.as_millis()).unwrap_or(u64::MAX)
+}
+
+/// 并发探测所有线路，返回按「可用优先、延迟升序」排好的 (目标, 探测结果)
+/// - probe 只负责按目标发一次探测请求，目标本身原样带回，交给调用方拼结果结构体
+async fn probe_all_lines<T, F, Fut>(
+    client: reqwest::Client,
+    targets: Vec<T>,
+    probe: F,
+) -> Vec<(T, eyre::Result<Duration>)>
+where
+    T: Clone + Send + 'static,
+    F: Fn(reqwest::Client, T) -> Fut + Copy + Send + 'static,
+    Fut: Future<Output = eyre::Result<Duration>> + Send + 'static,
+{
+    let mut join_set = JoinSet::new();
+    for target in targets {
+        let client = client.clone();
+        join_set.spawn(async move {
+            let result = probe(client, target.clone()).await;
+            (target, result)
+        });
+    }
+
+    let mut results = Vec::new();
+    while let Some(task) = join_set.join_next().await {
+        let Ok(item) = task else {
+            continue;
+        };
+        results.push(item);
+    }
+
+    results.sort_by_key(|(_, result)| {
+        (
+            result.is_err(),
+            result.as_ref().ok().map_or(u64::MAX, probe_latency_ms),
+        )
+    });
+
+    results
+}
+
 /// 对官方 API 线路做轻量测速，按延迟排序（失败的在最后）
 #[tauri::command]
 #[specta::specta]
@@ -154,41 +197,20 @@ pub async fn probe_api_lines(app: AppHandle) -> CommandResult<Vec<ApiLineProbeRe
         targets.push(("自定义".to_string(), ApiDomainMode::Custom, custom_api_domain));
     }
 
-    let mut join_set = JoinSet::new();
-    for (label, mode, domain) in targets {
-        let client = client.clone();
-        join_set.spawn(async move {
-            let result = jm_client::probe_api_domain(&client, &domain).await;
-            (label, mode, domain, result)
-        });
-    }
-
-    let mut results = Vec::new();
-    while let Some(task) = join_set.join_next().await {
-        let Ok((label, mode, domain, result)) = task else {
-            continue;
-        };
-        results.push(match result {
-            Ok(elapsed) => ApiLineProbeResult {
-                label,
-                mode,
-                domain,
-                ok: true,
-                latency_ms: Some(u64::try_from(elapsed.as_millis()).unwrap_or(u64::MAX)),
-                error: None,
-            },
-            Err(err) => ApiLineProbeResult {
-                label,
-                mode,
-                domain,
-                ok: false,
-                latency_ms: None,
-                error: Some(err.to_string()),
-            },
-        });
-    }
-
-    results.sort_by_key(|item| (!item.ok, item.latency_ms.unwrap_or(u64::MAX)));
+    let results = probe_all_lines(client, targets, |client, (_, _, domain)| async move {
+        jm_client::probe_api_domain(&client, &domain).await
+    })
+    .await
+    .into_iter()
+    .map(|((label, mode, domain), result)| ApiLineProbeResult {
+        label,
+        mode,
+        domain,
+        ok: result.is_ok(),
+        latency_ms: result.as_ref().ok().map(probe_latency_ms),
+        error: result.err().map(|err| err.to_string()),
+    })
+    .collect();
 
     Ok(results)
 }
@@ -201,37 +223,19 @@ pub async fn probe_image_lines(app: AppHandle) -> CommandResult<Vec<ImageLinePro
     let client = lines::create_probe_client(&app)
         .map_err(|err| CommandError::from("创建测速客户端失败", err))?;
 
-    let mut join_set = JoinSet::new();
-    for domain in lines::IMAGE_LINE_DOMAINS {
-        let client = client.clone();
-        join_set.spawn(async move {
-            let result = jm_client::probe_image_domain(&client, domain).await;
-            (domain, result)
-        });
-    }
-
-    let mut results = Vec::new();
-    while let Some(task) = join_set.join_next().await {
-        let Ok((domain, result)) = task else {
-            continue;
-        };
-        results.push(match result {
-            Ok(elapsed) => ImageLineProbeResult {
-                domain: domain.to_string(),
-                ok: true,
-                latency_ms: Some(u64::try_from(elapsed.as_millis()).unwrap_or(u64::MAX)),
-                error: None,
-            },
-            Err(err) => ImageLineProbeResult {
-                domain: domain.to_string(),
-                ok: false,
-                latency_ms: None,
-                error: Some(err.to_string()),
-            },
-        });
-    }
-
-    results.sort_by_key(|item| (!item.ok, item.latency_ms.unwrap_or(u64::MAX)));
+    let targets = lines::IMAGE_LINE_DOMAINS.to_vec();
+    let results = probe_all_lines(client, targets, |client, domain| async move {
+        jm_client::probe_image_domain(&client, domain).await
+    })
+    .await
+    .into_iter()
+    .map(|(domain, result)| ImageLineProbeResult {
+        domain: domain.to_string(),
+        ok: result.is_ok(),
+        latency_ms: result.as_ref().ok().map(probe_latency_ms),
+        error: result.err().map(|err| err.to_string()),
+    })
+    .collect();
 
     Ok(results)
 }
@@ -556,7 +560,7 @@ pub async fn download_comic(app: AppHandle, aid: i64) -> CommandResult<()> {
 
     if chapter_ids.is_empty() {
         let err = eyre!("漫画`{comic_title}`的所有章节都已存在于下载目录，无需重复下载");
-        return Err(CommandError::from("一键下载漫画失败", err));
+        return Err(CommandError::from("所有章节都已下载", err));
     }
 
     for chapter_id in &chapter_ids {
@@ -593,7 +597,7 @@ pub async fn download_all_favorites(app: AppHandle) -> CommandResult<()> {
         .total
         .parse::<i64>()
         .map_err(|err| CommandError::from("获取收藏夹失败", err))?;
-    let page_count = (total / count) + 1;
+    let page_count = if count > 0 { (total + count - 1) / count } else { 1 };
     // 获取收藏夹剩余页
     let sem = Arc::new(Semaphore::new(5));
     let mut join_set = JoinSet::new();
@@ -1042,35 +1046,22 @@ pub fn get_local_comics(app: AppHandle, source: LocalLibrarySource) -> Vec<Comic
 }
 
 /// 读取导出目录里的漫画（只导出过 cbz、没有下载过的漫画也能显示）
-/// - 导出时会把 `元数据.json` 一并写到导出目录，这里直接读它
-/// - 没有元数据的目录（本次改动之前导出的）会被跳过，重新导出一次即可生成
+/// - 以 `元数据.json` 为准，和搜索/收藏页的「已导出」标记、空间统计用同一套判定
 #[allow(clippy::needless_pass_by_value)]
 #[tauri::command(async)]
 #[specta::specta]
 #[instrument(level = "error", skip_all)]
 pub fn get_exported_comics(app: AppHandle) -> Vec<Comic> {
-    let export_dir = app.get_config().read().export_dir.clone();
-
-    // 以「cbz 子目录」为锚点，找出所有导出过 cbz 的漫画目录
-    let mut comic_dirs_with_modify_time = Vec::new();
-    for entry in WalkDir::new(&export_dir).into_iter().filter_map(Result::ok) {
-        if !entry.file_type().is_dir() || entry.file_name() != "cbz" {
-            continue;
-        }
-        let cbz_dir = entry.path();
-        if !has_cbz_file(cbz_dir) {
-            continue;
-        }
-        let Some(comic_export_dir) = cbz_dir.parent() else {
-            continue;
-        };
-
-        let modify_time = comic_export_dir
-            .metadata()
-            .and_then(|metadata| metadata.modified())
-            .unwrap_or(std::time::SystemTime::UNIX_EPOCH);
-        comic_dirs_with_modify_time.push((comic_export_dir.to_path_buf(), modify_time));
-    }
+    let mut comic_dirs_with_modify_time = local_index::export_comics(&app)
+        .into_iter()
+        .map(|(_, _, comic_export_dir)| {
+            let modify_time = comic_export_dir
+                .metadata()
+                .and_then(|metadata| metadata.modified())
+                .unwrap_or(std::time::SystemTime::UNIX_EPOCH);
+            (comic_export_dir, modify_time)
+        })
+        .collect::<Vec<_>>();
     // 按照修改时间排序，最新的排在最前面
     comic_dirs_with_modify_time.sort_by(|(_, a), (_, b)| b.cmp(a));
 
@@ -1112,16 +1103,7 @@ pub fn get_exported_comics(app: AppHandle) -> Vec<Comic> {
     comics_by_id.into_values().collect()
 }
 
-/// 判断目录里是否至少有一个 cbz 文件
-fn has_cbz_file(dir: &Path) -> bool {
-    let Ok(read_dir) = std::fs::read_dir(dir) else {
-        return false;
-    };
 
-    read_dir
-        .filter_map(Result::ok)
-        .any(|entry| entry.path().extension().is_some_and(|ext| ext.eq_ignore_ascii_case("cbz")))
-}
 
 /// 根据导出目录里**真实存在**的 pdf / cbz 文件，重算每个章节的导出状态
 /// - 元数据里的标记可能是旧的（导出之后又把文件删了，标记不会自己消失）
@@ -1459,7 +1441,7 @@ pub async fn get_all_favorite_comics(
         .total
         .parse::<i64>()
         .map_err(|err| CommandError::from("获取收藏夹失败", err))?;
-    let page_count = if count > 0 { (total / count) + 1 } else { 1 };
+    let page_count = if count > 0 { (total + count - 1) / count } else { 1 };
 
     let sem = Arc::new(Semaphore::new(5));
     let mut join_set = JoinSet::new();
@@ -1529,24 +1511,6 @@ pub async fn export_cbz_chapters_without_download(
     Ok(())
 }
 
-#[allow(clippy::needless_pass_by_value)]
-#[tauri::command(async)]
-#[specta::specta]
-#[instrument(level = "error", skip_all)]
-pub fn get_logs_dir_size(app: AppHandle) -> CommandResult<u64> {
-    let logs_dir = logger::logs_dir(&app)
-        .wrap_err("获取日志目录失败")
-        .map_err(|err| CommandError::from("获取日志目录大小失败", err))?;
-    let logs_dir_size = std::fs::read_dir(&logs_dir)
-        .wrap_err(format!("读取日志目录`{}`失败", logs_dir.display()))
-        .map_err(|err| CommandError::from("获取日志目录大小失败", err))?
-        .filter_map(Result::ok)
-        .filter_map(|entry| entry.metadata().ok())
-        .map(|metadata| metadata.len())
-        .sum::<u64>();
-    tracing::debug!("获取日志目录大小成功");
-    Ok(logs_dir_size)
-}
 
 /// 空间统计：下载目录 / 导出目录 / 日志目录的占用，以及可以清理的东西
 #[tauri::command(async)]
@@ -1680,11 +1644,12 @@ pub fn open_log_file(path: &str) -> CommandResult<Vec<LogMetadata>> {
             continue;
         }
 
-        let log = serde_json::from_str::<LogMetadata>(&line)
-            .wrap_err(format!("将日志文件的第`{line_num}`行解析为LogMetadata失败"))
-            .map_err(|err| CommandError::from("打开日志文件失败", err))?;
-
-        logs.push(log);
+        // 日志是非阻塞写入的，被强杀时可能留下半行；坏行跳过，
+        // 不然一行解析失败整份日志都打不开
+        match serde_json::from_str::<LogMetadata>(&line) {
+            Ok(log) => logs.push(log),
+            Err(err) => tracing::warn!("解析日志第`{line_num}`行失败，已跳过：{err}"),
+        }
     }
 
     Ok(logs)

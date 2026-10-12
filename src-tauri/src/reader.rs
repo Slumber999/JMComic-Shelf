@@ -232,18 +232,20 @@ fn take_number(chars: &mut std::iter::Peekable<std::str::Chars<'_>>) -> u128 {
     value
 }
 
-fn file_name_string(path: &Path) -> String {
+/// 路径的文件名（拿不到就是空串）；快速阅读器扫描目录也用这一份
+pub(crate) fn file_name_string(path: &Path) -> String {
     path.file_name()
         .map_or_else(String::new, |name| name.to_string_lossy().to_string())
 }
 
-fn stem_string(path: &Path) -> String {
+/// 路径的主文件名，例如 cbz 的 `第1话.cbz` 得到 `第1话`
+pub(crate) fn stem_string(path: &Path) -> String {
     path.file_stem()
         .map_or_else(|| file_name_string(path), |name| name.to_string_lossy().to_string())
 }
 
 /// 按文件名自然排序，列出目录里的图片（不递归）
-fn list_images(dir: &Path) -> Vec<PathBuf> {
+pub(crate) fn list_images(dir: &Path) -> Vec<PathBuf> {
     let Ok(read_dir) = std::fs::read_dir(dir) else {
         return Vec::new();
     };
@@ -259,7 +261,7 @@ fn list_images(dir: &Path) -> Vec<PathBuf> {
 }
 
 /// 打开一个 cbz，读出里面图片条目的名字（按自然序）
-fn read_cbz_pages(path: &Path) -> eyre::Result<Vec<String>> {
+pub(crate) fn read_cbz_pages(path: &Path) -> eyre::Result<Vec<String>> {
     let file = File::open(path).wrap_err(format!("打开cbz`{}`失败", path.display()))?;
     let archive =
         zip::ZipArchive::new(file).wrap_err(format!("解析cbz`{}`失败", path.display()))?;

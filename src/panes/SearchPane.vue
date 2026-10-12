@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed, nextTick, onMounted, ref, watch } from 'vue'
 import { showError } from '../errors.ts'
-import { commands, LocalTag, SearchSort } from '../bindings.ts'
+import { commands, SearchSort } from '../bindings.ts'
 import { scrollListToTop } from '../listScroll.ts'
 import {
   NButton,
@@ -20,6 +20,7 @@ import FloatLabelInput from '../components/FloatLabelInput.vue'
 import { PhClockCounterClockwise, PhMagnifyingGlass, PhTag } from '@phosphor-icons/vue'
 import { useStore } from '../store.ts'
 import { useI18n } from '../i18n.ts'
+import { useLocalTags } from '../localTags.ts'
 
 const store = useStore()
 const { t } = useI18n()
@@ -73,28 +74,22 @@ const history = ref<string[]>([])
 // 本地标签云：只跟后端要「标签 + 次数」，不再为了标签云把整库漫画都拉下来
 // （以前进搜索页会触发一次全库扫描 + 全量反序列化）
 // 下载目录和导出目录共用同一份，切换来源时不变
-const LOCAL_TAG_PREVIEW_COUNT = 30
-const localTagsExpanded = ref<boolean>(false)
-const localTags = ref<LocalTag[]>([])
-const localTagStats = computed(() => localTags.value)
-const visibleLocalTags = computed(() =>
-  localTagsExpanded.value
-    ? localTagStats.value
-    : localTagStats.value.slice(0, LOCAL_TAG_PREVIEW_COUNT),
-)
+const {
+  tags: localTags,
+  expanded: localTagsExpanded,
+  visibleTags: visibleLocalTags,
+  hasMoreTags: hasMoreLocalTags,
+  loadLocalTags,
+} = useLocalTags()
 
 const tagsHeaderText = computed(() => {
   const official =
     categoryResp.value?.blocks.reduce((sum, block) => sum + block.content.length, 0) ?? 0
-  const local = localTagStats.value.length
+  const local = localTags.value.length
   return local > 0
     ? t('search.popularTagsWithLocal', { official, local })
     : t('search.popularTags', { official })
 })
-
-async function loadLocalTags() {
-  localTags.value = await commands.getLocalTagsAll()
-}
 
 // 每次回到搜索页时刷新一次（后端索引里已有缓存，代价很小）
 watch(
@@ -550,7 +545,7 @@ function resetFilters() {
         </div>
 
         <!-- 本地标签云：来自已下载 / 已导出漫画的元数据，样式和官方标签一致，点一下就是按这个标签搜索 -->
-        <div v-if="localTagStats.length > 0" class="flex items-start gap-1">
+        <div v-if="localTags.length > 0" class="flex items-start gap-1">
           <span class="text-xs text-gray-400 shrink-0 w-18 text-right pt-0.5">{{ t('search.local') }}</span>
           <div class="flex flex-wrap items-center gap-1">
             <n-button
@@ -563,10 +558,10 @@ function resetFilters() {
               {{ tag.name }}
             </n-button>
             <span
-              v-if="localTagStats.length > LOCAL_TAG_PREVIEW_COUNT"
+              v-if="hasMoreLocalTags"
               class="text-xs text-gray-4 cursor-pointer select-none hover:text-gray-6"
               @click="localTagsExpanded = !localTagsExpanded">
-              {{ localTagsExpanded ? t('common.collapse') : t('search.expandAllLocal', { count: localTagStats.length }) }}
+              {{ localTagsExpanded ? t('common.collapse') : t('search.expandAllLocal', { count: localTags.length }) }}
             </span>
           </div>
         </div>

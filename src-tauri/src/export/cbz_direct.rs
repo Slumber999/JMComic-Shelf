@@ -9,7 +9,6 @@ use std::{
     time::Duration,
 };
 
-use bytes::Bytes;
 use eyre::{eyre, WrapErr};
 use tauri::AppHandle;
 use tauri_specta::Event;
@@ -19,7 +18,9 @@ use zip::{write::SimpleFileOptions, ZipWriter};
 
 use crate::{
     config::ExportSkipMode,
-    downloader::download_img_task::{calculate_block_num, decode_and_encode_img},
+    downloader::download_img_task::{
+        calculate_block_num, decode_and_encode_img, fetch_img_with_retry,
+    },
     events::ExportCbzEvent,
     export::manager::{ExportTask, ExportTaskKind, ExportTaskState},
     extensions::AppHandleExt,
@@ -30,6 +31,9 @@ use crate::{
 
 /// 单张图片的下载重试次数
 const IMG_RETRY_TIMES: u32 = 3;
+
+/// 单张图片重试的退避间隔：第 n 次重试前等 `n * 这个值`
+const IMG_RETRY_INTERVAL: Duration = Duration::from_millis(500);
 
 /// 导出失败的兜底事件
 struct CbzErrorEventGuard {
@@ -300,6 +304,10 @@ async fn export_comic_cbz(
 
     let sem = Arc::new(Semaphore::new(img_concurrency.max(1)));
 
+    // 用来判断「整本都没导出成功」：这种情况任务不该报完成
+    let mut attempted_chapters = 0usize;
+    let mut failed_chapters = 0usize;
+
     for (index, chapter_info) in chapters.into_iter().enumerate() {
         // 暂停/删除检查点：不再开始新的章节
         if task.is_paused() || task.is_deleted() {
@@ -322,6 +330,8 @@ async fn export_comic_cbz(
             continue;
         }
 
+        attempted_chapters += 1;
+
         match export_chapter_cbz(
             app,
             comic,
@@ -341,6 +351,7 @@ async fn export_comic_cbz(
                     // 被暂停或被删除，不算失败
                     tracing::info!("章节`{chapter_title}`导出被中断");
                 } else {
+                    failed_chapters += 1;
                     let err_title = format!("章节`{chapter_title}`导出cbz失败");
                     tracing::error!(err_title, message = format!("{err:?}"));
                     emit_progress(app, &uuid, index + 1, None, None, Some(chapter_title));
@@ -354,6 +365,12 @@ async fn export_comic_cbz(
         }
 
         task.set_progress(u32::try_from(index + 1).unwrap_or(u32::MAX), u32::try_from(total).unwrap_or(u32::MAX));
+    }
+
+    // 每一章都失败（多半是断网或图片 CDN 不通）就不算完成，
+    // 否则任务显示「已完成」、导出目录却是空的
+    if attempted_chapters > 0 && failed_chapters == attempted_chapters {
+        return Err(eyre!("所有章节都没能导出，请检查网络连接后重试").into());
     }
 
     error_event_guard.success = true;
@@ -461,31 +478,17 @@ async fn export_chapter_cbz(
                 return Err(eyre!("导出已暂停"));
             }
 
-            let mut last_err = None;
-            for attempt in 1..=IMG_RETRY_TIMES {
-                match download_and_encode_img(&app, &url, block_num, download_format).await {
-                    Ok(data) => {
-                        let done = img_done.fetch_add(1, Ordering::Relaxed) + 1;
-                        emit_progress(
-                            &app,
-                            &uuid,
-                            chapters_done,
-                            Some(done),
-                            Some(img_total),
-                            Some(&chapter_title),
-                        );
-                        return Ok::<_, eyre::Report>((index, ext, data));
-                    }
-                    Err(err) => {
-                        last_err = Some(err);
-                        if attempt < IMG_RETRY_TIMES {
-                            sleep(Duration::from_millis(u64::from(attempt) * 500)).await;
-                        }
-                    }
-                }
-            }
-
-            Err(last_err.unwrap_or_else(|| eyre!("下载图片`{url}`失败")))
+            let data = download_and_encode_img(&app, &url, block_num, download_format).await?;
+            let done = img_done.fetch_add(1, Ordering::Relaxed) + 1;
+            emit_progress(
+                &app,
+                &uuid,
+                chapters_done,
+                Some(done),
+                Some(img_total),
+                Some(&chapter_title),
+            );
+            Ok::<_, eyre::Report>((index, ext, data))
         });
     }
 
@@ -542,20 +545,30 @@ async fn export_chapter_cbz(
     Ok(())
 }
 
+/// 取一张图片并还原拼图、按目标格式编码：下载或解码失败都按导出路径的策略重试
 async fn download_and_encode_img(
     app: &AppHandle,
     url: &str,
     block_num: u32,
     download_format: DownloadFormat,
 ) -> eyre::Result<Vec<u8>> {
-    let (img_data, src_format) = app.get_jm_client().get_img_data_and_format(url).await?;
-    let img_data: Bytes = img_data;
-
-    tokio::task::spawn_blocking(move || {
-        decode_and_encode_img(&img_data, src_format, block_num, download_format)
-    })
+    fetch_img_with_retry(
+        app,
+        url,
+        IMG_RETRY_TIMES,
+        IMG_RETRY_INTERVAL,
+        |img_data, src_format| async move {
+            match tokio::task::spawn_blocking(move || {
+                decode_and_encode_img(&img_data, src_format, block_num, download_format)
+            })
+            .await
+            {
+                Ok(encoded) => encoded,
+                Err(err) => Err(eyre::Report::from(err)),
+            }
+        },
+    )
     .await
-    .map_err(eyre::Report::from)?
 }
 
 async fn download_cover(app: &AppHandle, comic: &Comic, cbz_dir: &Path) -> eyre::Result<()> {

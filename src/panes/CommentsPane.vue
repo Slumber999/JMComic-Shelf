@@ -7,43 +7,27 @@ import LoadingSpinner from '../components/LoadingSpinner.vue'
 import { useStore } from '../store.ts'
 import { PhChatCircleDots } from '@phosphor-icons/vue'
 import { useI18n } from '../i18n.ts'
+import CommentList from '../comments/CommentList.vue'
+import { useComments } from '../comments/useComments.ts'
 
 const store = useStore()
 const { t } = useI18n()
 
-/// 后端一次请求 30 条
-const PAGE_SIZE = 30
+/// 全站评论的页码记在 store 里：跳去看漫画再回来，页码和滚动位置都还在
+const page = computed({
+  get: () => store.commentsPage,
+  set: (next: number) => {
+    store.commentsPage = next
+  },
+})
 
-const loading = ref<boolean>(false)
+// 全站评论没有漫画 ID：传 null 让后端按时间倒序给全站最新评论
+const { loading, comments, total, pageCount, loadComments, goToPage } = useComments({
+  comicId: () => null,
+  page,
+})
+
 const jumping = ref<number>()
-const comments = ref<Comment[]>([])
-const total = ref<number>(0)
-
-const pageCount = computed(() => Math.max(1, Math.ceil(total.value / PAGE_SIZE)))
-
-async function loadComments() {
-  if (loading.value) {
-    return
-  }
-
-  loading.value = true
-  const result = await commands.getComments(null, store.commentsPage)
-  loading.value = false
-
-  if (result.status === 'error') {
-    console.error(result.error)
-    showError(result.error)
-    return
-  }
-
-  comments.value = result.data.list ?? []
-  total.value = result.data.total ?? 0
-}
-
-function goToPage(next: number) {
-  store.commentsPage = Math.min(Math.max(1, next), pageCount.value)
-  void loadComments()
-}
 
 /// 点一条评论：跳到它所属漫画的章节详情页
 async function openComic(aid: string | undefined) {
@@ -66,9 +50,9 @@ async function openComic(aid: string | undefined) {
   store.currentTabName = 'chapter'
 }
 
-function userName(comment: Comment): string {
-  const nickname = comment.nickname ?? ''
-  return nickname === '' ? (comment.username ?? '') : nickname
+/// 条目悬停提示：点它会跳到这本漫画
+function jumpTitle(comment: Comment): string {
+  return t('comments.jumpTitle', { aid: comment.AID ?? '' })
 }
 
 // 只在第一次切进来（或还没有数据）时加载：
@@ -106,30 +90,19 @@ watch(
         {{ t('comments.empty') }}
       </div>
 
-    <div v-else class="flex-1 overflow-auto px-2 py-1">
-      <!-- 点一条就跳到它所属的漫画 -->
-      <div
-        v-for="comment in comments"
-        :key="comment.CID"
-        class="cursor-pointer rounded-md px-2 py-2 hover:bg-gray-1"
-        :class="jumping === Number(comment.AID) ? 'opacity-50' : ''"
-        :title="t('comments.jumpTitle', { aid: comment.AID ?? '' })"
-        @click="openComic(comment.AID)">
-        <div class="flex items-center gap-2 text-xs text-gray-500">
-          <span>{{ comment.addtime }}</span>
-          <span class="ml-auto rounded bg-gray-2 px-1">JM{{ comment.AID }}</span>
-        </div>
-        <div class="mt-1 text-sm whitespace-pre-wrap break-words">{{ comment.content }}</div>
-        <div v-for="reply in comment.replies" :key="reply.CID" class="mt-1 pl-4 text-sm text-gray-600">
-          <span class="text-gray-5">↳ {{ userName(reply) }}：</span>
-          <span class="whitespace-pre-wrap break-words">{{ reply.content }}</span>
-        </div>
-      </div>
-    </div>
+    <comment-list
+      v-else
+      :comments="comments"
+      list-class="flex-1 overflow-auto px-2 py-1"
+      item-class="cursor-pointer rounded-md px-2 py-2 hover:bg-gray-1"
+      :jumping="jumping"
+      :title-of="jumpTitle"
+      show-aid
+      @open-comic="openComic" />
 
     <div class="flex items-center justify-center gap-3 box-border p-2 pt-0 mt-auto">
       <span class="text-xs text-gray-500">{{ t('comments.totalCount', { count: total }) }}</span>
-      <n-pagination :page-count="pageCount" :page="store.commentsPage" @update:page="goToPage" />
+      <n-pagination :page-count="pageCount" :page="page" @update:page="goToPage" />
     </div>
   </div>
 </template>

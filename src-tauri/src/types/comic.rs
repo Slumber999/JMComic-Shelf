@@ -1,5 +1,5 @@
 use std::{
-    collections::{HashMap, HashSet},
+    collections::HashMap,
     path::{Path, PathBuf},
 };
 
@@ -120,13 +120,6 @@ impl Comic {
 
         let id_to_dir_map = utils::create_id_to_dir_map(app)?;
 
-        // TODO: 这是为了兼容v0.15.4及之前的版本，后续需要移除，计划在v0.17.0之后移除
-        if let Some(comic_download_dir) = id_to_dir_map.get(&comic.id) {
-            comic
-                .create_chapter_metadata_for_old_version(comic_download_dir)
-                .wrap_err("为旧版本创建章节元数据失败")?;
-        }
-
         comic.update_fields(&id_to_dir_map)?;
 
         Ok(comic)
@@ -155,11 +148,6 @@ impl Comic {
             .parent()
             .ok_or_eyre(format!("`{}`没有父目录", metadata_path.display()))?;
         let comic_download_dir = parent.to_path_buf();
-
-        // TODO: 这是为了兼容v0.15.4及之前的版本，后续需要移除，计划在v0.17.0之后移除
-        comic
-            .create_chapter_metadata_for_old_version(&comic_download_dir)
-            .wrap_err("为旧版本创建章节元数据失败")?;
 
         comic.comic_download_dir = Some(comic_download_dir);
         comic.is_downloaded = Some(true);
@@ -384,35 +372,4 @@ impl Comic {
         Ok(())
     }
 
-    #[instrument(level = "error", skip_all, fields(comic_id = self.id, comic_title = self.name))]
-    fn create_chapter_metadata_for_old_version(
-        &self,
-        comic_download_dir: &Path,
-    ) -> eyre::Result<()> {
-        let mut chapter_dirs = HashSet::new();
-        for entry in std::fs::read_dir(comic_download_dir)?.filter_map(Result::ok) {
-            let Ok(file_type) = entry.file_type() else {
-                continue;
-            };
-            if !file_type.is_dir() {
-                continue;
-            }
-            chapter_dirs.insert(entry.path());
-        }
-
-        for chapter_info in &self.chapter_infos {
-            let old_chapter_dir = comic_download_dir.join(&chapter_info.chapter_title);
-            let old_chapter_dir_exists = chapter_dirs.contains(&old_chapter_dir);
-            let old_chapter_metadata_exists = old_chapter_dir.join("章节元数据.json").exists();
-            if old_chapter_dir_exists && !old_chapter_metadata_exists {
-                // 如果旧版本的章节目录存在，但没有元数据文件，就创建一个
-                let mut info = chapter_info.clone();
-                info.chapter_download_dir = Some(old_chapter_dir);
-                info.is_downloaded = Some(true);
-                info.save_chapter_metadata()?;
-            }
-        }
-
-        Ok(())
-    }
 }

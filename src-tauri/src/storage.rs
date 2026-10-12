@@ -30,8 +30,9 @@ const BIGGEST_COMIC_COUNT: usize = 3;
 const LOG_KEEP_DURATION: Duration = Duration::from_secs(24 * 60 * 60);
 /// 下载中断留下的临时目录前缀（见 chapter_info.rs）
 const TEMP_DIR_PREFIX: &str = ".下载中-";
-const QUICK_READER_HTML: &str = "index.html";
-const QUICK_READER_GUIDE: &str = "使用说明.txt";
+/// 快速阅读器分享包里的两个文件名：扫描和清理都靠它们认出分享包目录
+pub(crate) const READER_HTML_FILE: &str = "index.html";
+pub(crate) const READER_GUIDE_FILE: &str = "使用说明.txt";
 
 /// 某个目录的占用情况
 #[derive(Debug, Clone, Serialize, Deserialize, Type)]
@@ -393,8 +394,9 @@ fn dir_size(path: &Path) -> u64 {
         .sum()
 }
 
-fn is_quick_reader_dir(dir: &Path) -> bool {
-    dir.join(QUICK_READER_HTML).is_file() && dir.join(QUICK_READER_GUIDE).is_file()
+/// 是不是上一次导出的快速阅读器分享包目录（导出侧的扫描也用这一份判断）
+pub(crate) fn is_quick_reader_dir(dir: &Path) -> bool {
+    dir.join(READER_HTML_FILE).is_file() && dir.join(READER_GUIDE_FILE).is_file()
 }
 
 /// path 必须在 root 之内（两端都 canonicalize），否则拒绝删除
@@ -434,10 +436,10 @@ mod tests {
         let dir = temp_dir("reader");
         assert!(!is_quick_reader_dir(&dir));
 
-        std::fs::write(dir.join(QUICK_READER_HTML), b"<html></html>").unwrap();
+        std::fs::write(dir.join(READER_HTML_FILE), b"<html></html>").unwrap();
         assert!(!is_quick_reader_dir(&dir));
 
-        std::fs::write(dir.join(QUICK_READER_GUIDE), b"guide").unwrap();
+        std::fs::write(dir.join(READER_GUIDE_FILE), b"guide").unwrap();
         assert!(is_quick_reader_dir(&dir));
 
         std::fs::remove_dir_all(&dir).unwrap();

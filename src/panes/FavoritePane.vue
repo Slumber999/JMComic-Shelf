@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, h, nextTick, ref, watch } from 'vue'
+import { computed, h, nextTick, onBeforeUnmount, ref, watch } from 'vue'
 import { showError } from '../errors.ts'
 import { commands, ComicInFavorite, FavoriteSort } from '../bindings.ts'
 import { scrollListToTop } from '../listScroll.ts'
@@ -48,6 +48,15 @@ const selectedCount = computed(() => selectedIds.value.size)
 const listMode = ref<boolean>(false)
 const allComics = ref<ComicInFavorite[]>([])
 const loadingAll = ref<boolean>(false)
+/** 已经取到第几页（从 1 开始） */
+const listPage = ref<number>(0)
+const listTotal = ref<number>(0)
+const listFinished = ref<boolean>(false)
+const loadingMore = ref<boolean>(false)
+/** 总页数，首次请求后算出 */
+const listPageCount = ref<number>(0)
+/** 列表是否已经滚到底部附近 */
+const listBottomReached = ref<boolean>(false)
 const busy = ref<boolean>(false)
 
 const favoritePageCount = computed(() => {
@@ -72,7 +81,7 @@ watch(
     if (store.userProfile === undefined) {
       store.getFavoriteResult = undefined
       selectedIds.value.clear()
-      allComics.value = []
+      resetListPaging()
       return
     }
     await getFavourite(0, 1, 'FavoriteTime')
@@ -83,20 +92,25 @@ watch(
 const loading = ref<boolean>(false)
 
 async function getFavourite(folderId: number, page: number, sort: FavoriteSort) {
-  console.log(folderId, page, sort)
   folderIdSelected.value = folderId
   sortSelected.value = sort
   pageSelected.value = page
   // 切换文件夹/排序后，长列表缓存失效
-  allComics.value = []
+  resetListPaging()
   loading.value = true
   const result = await commands.getFavoriteFolder(folderId, page, sort)
   loading.value = false
   if (result.status === 'error') {
     console.error(result.error)
+    showError(result.error)
     return
   }
   store.getFavoriteResult = result.data
+
+  // 列表模式下换了收藏夹/排序：接着把新收藏夹的第一批取回来
+  if (listMode.value) {
+    await loadNextBatch()
+  }
 }
 
 /// 换页/换筛选：取完数据后把列表滚回顶部
@@ -144,48 +158,185 @@ function clearSelection() {
   selectedIds.value.clear()
 }
 
-/// 拉取当前收藏夹（当前文件夹/排序）里的所有漫画，结果会缓存
-async function loadAllComics(): Promise<ComicInFavorite[] | undefined> {
-  if (allComics.value.length > 0) {
-    return allComics.value
+function resetListPaging() {
+  allComics.value = []
+  listPage.value = 0
+  listTotal.value = 0
+  listPageCount.value = 0
+  listFinished.value = false
+}
+
+/// 「加载更多」只在还有下一页、且已经滚到底部时出现
+const canLoadMore = computed(() => !listFinished.value && listBottomReached.value)
+
+const sentinelRef = ref<HTMLElement>()
+/// 真正在滚动的元素（列表的滚动容器是外层页签，不在本组件里）
+let scrollContainer: HTMLElement | undefined
+
+/// 从哨兵往上找第一个能滚的祖先
+function findScrollContainer(): HTMLElement | undefined {
+  let node = sentinelRef.value?.parentElement ?? undefined
+  while (node !== undefined) {
+    const overflowY = getComputedStyle(node).overflowY
+    if ((overflowY === 'auto' || overflowY === 'scroll') && node.scrollHeight > node.clientHeight) {
+      return node
+    }
+    node = node.parentElement ?? undefined
+  }
+  return undefined
+}
+
+/// 距离底部 80px 以内就算到底了
+function checkListBottom() {
+  // 列表刚渲染完时还找不到滚动容器，这里补一次（内容出来后才量得准）
+  if (scrollContainer === undefined) {
+    scrollContainer = findScrollContainer()
+    scrollContainer?.addEventListener('scroll', checkListBottom)
   }
 
-  loadingAll.value = true
-  const result = await commands.getAllFavoriteComics(folderIdSelected.value, sortSelected.value)
-  loadingAll.value = false
+  if (scrollContainer !== undefined) {
+    const distanceToBottom =
+      scrollContainer.scrollHeight - scrollContainer.scrollTop - scrollContainer.clientHeight
+    listBottomReached.value = distanceToBottom <= 80
+    return
+  }
 
+  const sentinel = sentinelRef.value
+  listBottomReached.value = sentinel !== undefined && sentinel.getBoundingClientRect().top <= window.innerHeight + 40
+}
+
+function stopWatchingListScroll() {
+  scrollContainer?.removeEventListener('scroll', checkListBottom)
+  scrollContainer = undefined
+  document.removeEventListener('scroll', checkListBottom, true)
+}
+
+watch(listMode, async (entering) => {
+  stopWatchingListScroll()
+  if (!entering) {
+    listBottomReached.value = false
+    return
+  }
+  await nextTick()
+  // document 上的捕获监听是兜底：scroll 不冒泡，只有捕获阶段能听到内层容器的滚动
+  document.addEventListener('scroll', checkListBottom, true)
+  checkListBottom()
+})
+
+onBeforeUnmount(stopWatchingListScroll)
+
+/// 一批最多取多少页
+const PAGES_PER_BATCH = 5
+
+/// 取第 page 页，并记下总条数与总页数（越界页会返回最后一页，所以只请求有效页）
+async function fetchFavoritePage(page: number): Promise<ComicInFavorite[] | undefined> {
+  const result = await commands.getFavoriteFolder(folderIdSelected.value, page, sortSelected.value)
   if (result.status === 'error') {
-    console.error(result.error)
     showError(result.error)
     return undefined
   }
 
-  allComics.value = result.data
-  if (allComics.value.length === 0) {
-    message.warning(t('favorite.emptyFolder'))
+  const total = Number(result.data.total)
+  listTotal.value = total
+  const count = result.data.count
+  if (listPageCount.value === 0 && count > 0 && total > 0) {
+    listPageCount.value = Math.ceil(total / count)
   }
-  return allComics.value
+  return result.data.list
 }
 
-async function toggleListMode() {
-  if (!listMode.value) {
-    const comics = await loadAllComics()
-    if (comics === undefined) {
-      return
+/// 往后取一批：先取第 1 页拿到总页数，其余页并行发出、按页号顺序接上
+async function loadNextBatch(): Promise<boolean> {
+  if (listFinished.value || loadingMore.value) {
+    return false
+  }
+
+  loadingMore.value = true
+  try {
+    // 还不知道总页数：先取第 1 页
+    if (listPageCount.value === 0) {
+      const first = await fetchFavoritePage(listPage.value + 1)
+      if (first === undefined) {
+        return false
+      }
+      listPage.value += 1
+      allComics.value.push(...first)
+      if (first.length === 0 || (listTotal.value > 0 && allComics.value.length >= listTotal.value)) {
+        listFinished.value = true
+        return allComics.value.length > 0
+      }
     }
-    listMode.value = true
-  } else {
+
+    // 只请求到最后一页为止
+    const firstPage = listPage.value + 1
+    const lastPage = Math.min(firstPage + PAGES_PER_BATCH - 1, listPageCount.value)
+    const pageIndexes = Array.from({ length: Math.max(0, lastPage - firstPage + 1) }, (_, index) => index)
+    const pages: (ComicInFavorite[] | undefined)[] = new Array(pageIndexes.length)
+    let nextToAppend = 0
+    let appended = 0
+
+    /// 按页号顺序接上已经回来的页，保证列表顺序和分页一致
+    function appendReadyPages() {
+      while (!listFinished.value && nextToAppend < pages.length && pages[nextToAppend] !== undefined) {
+        const list = pages[nextToAppend] ?? []
+        allComics.value.push(...list)
+        appended += list.length
+        nextToAppend += 1
+        if (listTotal.value > 0 && allComics.value.length >= listTotal.value) {
+          listFinished.value = true
+        }
+      }
+    }
+
+    await Promise.all(
+      pageIndexes.map(async (index) => {
+        pages[index] = (await fetchFavoritePage(firstPage + index)) ?? []
+        appendReadyPages()
+      }),
+    )
+
+    listPage.value = lastPage
+    if (listPage.value >= listPageCount.value) {
+      listFinished.value = true
+    }
+    return appended > 0
+  } finally {
+    loadingMore.value = false
+    // 追加之后哨兵位置变了，重新判断一次是否还停在底部
+    void nextTick().then(checkListBottom)
+  }
+}
+
+
+
+
+async function toggleListMode() {
+  if (listMode.value) {
     listMode.value = false
+    return
+  }
+
+  listMode.value = true
+  // 只在第一次进入时拉第一批，之后保留已经加载的部分
+  if (allComics.value.length === 0) {
+    loadingAll.value = true
+    const loaded = await loadNextBatch()
+    loadingAll.value = false
+    if (loaded && allComics.value.length === 0) {
+      message.warning(t('favorite.emptyFolder'))
+    }
   }
 }
 
 async function selectAll() {
-  const comics = await loadAllComics()
-  if (comics === undefined) {
+  // 「全选」选的是整个收藏夹，不只是列表里已经加载出来的那部分
+  const result = await commands.getAllFavoriteComics(folderIdSelected.value, sortSelected.value)
+  if (result.status === 'error') {
+    showError(result.error)
     return
   }
-  comics.forEach((comic) => selectedIds.value.add(comic.id))
-  message.success(t('favorite.selectedComics', { count: comics.length }))
+  result.data.forEach((comic) => selectedIds.value.add(comic.id))
+  message.success(t('favorite.selectedComics', { count: result.data.length }))
 }
 
 const actionOptions: DropdownOption[] = [
@@ -228,7 +379,7 @@ async function downloadSelected() {
     const result = await commands.downloadComic(comicId)
     if (result.status === 'ok') {
       created += 1
-    } else if (result.error.message.includes('无需重复下载')) {
+    } else if (result.error.code === 'already-downloaded') {
       alreadyDownloaded += 1
     } else {
       failed += 1
@@ -357,7 +508,7 @@ async function exportCbz() {
 
     <div v-else class="flex flex-col overflow-auto box-border px-2 pb-2">
       <div class="text-xs text-gray-500 px-1 pb-1">
-        {{ t('favorite.allCount', { count: allComics.length }) }}
+        {{ t('favorite.allCount', { count: listTotal || Number(store.getFavoriteResult?.total ?? 0) }) }}
       </div>
       <div
         v-for="comic in allComics"
@@ -398,6 +549,14 @@ async function exportCbz() {
             <PhFileZip :size="12" />
           </span>
         </div>
+      </div>
+      <div ref="sentinelRef" class="flex justify-center">
+        <n-button v-if="canLoadMore" class="my-2" size="small" :loading="loadingMore" @click="loadNextBatch">
+          {{ t('favorite.loadMore') }}
+        </n-button>
+        <span v-else-if="listFinished && allComics.length > 0" class="my-2 text-xs text-gray-500">
+          {{ t('favorite.allLoaded') }}
+        </span>
       </div>
     </div>
   </div>

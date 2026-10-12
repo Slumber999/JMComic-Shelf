@@ -41,46 +41,14 @@ pub(super) fn safe_dir_name(name: &str) -> String {
     }
 }
 
-pub(super) fn cbz_image_names(path: &Path) -> eyre::Result<Vec<String>> {
-    let file = fs::File::open(path).wrap_err(format!("打开cbz`{}`失败", path.display()))?;
-    let archive =
-        zip::ZipArchive::new(file).wrap_err(format!("解析cbz`{}`失败", path.display()))?;
-
-    let mut names: Vec<String> = archive
-        .file_names()
-        .filter(|name| Path::new(name).is_img())
-        .map(str::to_string)
-        .collect();
-    names.sort_by(|a, b| natural_cmp(a, b));
-    Ok(names)
-}
+/// 目录 / cbz 的扫描与 reader.rs 是同一份实现，这里只沿用导出侧习惯的名字
+pub(super) use crate::{
+    reader::{file_name_string, list_images, read_cbz_pages as cbz_image_names, stem_string},
+    storage::{is_quick_reader_dir, READER_GUIDE_FILE, READER_HTML_FILE},
+};
 
 pub(super) fn cbz_image_count(path: &Path) -> Option<usize> {
     cbz_image_names(path).ok().map(|names| names.len())
-}
-
-pub(super) fn list_images(dir: &Path) -> Vec<PathBuf> {
-    let Ok(read_dir) = fs::read_dir(dir) else {
-        return Vec::new();
-    };
-
-    let mut paths: Vec<PathBuf> = read_dir
-        .filter_map(Result::ok)
-        .map(|entry| entry.path())
-        .filter(|path| path.is_file() && path.is_img())
-        .collect();
-    paths.sort_by(|a, b| natural_cmp(&file_name_string(a), &file_name_string(b)));
-    paths
-}
-
-pub(super) fn file_name_string(path: &Path) -> String {
-    path.file_name()
-        .map_or_else(String::new, |name| name.to_string_lossy().to_string())
-}
-
-pub(super) fn stem_string(path: &Path) -> String {
-    path.file_stem()
-        .map_or_else(|| file_name_string(path), |name| name.to_string_lossy().to_string())
 }
 
 pub(super) fn subdirs(dir: &Path) -> Vec<PathBuf> {
@@ -179,11 +147,6 @@ pub(super) fn scan_comic(dir: &Path, key: String) -> Option<ComicJob> {
         cover,
         chapters,
     })
-}
-
-/// 是不是上一次导出的阅读器目录（扫描时跳过）
-pub(super) fn is_quick_reader_dir(dir: &Path) -> bool {
-    dir.join(READER_HTML_FILE).is_file() && dir.join(READER_GUIDE_FILE).is_file()
 }
 
 /// 扫描来源目录里所有可导出的漫画

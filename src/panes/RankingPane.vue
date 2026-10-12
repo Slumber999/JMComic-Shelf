@@ -63,20 +63,23 @@ async function getRanking() {
   rankingResult.value = result.data
 }
 
-watch([rankingCategory, rankingOrder], async () => {
-  rankingPage.value = 1
+async function reloadRanking() {
   rankingResult.value = undefined
   await getRanking()
   await nextTick()
   scrollListToTop(listRef.value)
+}
+
+watch([rankingCategory, rankingOrder], async () => {
+  // 页码回到第 1 页时由下面的 watcher 请求，避免同一个查询发两次
+  if (rankingPage.value !== 1) {
+    rankingPage.value = 1
+    return
+  }
+  await reloadRanking()
 })
 
-watch(rankingPage, async () => {
-  rankingResult.value = undefined
-  await getRanking()
-  await nextTick()
-  scrollListToTop(listRef.value)
-})
+watch(rankingPage, reloadRanking)
 
 const weeklyInfo = ref<GetWeeklyInfoRespData>()
 

@@ -173,10 +173,14 @@ async function toggleItem(key: string) {
     if (progressData === undefined) {
       return
     }
-    if (progressData.state === 'Paused') {
-      await commands.resumeDownloadTask(chapterId)
-    } else if (progressData.state !== 'Completed' && progressData.state !== 'Failed') {
-      await commands.pauseDownloadTask(chapterId)
+    const result =
+      progressData.state === 'Paused'
+        ? await commands.resumeDownloadTask(chapterId)
+        : progressData.state !== 'Completed' && progressData.state !== 'Failed'
+          ? await commands.pauseDownloadTask(chapterId)
+          : undefined
+    if (result !== undefined && result.status === 'error') {
+      showError(result.error)
     }
     return
   }
@@ -208,7 +212,7 @@ function selectOnly(key: string) {
 const dropdownX = ref<number>(0)
 const dropdownY = ref<number>(0)
 const dropdownShowing = ref<boolean>(false)
-const dropdownOptions: DropdownOption[] = [
+const dropdownOptions = computed<DropdownOption[]>(() => [
   {
     label: t('chapterExport.selectAll'),
     key: 'select-all',
@@ -289,7 +293,7 @@ const dropdownOptions: DropdownOption[] = [
       },
     },
   },
-]
+])
 
 async function showDropdown(e: MouseEvent) {
   dropdownShowing.value = false

@@ -3,7 +3,7 @@ import { Comic, commands } from '../../../bindings.ts'
 import { showError } from '../../../errors.ts'
 import { useStore } from '../../../store.ts'
 import { PhBookOpen, PhBookmarkSimple, PhFilePdf, PhFileZip, PhFolderOpen } from '@phosphor-icons/vue'
-import { NCheckbox, useDialog } from 'naive-ui'
+import { NCheckbox } from 'naive-ui'
 import IconButton from '../../../components/IconButton.vue'
 import AuthorLinks from '../../../components/AuthorLinks.vue'
 import { computed } from 'vue'
@@ -11,10 +11,11 @@ import { getProgress, progressLabel } from '../../../reader/progress.ts'
 import { localCoverUrl } from '../../../reader/protocol.ts'
 import { ComicLayout } from '../../../types.ts'
 import { useI18n } from '../../../i18n.ts'
+import { useConfirmWholeComic } from '../../../confirmWholeComic.ts'
 
 const store = useStore()
 const { t } = useI18n()
-const dialog = useDialog()
+const confirmWholeComic = useConfirmWholeComic()
 
 const props = withDefaults(
   defineProps<{
@@ -43,28 +44,11 @@ function pickComic() {
 }
 
 function exportCbz() {
-  confirmWholeComic(startExportCbz)
+  void confirmWholeComic(props.comic, t('comic.export'), startExportCbz)
 }
 
 function exportPdf() {
-  confirmWholeComic(startExportPdf)
-}
-
-/// 整本导出前先确认：一本多话量级不小，单章直接导出
-function confirmWholeComic(run: () => Promise<void>) {
-  const chapterCount = props.comic.chapterInfos.length
-  if (chapterCount <= 1) {
-    void run()
-    return
-  }
-
-  dialog.warning({
-    title: t('comic.wholeExportTitle'),
-    content: t('comic.wholeExportContent', { name: props.comic.name, count: chapterCount }),
-    positiveText: t('comic.confirm'),
-    negativeText: t('common.cancel'),
-    onPositiveClick: () => void run(),
-  })
+  void confirmWholeComic(props.comic, t('comic.export'), startExportPdf)
 }
 
 async function startExportCbz() {

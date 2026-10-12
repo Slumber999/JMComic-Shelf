@@ -12,11 +12,13 @@ type SelectionAreaInstance = {
 }
 
 /// 组件里的用法：
-///   const { selectedIds, selectionOptions, selectionAreaRef, updateSelectedIds, unselectAll } =
+///   const { selectedIds, selectionOptions, updateSelectedIds, unselectAll } =
 ///     useMarqueeSelection<number>({ boundary: '.xxx-selection-container' })
 ///
 ///   <SelectionArea ref="selectionAreaRef" :options="selectionOptions"
 ///                  @move="updateSelectedIds" @start="unselectAll" />
+///
+/// 模板里的 ref 名必须和下面的 useTemplateRef('selectionAreaRef') 一致：clearSelection 靠它重置框选状态
 export function useMarqueeSelection<T extends number | string>(options: {
   /// 框选范围（viselect 的 boundaries，传容器 class 选择器）
   boundary: string
@@ -64,5 +66,5 @@ export function useMarqueeSelection<T extends number | string>(options: {
     selectionAreaRef.value?.selection?.clearSelection()
   }
 
-  return { selectedIds, selectionOptions, selectionAreaRef, updateSelectedIds, unselectAll, clearSelection }
+  return { selectedIds, selectionOptions, updateSelectedIds, unselectAll, clearSelection }
 }

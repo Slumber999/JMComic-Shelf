@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { NCard, useDialog } from 'naive-ui'
+import { NCard } from 'naive-ui'
 import { showError } from '../errors.ts'
 import { CategoryRespData, CategorySubRespData, commands } from '../bindings.ts'
 import { useStore } from '../store.ts'
@@ -11,10 +11,11 @@ import { PhBookOpen, PhDownloadSimple, PhFileZip, PhFolderOpen } from '@phosphor
 import { hoverCover, unhoverCover } from './coverPreview.ts'
 import { ComicLayout } from '../types.ts'
 import { useI18n } from '../i18n.ts'
+import { useConfirmWholeComic } from '../confirmWholeComic.ts'
 
 const store = useStore()
 const { t } = useI18n()
-const dialog = useDialog()
+const confirmWholeComic = useConfirmWholeComic()
 
 const props = withDefaults(
   defineProps<{
@@ -48,35 +49,12 @@ async function pickComic() {
 }
 
 function downloadComic() {
-  confirmWholeComic(t('favorite.download'), startDownload)
+  void confirmWholeComic(props.comicId, t('favorite.download'), startDownload)
 }
 
 /// 免下载直出 cbz：图片在内存里取回、还原后直接打包，不落下载目录
 function exportCbzWithoutDownload() {
-  confirmWholeComic(t('comic.export'), startExportCbz)
-}
-
-/// 整本下载/导出前先确认：一本多话量级不小，单章直接执行
-async function confirmWholeComic(verb: string, run: () => Promise<void>) {
-  const detail = await commands.getComic(props.comicId)
-  if (detail.status === 'error') {
-    showError(detail.error)
-    return
-  }
-
-  const chapterCount = detail.data.chapterInfos.length
-  if (chapterCount <= 1) {
-    await run()
-    return
-  }
-
-  dialog.warning({
-    title: t('comic.wholeTitle', { verb }),
-    content: t('comic.wholeContent', { name: detail.data.name, count: chapterCount, verb }),
-    positiveText: t('comic.confirm'),
-    negativeText: t('common.cancel'),
-    onPositiveClick: () => void run(),
-  })
+  void confirmWholeComic(props.comicId, t('comic.export'), startExportCbz)
 }
 
 async function startDownload() {

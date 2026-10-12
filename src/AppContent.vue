@@ -1,6 +1,7 @@
 <script setup lang="tsx">
 import { computed, onMounted, ref, watch } from 'vue'
 import { setErrorNotifier, showError } from './errors.ts'
+import { listenLogErrors } from './logNotifications.ts'
 import { commands } from './bindings.ts'
 import { NAvatar, NButton, NIcon, NTabPane, NTabs, useMessage, useNotification } from 'naive-ui'
 import LoginDialog from './dialogs/LoginDialog.vue'
@@ -9,11 +10,10 @@ import ChapterPane from './panes/ChapterPane/ChapterPane.vue'
 import ProgressesPane from './panes/ProgressesPane/ProgressesPane.vue'
 import FavoritePane from './panes/FavoritePane.vue'
 import AboutDialog from './dialogs/AboutDialog.vue'
-import { PhGearSix, PhInfo, PhUser, PhBookmarkSimple, PhClockCounterClockwise } from '@phosphor-icons/vue'
+import { PhGearSix, PhInfo, PhUser, PhBookmarkSimple } from '@phosphor-icons/vue'
 import DownloadedPane from './panes/DownloadedPane/DownloadedPane.vue'
 import { useStore } from './store.ts'
 import { getCurrentWindow } from '@tauri-apps/api/window'
-import LogDialog from './dialogs/LogDialog.vue'
 import RankingPane from './panes/RankingPane.vue'
 import CommentsPane from './panes/CommentsPane.vue'
 import ComicReader from './reader/ComicReader.vue'
@@ -30,6 +30,7 @@ const { t, locale, setLocale } = useI18n()
 const message = useMessage()
 // 错误通知统一走右下角，实例在这里注册一次
 setErrorNotifier(useNotification())
+listenLogErrors()
 
 
 const readerShowing = ref<boolean>(false)
@@ -90,7 +91,6 @@ async function continueReading() {
 }
 
 const aboutDialogShowing = ref<boolean>(false)
-const logViewerShowing = ref<boolean>(false)
 const settingsDialogShowing = ref<boolean>(false)
 
 // 配置保存：合并短时间内的连续修改（输入框是边打字边改的），避免每个按键都写一次盘
@@ -189,14 +189,7 @@ onMounted(async () => {
         </template>
         {{ t('app.login') }}
       </n-button>
-      <n-button size="small" @click="logViewerShowing = true">
-        <template #icon>
-          <n-icon size="18">
-            <PhClockCounterClockwise />
-          </n-icon>
-        </template>
-        {{ t('app.logs') }}
-      </n-button>
+
       <n-button size="small" @click="aboutDialogShowing = true">
         <template #icon>
           <n-icon size="18">
@@ -309,7 +302,6 @@ onMounted(async () => {
     <SettingsDialog v-model:showing="settingsDialogShowing" />
     <LoginDialog v-model:showing="loginDialogShowing" />
     <AboutDialog v-model:showing="aboutDialogShowing" />
-    <LogDialog v-model:showing="logViewerShowing" />
   </div>
 </template>
 

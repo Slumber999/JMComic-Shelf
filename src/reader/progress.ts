@@ -37,7 +37,7 @@ function normalize(raw: unknown): ReaderProgress | undefined {
 
 /// 扫描 localStorage，把已有进度都读进来
 /// - 单章漫画的记录直接丢掉（旧版本不区分单章多章）
-export function loadAllProgress() {
+function loadAllProgress() {
   const map: Record<string, ReaderProgress> = {}
   try {
     for (let index = 0; index < localStorage.length; index++) {

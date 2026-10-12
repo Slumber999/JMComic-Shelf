@@ -5,6 +5,7 @@ import { commands, StorageEntry, StorageStats } from '../../../bindings.ts'
 import { NButton, NCheckbox, NIcon, NPopconfirm, useMessage } from 'naive-ui'
 import { PhArrowClockwise, PhFolderOpen, PhTrash } from '@phosphor-icons/vue'
 import { useI18n } from '../../../i18n.ts'
+import { formatBytes } from '../../../formatBytes.ts'
 
 const { t } = useI18n()
 const message = useMessage()
@@ -23,20 +24,6 @@ const leftoverBytes = computed(() =>
 const quickReaderBytes = computed(() =>
   (stats.value?.quickReaders ?? []).reduce((sum, item) => sum + item.bytes, 0),
 )
-
-function formatBytes(bytes: number): string {
-  if (bytes < 1024) {
-    return `${bytes} B`
-  }
-  const units = ['KB', 'MB', 'GB', 'TB']
-  let value = bytes / 1024
-  let index = 0
-  while (value >= 1024 && index < units.length - 1) {
-    value /= 1024
-    index += 1
-  }
-  return `${value.toFixed(value >= 100 ? 0 : 1)} ${units[index]}`
-}
 
 async function refresh() {
   loading.value = true

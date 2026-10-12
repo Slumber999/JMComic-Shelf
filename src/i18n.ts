@@ -1,4 +1,4 @@
-import { computed, ref } from 'vue'
+import { ref } from 'vue'
 import zhCN from './locales/zh-CN.ts'
 import zhTW from './locales/zh-TW.ts'
 
@@ -50,5 +50,5 @@ export function t(key: string, params?: Record<string, string | number>): string
 
 /// 组件里用这个，模板中保持 t('xxx') 的写法
 export function useI18n() {
-  return { t, locale, setLocale, currentLocale: computed(() => locale.value) }
+  return { t, locale, setLocale }
 }

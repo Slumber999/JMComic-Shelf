@@ -258,9 +258,9 @@ pub fn validate_proxy_settings(
     Ok(())
 }
 
-/// 按配置给客户端挂代理
+/// 按配置给客户端挂代理（API / 图片 / 测速三处建客户端共用这一份）
 /// - 代理地址非法时返回错误，而不是静默直连：否则用户以为走了代理，其实没走
-fn apply_proxy(
+pub(crate) fn apply_proxy(
     builder: reqwest::ClientBuilder,
     config: &Config,
 ) -> eyre::Result<reqwest::ClientBuilder> {
@@ -330,20 +330,21 @@ pub fn create_img_client(app: &AppHandle) -> eyre::Result<ClientWithMiddleware> 
     create_img_client_with_config(&config)
 }
 
-/// 启动时建客户端：代理配置万一不合法（比如用户手改了 config.json），
-/// 也绝不能让应用起不来 —— 退化成直连并记一条错误日志
-fn create_api_client_or_direct(
-    app: &AppHandle,
-    cookie_store: &Arc<SessionCookieStore>,
-) -> ClientWithMiddleware {
+/// 启动时建客户端的通用兜底：代理配置万一不合法（比如用户手改了 config.json），
+/// 也绝不能让应用起不来 —— 先按配置建一次，失败就关掉代理重试，再失败就用裸客户端
+/// - `kind` 只用于日志文案（API / 图片），`build` 决定用哪套重试策略和 cookie 来源
+fn create_client_or_direct<F>(app: &AppHandle, kind: &str, build: F) -> ClientWithMiddleware
+where
+    F: Fn(&Config) -> eyre::Result<ClientWithMiddleware>,
+{
     let config = app.get_config().read().clone();
-    match create_api_client_with_config(&config, cookie_store) {
+    match build(&config) {
         Ok(client) => client,
         Err(err) => {
-            tracing::error!(message = %err, "创建API客户端失败，本次退化为直连（请检查`配置`里的代理设置）");
+            tracing::error!(message = %err, "创建{}客户端失败，本次退化为直连（请检查`配置`里的代理设置）", kind);
             let mut fallback_config = config;
             fallback_config.proxy_mode = ProxyMode::NoProxy;
-            create_api_client_with_config(&fallback_config, cookie_store).unwrap_or_else(|err| {
+            build(&fallback_config).unwrap_or_else(|err| {
                 tracing::error!(message = %err, "退化为直连仍然失败，使用不带重试的裸客户端");
                 reqwest_middleware::ClientBuilder::new(reqwest::Client::new()).build()
             })
@@ -351,20 +352,17 @@ fn create_api_client_or_direct(
     }
 }
 
+fn create_api_client_or_direct(
+    app: &AppHandle,
+    cookie_store: &Arc<SessionCookieStore>,
+) -> ClientWithMiddleware {
+    create_client_or_direct(app, "API", |config| {
+        create_api_client_with_config(config, cookie_store)
+    })
+}
+
 fn create_img_client_or_direct(app: &AppHandle) -> ClientWithMiddleware {
-    let config = app.get_config().read().clone();
-    match create_img_client_with_config(&config) {
-        Ok(client) => client,
-        Err(err) => {
-            tracing::error!(message = %err, "创建图片客户端失败，本次退化为直连（请检查`配置`里的代理设置）");
-            let mut fallback_config = config;
-            fallback_config.proxy_mode = ProxyMode::NoProxy;
-            create_img_client_with_config(&fallback_config).unwrap_or_else(|err| {
-                tracing::error!(message = %err, "退化为直连仍然失败，使用不带重试的裸客户端");
-                reqwest_middleware::ClientBuilder::new(reqwest::Client::new()).build()
-            })
-        }
-    }
+    create_client_or_direct(app, "图片", create_img_client_with_config)
 }
 
 /// 官方返回里 id / total_albums 有时是数字有时是字符串，这里都兼容

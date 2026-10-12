@@ -31,6 +31,14 @@ function errorTitle(code: string): string {
   return text === key ? t('error.title') : text
 }
 
+/// 后台任务失败时的通知：这类错误只出现在日志里，没有 CommandError 对象
+export function showLoggedError(title: string, reason: string): void {
+  if (notifier === undefined) {
+    return
+  }
+  notifier.error({ title, content: reason, duration: 6000, keepAliveOnHover: true })
+}
+
 /// 右下角弹一条错误通知：标题是「哪件事失败了」，正文是原因 + 建议，
 /// 完整报错只进控制台和日志
 export function showError(error: CommandError): void {

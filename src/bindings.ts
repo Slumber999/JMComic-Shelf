@@ -446,14 +446,6 @@ async exportPdfChapters(comic: Comic, chapterIds: number[]) : Promise<Result<nul
     else return { status: "error", error: e  as any };
 }
 },
-async getLogsDirSize() : Promise<Result<number, CommandError>> {
-    try {
-    return { status: "ok", data: await TAURI_INVOKE("get_logs_dir_size") };
-} catch (e) {
-    if(e instanceof Error) throw e;
-    else return { status: "error", error: e  as any };
-}
-},
 /**
  * 空间统计：下载目录 / 导出目录 / 日志目录的占用，以及可以清理的东西
  */

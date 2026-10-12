@@ -81,14 +81,14 @@ impl DownloadManager {
         manager
     }
 
+    /// 批量创建下载任务：逐话走单个创建那一套逻辑，失败只记日志（批量版不向上返回 Result）
+    /// - 写盘放在循环外，避免一话写一次
     #[instrument(
         level = "error",
         skip_all,
         fields(comic_id = comic.id, comic_title = comic.name)
     )]
     pub fn create_download_tasks(&self, mut comic: Comic, chapter_ids: &[i64]) {
-        use DownloadTaskState::{Downloading, Paused, Pending};
-
         if let Err(err) = comic.ensure_download_dir_fields(&self.app) {
             let err_title = "批量创建下载任务失败";
             let message = err.to_message();
@@ -96,48 +96,17 @@ impl DownloadManager {
             return;
         }
 
-        let mut tasks = self.download_tasks.write();
         for chapter_id in chapter_ids {
             let span = tracing::error_span!("create_download_task", chapter_id = chapter_id);
             let _enter = span.enter();
 
-            if let Some(task) = tasks.get(chapter_id) {
-                let state = *task.state_sender.borrow();
-                if matches!(state, Pending | Downloading | Paused) {
-                    let err_title = "章节ID对应的下载任务创建失败";
-                    let message = eyre!("章节ID对应的下载任务已存在").to_message();
-                    tracing::error!(err_title, message);
-                    continue;
-                }
+            if let Err(err) = self.create_download_task_inner(comic.clone(), *chapter_id) {
+                let err_title = "章节ID对应的下载任务创建失败";
+                let message = err.to_message();
+                tracing::error!(err_title, message);
             }
-
-            if let Some(task) = tasks.remove(chapter_id) {
-                if let Err(err) = task
-                    .delete_sender
-                    .send(false)
-                    .wrap_err("章节ID对应的旧下载任务删除失败")
-                {
-                    let err_title = "章节ID对应的下载任务创建失败";
-                    let message = err.to_message();
-                    tracing::error!(err_title, message);
-                    continue;
-                }
-            }
-
-            let task = match DownloadTask::new(self.app.clone(), comic.clone(), *chapter_id) {
-                Ok(task) => task,
-                Err(err) => {
-                    let err_title = "章节ID对应的下载任务创建失败";
-                    let message = err.to_message();
-                    tracing::error!(err_title, message);
-                    continue;
-                }
-            };
-
-            tasks.insert(*chapter_id, task);
         }
 
-        drop(tasks);
         self.save_tasks();
     }
 
@@ -154,16 +123,8 @@ impl DownloadManager {
         }
     }
 
-    #[instrument(
-        level = "error",
-        skip_all,
-        fields(
-            comic_id = comic.id,
-            comic_title = comic.name,
-            chapter_id = chapter_id
-        )
-    )]
-    pub fn create_download_task(&self, comic: Comic, chapter_id: i64) -> eyre::Result<()> {
+    /// 建单个下载任务但不写盘：单个创建建完就写，批量创建攒到循环外写一次
+    fn create_download_task_inner(&self, comic: Comic, chapter_id: i64) -> eyre::Result<()> {
         use DownloadTaskState::{Downloading, Paused, Pending};
 
         let comic_title = comic.name.clone();
@@ -194,7 +155,21 @@ impl DownloadManager {
 
         tasks.insert(chapter_id, task);
 
-        drop(tasks);
+        Ok(())
+    }
+
+    #[instrument(
+        level = "error",
+        skip_all,
+        fields(
+            comic_id = comic.id,
+            comic_title = comic.name,
+            chapter_id = chapter_id
+        )
+    )]
+    pub fn create_download_task(&self, comic: Comic, chapter_id: i64) -> eyre::Result<()> {
+        self.create_download_task_inner(comic, chapter_id)?;
+
         self.save_tasks();
 
         Ok(())

@@ -1,5 +1,5 @@
 <script setup lang="tsx">
-import { Comic, LocalTag, commands } from '../../bindings.ts'
+import { Comic, commands } from '../../bindings.ts'
 import { computed, nextTick, ref, watch, watchEffect } from 'vue'
 import DownloadedComicCard from './components/DownloadedComicCard.vue'
 import { PhFolderOpen } from '@phosphor-icons/vue'
@@ -24,6 +24,7 @@ import { PhChecks, PhTag, PhX } from '@phosphor-icons/vue'
 import UpdateDownloadedComicsButton from './components/UpdateDownloadedComicsButton.vue'
 import UpdateExportedComicsButton from './components/UpdateExportedComicsButton.vue'
 import { useI18n } from '../../i18n.ts'
+import { useLocalTags } from '../../localTags.ts'
 
 const store = useStore()
 const { t } = useI18n()
@@ -39,18 +40,13 @@ const { dropdownX, dropdownY, dropdownShowing, dropdownOptions, showDropdown } =
 // 标签云：下载目录 + 导出目录共用一份（同一本两个目录都有也只算一次），按出现次数排序
 const selectedTags = ref<string[]>([])
 const tagsExpanded = ref<boolean>(false)
-const tagsShowAll = ref<boolean>(false)
-const TAG_PREVIEW_COUNT = 30
-
-const tagStats = ref<LocalTag[]>([])
-
-async function reloadTags() {
-  tagStats.value = await commands.getLocalTagsAll()
-}
-
-const visibleTags = computed(() =>
-  tagsShowAll.value ? tagStats.value : tagStats.value.slice(0, TAG_PREVIEW_COUNT),
-)
+const {
+  tags: tagStats,
+  expanded: tagsShowAll,
+  visibleTags,
+  hasMoreTags,
+  loadLocalTags: reloadTags,
+} = useLocalTags()
 
 function toggleTag(tag: string) {
   selectedTags.value = selectedTags.value.includes(tag)
@@ -375,7 +371,7 @@ function useDropdown() {
           </div>
           <div class="flex items-center gap-2">
             <n-button
-              v-if="tagStats.length > TAG_PREVIEW_COUNT"
+              v-if="hasMoreTags"
               size="small"
               quaternary
               @click="tagsShowAll = !tagsShowAll">

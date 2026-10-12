@@ -151,6 +151,11 @@ impl DownloadTask {
     async fn download_chapter(self: &Arc<Self>) {
         let chapter_id = self.chapter_info.chapter_id;
 
+        // 失败后用户点继续会重新走一遍这个函数；计数不归零的话，
+        // 上一轮的数字会累加，永远凑不出「已下载 == 总数」，任务再也完不成
+        self.total_img_count.store(0, Ordering::Relaxed);
+        self.downloaded_img_count.store(0, Ordering::Relaxed);
+
         if let Err(err) = self.comic.save_comic_metadata() {
             let err_title = "保存元数据失败";
             let message = err.to_message();
@@ -537,11 +542,7 @@ impl DownloadTask {
         )
     )]
     pub fn set_state(&self, state: DownloadTaskState) {
-        if let Err(err) = self.state_sender.send(state).map_err(eyre::Report::from) {
-            let err_title = format!("发送状态`{state:?}`失败");
-            let message = err.to_message();
-            tracing::error!(err_title, message);
-        }
+        self.state_sender.send_replace(state);
 
         // 状态变了就把任务记录写到磁盘，重启后能恢复
         self.app.get_download_manager().save_tasks();

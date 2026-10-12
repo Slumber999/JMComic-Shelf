@@ -17,6 +17,7 @@ import { UnlistenFn } from '@tauri-apps/api/event'
 import { open } from '@tauri-apps/plugin-dialog'
 import { useStore } from '../../../store.ts'
 import { useI18n } from '../../../i18n.ts'
+import { formatBytes } from '../../../formatBytes.ts'
 
 const { t } = useI18n()
 const showing = defineModel<boolean>('showing', { required: true })
@@ -31,15 +32,6 @@ const dirName = ref<string>(t('quickReaderDialog.defaultName'))
 // 导出位置：跟随来源目录 / 自定义
 const targetMode = ref<'same' | 'custom'>('same')
 const customDir = ref<string>('')
-function formatBytes(bytes: number): string {
-  if (bytes <= 0) {
-    return '0 B'
-  }
-  const units = ['B', 'KB', 'MB', 'GB']
-  const index = Math.min(Math.floor(Math.log(bytes) / Math.log(1024)), units.length - 1)
-  const value = bytes / 1024 ** index
-  return `${value >= 100 ? value.toFixed(0) : value.toFixed(1)} ${units[index]}`
-}
 const candidates = ref<QuickReaderCandidate[]>([])
 const selectedKeys = ref<Set<string>>(new Set())
 const loading = ref<boolean>(false)
@@ -280,7 +272,7 @@ async function exportReader() {
             <span class="text-sm truncate" :title="candidate.name">{{ candidate.name }}</span>
             <span class="text-xs text-gray-500">
               {{ t('quickReaderDialog.chapterPage', { chapters: candidate.chapterCount, pages: candidate.pageCount }) }}
-              {{ formatBytes(candidate.estimatedBytes) }} · {{ candidate.kind }}
+              {{ formatBytes(candidate.estimatedBytes, { decimalBytes: true, maxUnitIndex: 3 }) }} · {{ candidate.kind }}
             </span>
           </div>
         </div>

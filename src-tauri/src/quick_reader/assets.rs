@@ -3,11 +3,6 @@
 /// 默认的阅读器文件夹名
 pub const DEFAULT_READER_DIR_NAME: &str = "快速阅读器";
 
-/// 判断某个目录是不是之前导出的阅读器（用于扫描时跳过）
-pub(super) const READER_HTML_FILE: &str = "index.html";
-
-pub(super) const READER_GUIDE_FILE: &str = "使用说明.txt";
-
 pub(super) const READER_GUIDE: &str = "快速阅读器 使用说明\n\n1. 双击本目录下的 index.html，用 Chrome / Edge / Safari 等浏览器打开即可阅读\n2. 手机上：把整个「快速阅读器」文件夹拷到手机，用浏览器打开其中的 index.html\n3. 分享：把整个文件夹压缩后发给别人，对方解压后打开 index.html 就能看\n\n目录结构：\n  快速阅读器/index.html          阅读器本体（已内置漫画清单，无需联网）\n  快速阅读器/漫画名/章节/0001.jpg  解压好的漫画图片\n\n注意：不要只单独发送 index.html，必须把漫画文件夹一起发送。\n";
 
 /// 分享包里 index.html 的内容

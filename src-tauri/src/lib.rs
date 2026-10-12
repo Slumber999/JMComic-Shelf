@@ -1,3 +1,5 @@
+#![allow(clippy::used_underscore_binding)]
+
 use events::{
     DownloadAllFavoritesEvent, DownloadEvent, ExportCbzEvent, ExportPdfEvent, ExportTaskEvent,
     ExportQuickReaderEvent, LogEvent, UpdateDownloadedComicsEvent,
@@ -6,7 +8,6 @@ use eyre::WrapErr;
 use parking_lot::RwLock;
 use tauri::{Manager, Wry};
 
-// TODO: 用prelude来消除警告
 use crate::commands::*;
 use crate::config::Config;
 use crate::downloader::download_manager::DownloadManager;
@@ -125,7 +126,6 @@ pub fn run() {
             export_pdf,
             export_cbz_chapters,
             export_pdf_chapters,
-            get_logs_dir_size,
             get_storage_stats,
             clean_storage_leftovers,
             clean_storage_quick_readers,

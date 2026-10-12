@@ -15,7 +15,7 @@ use tauri::AppHandle;
 
 use crate::config::ApiDomainMode;
 use crate::extensions::AppHandleExt;
-use crate::types::ProxyMode;
+use crate::jm_client;
 
 /// 图片线路候选，前 5 条是禁漫 App 的图片 CDN（互为备份），最后一条是旧版硬编码的封面线路
 pub const IMAGE_LINE_DOMAINS: [&str; 6] = [
@@ -113,25 +113,14 @@ pub struct ImageLineProbeResult {
     pub error: Option<String>,
 }
 
-/// 测速用的客户端：不做重试，免得延迟被重试放大
+/// 测速用的客户端：不做重试，免得延迟被重试放大；代理配置与其它客户端共用同一份
 pub fn create_probe_client(app: &AppHandle) -> eyre::Result<reqwest::Client> {
     let builder = reqwest::ClientBuilder::new()
         .timeout(PROBE_TIMEOUT)
         .connect_timeout(PROBE_TIMEOUT);
 
-    let proxy_mode = app.get_config().read().proxy_mode.clone();
-    let builder = match proxy_mode {
-        ProxyMode::System => builder,
-        ProxyMode::NoProxy => builder.no_proxy(),
-        ProxyMode::Custom => {
-            let config = app.get_config();
-            let config = config.read();
-            let proxy_url = format!("http://{}:{}", config.proxy_host, config.proxy_port);
-            builder.proxy(reqwest::Proxy::all(&proxy_url)?)
-        }
-    };
-
-    Ok(builder.build()?)
+    let config = app.get_config().read().clone();
+    Ok(jm_client::apply_proxy(builder, &config)?.build()?)
 }
 
 #[cfg(test)]
