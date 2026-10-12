@@ -102,7 +102,9 @@ function onCoverPointerEnter(event: PointerEvent) {
 
 <template>
   <n-card content-style="padding: 0.25rem;" hoverable>
-    <div :class="layout === 'list' ? 'flex' : 'group flex flex-col'">
+    <div
+      class="relative"
+      :class="layout === 'list' ? 'flex' : 'group flex flex-col'">
       <img
         :class="
           layout === 'list'

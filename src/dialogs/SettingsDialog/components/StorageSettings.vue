@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed, onMounted, ref } from 'vue'
 import { showError } from '../../../errors.ts'
-import { commands, StorageEntry, StorageStats } from '../../../bindings.ts'
+import { commands, FavoritesFolderIndex, StorageEntry, StorageStats } from '../../../bindings.ts'
 import { NButton, NCheckbox, NIcon, NPopconfirm, useMessage } from 'naive-ui'
 import { PhArrowClockwise, PhFolderOpen, PhTrash } from '@phosphor-icons/vue'
 import { useI18n } from '../../../i18n.ts'
@@ -15,6 +15,40 @@ const loading = ref(false)
 /// 正在清理哪一项（用来显示 loading，同时避免重复点击）
 const cleaning = ref<string>()
 const selectedQuickReaders = ref<string[]>([])
+
+/// 收藏索引：配置页只看/重建 folderId=0 这层（「全部收藏」），其余层在收藏夹页按需建立
+const favoritesIndex = ref<FavoritesFolderIndex | null>(null)
+const rebuildingIndex = ref(false)
+
+const indexStatusText = computed(() => {
+  if (favoritesIndex.value === null) {
+    return t('settings.storage.indexMissing')
+  }
+  return t('settings.storage.indexStatus', {
+    time: new Date(favoritesIndex.value.updatedAt).toLocaleString(),
+    count: favoritesIndex.value.total,
+  })
+})
+
+async function refreshFavoritesIndex() {
+  favoritesIndex.value = await commands.getFavoritesIndex(0)
+}
+
+/// 全量重建：整层覆盖，建完刷新状态并把总数报给用户
+async function rebuildFavoritesIndex() {
+  rebuildingIndex.value = true
+  try {
+    const result = await commands.buildFavoritesIndex(0)
+    if (result.status === 'error') {
+      showError(result.error)
+      return
+    }
+    await refreshFavoritesIndex()
+    message.success(t('settings.storage.indexRebuilt', { total: result.data.total }))
+  } finally {
+    rebuildingIndex.value = false
+  }
+}
 
 type CleanResult = Awaited<ReturnType<typeof commands.cleanStorageLogs>>
 
@@ -116,7 +150,10 @@ function toggleQuickReader(path: string) {
     : [...selectedQuickReaders.value, path]
 }
 
-onMounted(refresh)
+onMounted(() => {
+  void refresh()
+  void refreshFavoritesIndex()
+})
 </script>
 
 <template>
@@ -132,7 +169,7 @@ onMounted(refresh)
         {{ t('settings.storage.refresh') }}
       </n-button>
       <span class="text-xs text-gray-500">
-        {{ loading ? t('settings.storage.counting') : t('settings.storage.countHint') }}
+        {{ loading ? t('settings.storage.counting') : '' }}
       </span>
     </div>
 
@@ -293,5 +330,23 @@ onMounted(refresh)
     </div>
 
     <div v-else class="text-xs text-gray-500">{{ t('settings.storage.countingShort') }}</div>
+
+    <!-- 收藏索引：搜索收藏夹要用的本地文件，重建就是整层覆盖 -->
+    <div class="mt-2 flex flex-col gap-1 border border-gray-2 rounded p-2">
+      <span class="font-bold text-sm">{{ t('settings.storage.indexTitle') }}</span>
+      <div class="flex items-center gap-2 text-sm">
+        <span class="flex-1 text-xs text-gray-500">{{ indexStatusText }}</span>
+        <n-button
+          class="shrink-0"
+          size="small"
+          type="primary"
+          secondary
+          :loading="rebuildingIndex"
+          @click="rebuildFavoritesIndex">
+          {{ t('settings.storage.indexRebuild') }}
+        </n-button>
+      </div>
+      <span class="text-xs text-gray-400">{{ t('settings.storage.indexNote') }}</span>
+    </div>
   </div>
 </template>

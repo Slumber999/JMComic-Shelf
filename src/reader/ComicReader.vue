@@ -442,10 +442,65 @@ function setReadingMode(mode: ReadingMode) {
 
 onMounted(() => {
   window.addEventListener('keydown', onKeydown)
+  window.addEventListener('resize', syncHandleLeft)
+  syncHandleLeft()
 })
+
+/// 阅读区宽度（阅读区宽度的百分比）：拖右上角小三角调整，漫画始终居中
+const readerWidth = ref<number>(100)
+/// 阅读区可视宽度（不含滚动条），把手定位和拖拽都按它算
+const viewportWidth = ref<number>(window.innerWidth)
+
+
+/// 内容右边界在阅读区里的横向位置，把手中线压在这条线上
+const handleLeft = ref<number>(0)
+
+/// 标尺左右端：内容边界在阅读区里的位置（内容居中，左端 = 可视宽度 - 右端）
+const rulerLeft = computed(() => viewportWidth.value - handleLeft.value)
+const rulerRight = computed(() => handleLeft.value)
+
+function syncHandleLeft() {
+  const container = scrollContainer.value
+  if (container === undefined) {
+    return
+  }
+  viewportWidth.value = container.clientWidth
+  const content = container.querySelector<HTMLElement>('[data-content-edge]')
+  handleLeft.value =
+    content === null
+      ? container.clientWidth
+      : content.getBoundingClientRect().right - container.getBoundingClientRect().left
+}
+
+// 切换阅读方式或拖动宽度后，内容宽度变了，重新量一次
+watch(readingMode, () => void nextTick(syncHandleLeft))
+watch(readerWidth, () => void nextTick(syncHandleLeft))
+// 章节切换后图片才渲染出来，宽度这时才量得准
+watch(pageUrls, () => void nextTick(syncHandleLeft))
+
+function startWidthDrag(event: PointerEvent) {
+  const handle = event.currentTarget as HTMLElement
+  handle.setPointerCapture(event.pointerId)
+
+  function onMove(moveEvent: PointerEvent) {
+    // 以阅读区中心为轴：拖到哪，宽度就是中心到指针距离的两倍
+    const half = Math.abs(moveEvent.clientX - viewportWidth.value / 2)
+    const percent = Math.round((half * 2 * 100) / viewportWidth.value)
+    readerWidth.value = Math.min(100, Math.max(30, percent))
+  }
+
+  function onUp() {
+    handle.removeEventListener('pointermove', onMove)
+    handle.removeEventListener('pointerup', onUp)
+  }
+
+  handle.addEventListener('pointermove', onMove)
+  handle.addEventListener('pointerup', onUp)
+}
 
 onBeforeUnmount(() => {
   window.removeEventListener('keydown', onKeydown)
+  window.removeEventListener('resize', syncHandleLeft)
   // 组件卸载（例如上层把 v-if 关掉）也要释放缓存
   void close()
 })
@@ -454,7 +509,8 @@ onBeforeUnmount(() => {
 <template>
   <div v-if="showing" class="fixed inset-0 z-50 bg-[#111] flex flex-col select-none">
     <!-- 顶部工具栏（窗口被收到600宽，排成两行更稳） -->
-    <div class="flex flex-col gap-1 px-2 py-1.5 bg-black/85 text-white text-sm shrink-0">
+    <div class="relative z-20 flex flex-col gap-1 px-2 py-1.5 bg-black/85 text-white text-sm shrink-0">
+
       <div class="flex items-center gap-2">
         <n-button quaternary size="small" @click="showing = false">
           <template #icon>
@@ -542,7 +598,29 @@ onBeforeUnmount(() => {
       </div>
     </div>
 
-    <!-- 阅读区 -->
+    <!-- 宽度刻度尺：标出正文宽度，拖右端调整；和 Word 的标尺一个意思 -->
+    <div class="relative h-2 shrink-0 select-none bg-black/85">
+      <!-- 刻度线：每 10px 一道 -->
+      <div
+        class="absolute inset-x-0 top-0 h-1 opacity-30"
+        style="background-image: repeating-linear-gradient(to right, rgba(255, 255, 255, 0.6) 0 1px, transparent 1px 10px)" />
+      <!-- 标尺基线 -->
+      <div class="absolute inset-x-0 bottom-0 h-px bg-white/25" />
+      <!-- 左右边界标记 -->
+      <div class="absolute bottom-0 h-1.5 w-px bg-white/50" :style="{ left: `${rulerLeft}px` }" />
+      <div class="absolute bottom-0 h-1.5 w-px bg-white/50" :style="{ left: `${rulerRight}px` }" />
+      <!-- 两端的拖动热区：内容居中，两边对称，拖哪边都一样 -->
+      <div
+        v-for="(edge, index) in [rulerLeft, rulerRight]"
+        :key="index"
+        class="absolute -bottom-1 top-0 w-3 -translate-x-1/2 cursor-ew-resize"
+        :style="{ left: `${edge}px` }"
+        :title="t('reader.widthHandle')"
+        @pointerdown="startWidthDrag" />
+    </div>
+    <!-- 阅读区：外层只负责给把手定位，本身不滚动 -->
+    <div class="relative flex-1 min-h-0 flex flex-col">
+
     <div
       ref="scrollContainer"
       class="flex-1 overflow-auto bg-[#111] relative"
@@ -564,6 +642,8 @@ onBeforeUnmount(() => {
           :key="pageUrls[pageIndex]"
           :src="pageUrls[pageIndex]"
           class="block max-h-full max-w-full object-contain"
+          data-content-edge
+          :style="{ maxWidth: readerWidth + '%' }"
           :draggable="false"
           decoding="async" />
         <!-- 左右点击区 -->
@@ -578,8 +658,9 @@ onBeforeUnmount(() => {
           v-for="(url, index) in pageUrls"
           :key="url"
           :data-page-index="index"
-          class="w-full flex justify-center shrink-0"
-          style="content-visibility: auto; contain-intrinsic-size: auto 1000px">
+          data-content-edge
+          class="mx-auto flex justify-center shrink-0"
+          :style="{ width: readerWidth + '%', contentVisibility: 'auto', containIntrinsicSize: 'auto 1000px' }">
           <img
             :src="url"
             :fetchpriority="index === pageIndex ? 'high' : 'low'"
@@ -589,6 +670,8 @@ onBeforeUnmount(() => {
             decoding="async" />
         </div>
       </template>
+    </div>
+
     </div>
 
     <!-- 底部工具条：翻页模式下才有页码控制 -->

@@ -1,8 +1,6 @@
 <script setup lang="ts">
 import { commands } from '../../bindings.ts'
 import { ref } from 'vue'
-import { path } from '@tauri-apps/api'
-import { appDataDir } from '@tauri-apps/api/path'
 import { useStore } from '../../store.ts'
 import { NButton, NDialog, NTabs, NTabPane, NModal } from 'naive-ui'
 import AccountSettings from './components/AccountSettings.vue'
@@ -12,6 +10,7 @@ import ExportSettings from './components/ExportSettings.vue'
 import StorageSettings from './components/StorageSettings.vue'
 import InterfaceSettings from './components/InterfaceSettings.vue'
 import { useI18n } from '../../i18n.ts'
+import { showError } from '../../errors.ts'
 
 const store = useStore()
 const { t } = useI18n()
@@ -20,12 +19,11 @@ const showing = defineModel<boolean>('showing', { required: true })
 
 const currentTabName = ref<string>('download_settings')
 
+/// 数据目录由后端解析后打开：前端的 appDataDir() 在某些版本上会少一层目录
 async function showConfigInFileManager() {
-  const configName = 'config.json'
-  const configPath = await path.join(await appDataDir(), configName)
-  const result = await commands.showPathInFileManager(configPath)
+  const result = await commands.showConfigDirInFileManager()
   if (result.status === 'error') {
-    console.error(result.error)
+    showError(result.error)
   }
 }
 </script>

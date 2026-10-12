@@ -7,6 +7,7 @@ import IconButton from '../../components/IconButton.vue'
 import AuthorLinks from '../../components/AuthorLinks.vue'
 import ChapterDownloadPanel from './components/ChapterDownloadPanel.vue'
 import ChapterExportPanel from './components/ChapterExportPanel.vue'
+import FavoriteButton from '../../components/FavoriteButton.vue'
 import { NButton, NEmpty, NIcon } from 'naive-ui'
 import { localCoverUrl } from '../../reader/protocol.ts'
 import { getProgress, progressLabel } from '../../reader/progress.ts'
@@ -107,6 +108,11 @@ async function showComicDownloadDirInFileManager() {
               {{ progressText === '' ? t('comic.read') : t('comic.continue') }}
             </n-button>
             <span v-if="progressText !== ''" class="text-xs text-gray-500">{{ progressText }}</span>
+            <FavoriteButton
+              :comic-id="store.pickedComic.id"
+              :is-favorite="store.pickedComic.is_favorite"
+              variant="button"
+              @favorite-changed="reloadPickedComic" />
             <IconButton
               v-if="store.pickedComic.isDownloaded"
               class="ml-auto"

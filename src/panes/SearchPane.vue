@@ -7,6 +7,7 @@ import {
   NButton,
   NDropdown,
   NIcon,
+  NInput,
   NInputGroup,
   NPagination,
   NSelect,
@@ -16,7 +17,6 @@ import {
 import ComicCard from '../components/ComicCard.vue'
 import { useGridColumns } from '../comicGrid.ts'
 import LoadingSpinner from '../components/LoadingSpinner.vue'
-import FloatLabelInput from '../components/FloatLabelInput.vue'
 import { PhClockCounterClockwise, PhMagnifyingGlass, PhTag } from '@phosphor-icons/vue'
 import { useStore } from '../store.ts'
 import { useI18n } from '../i18n.ts'
@@ -450,12 +450,19 @@ function resetFilters() {
 <template>
   <div class="h-full flex flex-col gap-2">
     <n-input-group class="box-border px-2 pt-2">
-      <FloatLabelInput
-        :label="t('search.keywordLabel')"
-        size="small"
+      <n-input
         v-model:value="searchInput"
+        class="flex-1 min-w-30"
+        size="small"
         clearable
-        @keydown.enter="search(searchInput.trim(), 1, sortSelected)" />
+        :placeholder="t('search.keywordLabel')"
+        @keydown.enter="search(searchInput.trim(), 1, sortSelected)">
+        <template #prefix>
+          <n-icon size="16">
+            <PhMagnifyingGlass />
+          </n-icon>
+        </template>
+      </n-input>
       <n-select
         class="w-32%"
         v-model:value="sortSelected"

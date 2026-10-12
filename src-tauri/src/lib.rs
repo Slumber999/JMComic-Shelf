@@ -29,6 +29,7 @@ mod errors;
 mod events;
 mod export;
 mod extensions;
+mod favorites_index;
 mod jm_client;
 mod lines;
 mod reader_window;
@@ -91,6 +92,10 @@ pub fn run() {
             get_comments,
             get_favorite_folder,
             get_all_favorite_comics,
+            get_favorites_index,
+            build_favorites_index,
+            update_favorites_index,
+            remove_from_favorites_index,
             get_weekly_info,
             get_weekly,
             get_user_profile,
@@ -105,6 +110,7 @@ pub fn run() {
             update_downloaded_comics,
             update_exported_comics,
             show_path_in_file_manager,
+    show_config_dir_in_file_manager,
             sync_favorite_folder,
             open_comic_reader,
             open_reader_by_id,

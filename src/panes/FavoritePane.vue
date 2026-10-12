@@ -1,16 +1,18 @@
 <script setup lang="ts">
 import { computed, h, nextTick, onBeforeUnmount, ref, watch } from 'vue'
 import { showError } from '../errors.ts'
-import { commands, ComicInFavorite, FavoriteSort } from '../bindings.ts'
+import { commands, ComicInFavorite, FavoritesFolderIndex, FavoriteSort } from '../bindings.ts'
 import { scrollListToTop } from '../listScroll.ts'
 import {
   DropdownOption,
   NButton,
   NDropdown,
   NIcon,
+  NInput,
   NPagination,
   NSelect,
   SelectProps,
+  useDialog,
   useMessage,
 } from 'naive-ui'
 import ComicCard from '../components/ComicCard.vue'
@@ -20,7 +22,7 @@ import AuthorLinks from '../components/AuthorLinks.vue'
 import { localCoverUrl } from '../reader/protocol.ts'
 import { useStore } from '../store.ts'
 import DownloadAllFavoriteButton from '../components/DownloadAllFavoriteButton.vue'
-import { PhCaretDown, PhCheckCircle, PhCircle, PhDownloadSimple, PhFileZip } from '@phosphor-icons/vue'
+import { PhArrowClockwise, PhCaretDown, PhCheckCircle, PhCircle, PhDownloadSimple, PhFileZip, PhMagnifyingGlass } from '@phosphor-icons/vue'
 import { useI18n } from '../i18n.ts'
 
 const store = useStore()
@@ -59,6 +61,73 @@ const listPageCount = ref<number>(0)
 const listBottomReached = ref<boolean>(false)
 const busy = ref<boolean>(false)
 
+const dialog = useDialog()
+
+/// 搜索索引：当前收藏夹本地索引的缓存，换收藏夹/排序时清空后重读
+const favoritesIndex = ref<FavoritesFolderIndex | null>(null)
+/// 正在全量建立索引（搜索框转圈用）
+const indexBuilding = ref<boolean>(false)
+/// 正在「同步收藏夹 + 增量更新索引」
+const syncing = ref<boolean>(false)
+const keyword = ref<string>('')
+
+/// 搜索命中：关键词为空时返回 undefined，表示照常显示原列表；没有索引就是空结果
+const searchHits = computed(() => {
+  const kw = keyword.value.trim().toLowerCase()
+  if (kw === '') {
+    return undefined
+  }
+  const comics = favoritesIndex.value?.comics
+  if (comics === undefined) {
+    return []
+  }
+  return comics.filter(
+    (comic) =>
+      comic.name.toLowerCase().includes(kw) ||
+      comic.author.toLowerCase().includes(kw) ||
+      String(comic.id).includes(kw),
+  )
+})
+
+/// 索引里只有编号/标题/作者，其余字段按默认值补齐（空下载目录会回落到在线封面）
+const displayedComics = computed<ComicInFavorite[]>(() => {
+  const hits = searchHits.value
+  if (hits === undefined) {
+    return store.getFavoriteResult?.list ?? []
+  }
+  return hits.map((comic) => ({
+    id: comic.id,
+    name: comic.name,
+    author: comic.author,
+    description: null,
+    latestEp: null,
+    latestEpAid: null,
+    image: '',
+    category: { id: null, title: null },
+    categorySub: { id: null, title: null },
+    isDownloaded: false,
+    isExported: false,
+    comicDownloadDir: '',
+  }))
+})
+
+/// 长列表模式按同一批命中的 id 过滤（只过滤已经加载出来的那部分）
+const listModeComics = computed(() => {
+  const hits = searchHits.value
+  if (hits === undefined) {
+    return allComics.value
+  }
+  const ids = new Set(hits.map((comic) => comic.id))
+  return allComics.value.filter((comic) => ids.has(comic.id))
+})
+
+/// 长列表头部计数：搜索时跟着命中数走
+const listModeCount = computed(() =>
+  searchHits.value === undefined
+    ? listTotal.value || Number(store.getFavoriteResult?.total ?? 0)
+    : listModeComics.value.length,
+)
+
 const favoritePageCount = computed(() => {
   const PAGE_SIZE = 20
   if (store.getFavoriteResult === undefined) {
@@ -82,9 +151,13 @@ watch(
       store.getFavoriteResult = undefined
       selectedIds.value.clear()
       resetListPaging()
+      clearIndexSearch()
       return
     }
     await getFavourite(0, 1, 'FavoriteTime')
+    // 换账号就是另一份索引文件，缓存和关键词都要重来
+    clearIndexSearch()
+    await loadFavoritesIndex()
   },
   { immediate: true },
 )
@@ -120,8 +193,11 @@ async function changePage(page: number) {
   scrollListToTop(listRef.value)
 }
 
+/// 换收藏夹/排序：索引缓存和关键词一起作废，再读一次新收藏夹的索引
 async function changeFilter(folderId: number, sort: FavoriteSort) {
   await getFavourite(folderId, 1, sort)
+  clearIndexSearch()
+  await loadFavoritesIndex()
   await nextTick()
   scrollListToTop(listRef.value)
 }
@@ -134,16 +210,114 @@ async function refreshFavourite() {
   if (favoritePageCount.value > 0 && pageSelected.value > favoritePageCount.value) {
     await getFavourite(folderIdSelected.value, favoritePageCount.value, sortSelected.value)
   }
+
+  // 在本应用里取消收藏会立刻从索引移除，缓存跟着读一次本地文件
+  if (favoritesIndex.value !== null) {
+    await loadFavoritesIndex()
+  }
 }
 
+/// 同步收藏夹（服务端）+ 增量更新索引；只有已经建过索引的收藏夹才顺手更新
 async function syncFavoriteFolder() {
-  const result = await commands.syncFavoriteFolder()
-  if (result.status === 'error') {
-    console.error(result.error)
+  // 「当前收藏夹」按点击时的选择算：同步会把列表重置回「全部收藏」
+  const folderId = folderIdSelected.value
+  const indexExisted = favoritesIndex.value !== null
+
+  syncing.value = true
+  try {
+    const syncResult = await commands.syncFavoriteFolder()
+    if (syncResult.status === 'error') {
+      console.error(syncResult.error)
+      showError(syncResult.error)
+      return
+    }
+    await changeFilter(0, 'FavoriteTime')
+    message.success(t('favorite.synced'))
+
+    if (!indexExisted) {
+      return
+    }
+    const indexResult = await commands.updateFavoritesIndex(folderId)
+    if (indexResult.status === 'error') {
+      console.error(indexResult.error)
+      showError(indexResult.error)
+      return
+    }
+    await loadFavoritesIndex()
+    message.success(t('favorite.index.updated', { added: indexResult.data.added }))
+  } finally {
+    syncing.value = false
+  }
+}
+
+/// 读本地索引文件（不是网络请求），没有索引就是 null
+async function loadFavoritesIndex() {
+  favoritesIndex.value = await commands.getFavoritesIndex(folderIdSelected.value)
+}
+
+/// 索引缓存和关键词一起作废
+function clearIndexSearch() {
+  keyword.value = ''
+  favoritesIndex.value = null
+}
+
+/// 首次建立索引的规模估算：页数按接口返回的每页条数折算
+const indexEstimate = computed(() => {
+  const total = Number(store.getFavoriteResult?.total ?? 0)
+  const perPage = store.getFavoriteResult?.count ?? 0
+  return { total, pages: perPage > 0 ? Math.ceil(total / perPage) : 0 }
+})
+
+/// 本会话里已经明确取消过建立索引的收藏夹，不再重复弹提示
+const indexPromptDismissed = new Set<number>()
+
+/// 点搜索框且没有索引：说明索引是什么，确认后全量建立；取消过就不再打扰
+async function onSearchFocus() {
+  if (indexBuilding.value) {
     return
   }
-  await changeFilter(0, 'FavoriteTime')
-  message.success(t('favorite.synced'))
+  if (favoritesIndex.value === null) {
+    // 配置页可能刚建过，先读一次本地文件再决定要不要提示
+    await loadFavoritesIndex()
+  }
+  if (favoritesIndex.value !== null) {
+    return
+  }
+  if (indexPromptDismissed.has(folderIdSelected.value)) {
+    return
+  }
+
+  const { total, pages } = indexEstimate.value
+  dialog.warning({
+    title: t('favorite.index.buildTitle'),
+    content: () =>
+      h('div', { class: 'flex flex-col gap-1' }, [
+        h('div', t('favorite.index.buildScope')),
+        h('div', t('favorite.index.buildTime', { total, pages })),
+        h('div', t('favorite.index.buildStaleNote')),
+        h('div', t('favorite.index.buildRebuildNote')),
+      ]),
+    positiveText: t('favorite.index.buildConfirm'),
+    negativeText: t('common.cancel'),
+    onPositiveClick: () => void buildFavoritesIndex(),
+    onNegativeClick: () => indexPromptDismissed.add(folderIdSelected.value),
+  })
+}
+
+/// 全量建立索引：过程里搜索框转圈，结果用 message 报
+async function buildFavoritesIndex() {
+  indexBuilding.value = true
+  try {
+    const result = await commands.buildFavoritesIndex(folderIdSelected.value)
+    if (result.status === 'error') {
+      showError(result.error)
+      return
+    }
+    await loadFavoritesIndex()
+    message.success(t('favorite.index.built', { total: result.data.total }))
+  } finally {
+    indexBuilding.value = false
+  }
 }
 
 function toggleSelect(comicId: number) {
@@ -423,29 +597,65 @@ async function exportCbz() {
 
 <template>
   <div class="h-full flex flex-col gap-2">
-    <div v-if="store.getFavoriteResult !== undefined" class="flex box-border px-2 pt-2">
+    <div
+      v-if="store.getFavoriteResult !== undefined"
+      class="flex items-center gap-2 box-border px-2 pt-2">
       <n-select
         v-model:value="folderIdSelected"
+        class="w-28 shrink-0"
         :options="folderOptions"
         :show-checkmark="false"
         size="small"
         @update-value="changeFilter($event, sortSelected)" />
       <n-select
         v-model:value="sortSelected"
+        class="w-24 shrink-0"
         :options="sortOptions"
         :show-checkmark="false"
         size="small"
         @update-value="changeFilter(folderIdSelected, $event)" />
-      <n-button size="small" type="primary" secondary @click="syncFavoriteFolder">
-        {{ t('favorite.syncFavorite') }}
+      <n-input
+        v-model:value="keyword"
+        class="flex-1 min-w-30"
+        size="small"
+        clearable
+        :loading="indexBuilding"
+        :placeholder="indexBuilding ? t('favorite.index.building') : t('favorite.index.searchPlaceholder')"
+        @focus="onSearchFocus">
+        <template #prefix>
+          <n-icon size="16">
+            <PhMagnifyingGlass />
+          </n-icon>
+        </template>
+      </n-input>
+      <n-button
+        class="shrink-0"
+        size="small"
+        type="primary"
+        secondary
+        :title="t('favorite.syncFavorite')"
+        :loading="syncing"
+        @click="syncFavoriteFolder">
+        <template #icon>
+          <n-icon size="18">
+            <PhArrowClockwise />
+          </n-icon>
+        </template>
       </n-button>
-      <download-all-favorite-button />
-    </div>
-
-    <div v-if="store.getFavoriteResult !== undefined" class="flex items-center gap-2 box-border px-2">
-      <n-button size="small" :loading="loadingAll" @click="toggleListMode">
+      <n-button
+        class="shrink-0"
+        size="small"
+        :loading="loadingAll"
+        :title="t('favorite.listAllHint')"
+        @click="toggleListMode">
         {{ listMode ? t('favorite.backToCards') : t('favorite.listAll') }}
       </n-button>
+    </div>
+
+    <!-- 选择与批量操作只在列表模式下出现 -->
+    <div
+      v-if="store.getFavoriteResult !== undefined && listMode"
+      class="flex items-center gap-2 box-border px-2">
       <span class="text-sm text-gray-500 whitespace-nowrap">
         {{ t('favorite.selected', { count: selectedCount }) }}
       </span>
@@ -453,6 +663,7 @@ async function exportCbz() {
       <n-button size="small" :disabled="selectedCount === 0" @click="clearSelection">
         {{ t('favorite.clearSelection') }}
       </n-button>
+      <download-all-favorite-button />
       <n-dropdown
         class="ml-auto"
         trigger="click"
@@ -468,10 +679,17 @@ async function exportCbz() {
       </n-dropdown>
     </div>
 
+
     <template v-if="!listMode">
       <div v-if="loading" class="flex flex-col items-center gap-3 py-16 text-orange">
         <loading-spinner :size="14" />
         <span class="text-sm text-gray-500">{{ t('favorite.loadingFolder') }}</span>
+      </div>
+
+      <div
+        v-if="keyword.trim() !== '' && favoritesIndex === null"
+        class="px-2 text-xs text-gray-500">
+        {{ t('favorite.index.noIndexHint') }}
       </div>
 
       <div
@@ -481,7 +699,7 @@ async function exportCbz() {
         :class="store.comicLayout === 'list' ? 'flex flex-col gap-row-2' : 'grid gap-2 content-start'"
         :style="store.comicLayout === 'grid' ? gridStyle : undefined">
         <ComicCard
-          v-for="comicInFavorite in store.getFavoriteResult?.list"
+          v-for="comicInFavorite in displayedComics"
           :key="comicInFavorite.id"
           :layout="store.comicLayout"
           :comic-id="comicInFavorite.id"
@@ -491,15 +709,21 @@ async function exportCbz() {
           :comic-category-sub="comicInFavorite.categorySub"
           :comic-downloaded="comicInFavorite.isDownloaded"
           :comic-download-dir="comicInFavorite.comicDownloadDir"
-        :is-favorite="true"
-        @favorite-changed="refreshFavourite()" />
+          :is-favorite="true"
+          @favorite-changed="refreshFavourite()" />
       </div>
 
       <div class="flex items-center justify-center gap-3 box-border p-2 pt-0 mt-auto">
+        <!-- 搜索时列表换成索引结果：条数跟着结果走，分页先收起来 -->
         <span class="text-xs text-gray-500">
-          {{ t('favorite.totalCount', { count: store.getFavoriteResult?.total ?? 0 }) }}
+          {{
+            searchHits === undefined
+              ? t('favorite.totalCount', { count: store.getFavoriteResult?.total ?? 0 })
+              : t('favorite.index.hitCount', { count: searchHits.length })
+          }}
         </span>
         <n-pagination
+          v-if="searchHits === undefined"
           :page-count="favoritePageCount"
           :page="pageSelected"
           @update:page="changePage($event)" />
@@ -508,10 +732,10 @@ async function exportCbz() {
 
     <div v-else class="flex flex-col overflow-auto box-border px-2 pb-2">
       <div class="text-xs text-gray-500 px-1 pb-1">
-        {{ t('favorite.allCount', { count: listTotal || Number(store.getFavoriteResult?.total ?? 0) }) }}
+        {{ t('favorite.allCount', { count: listModeCount }) }}
       </div>
       <div
-        v-for="comic in allComics"
+        v-for="comic in listModeComics"
         :key="comic.id"
         class="flex items-center gap-2 px-1 py-1 rounded cursor-pointer select-none transition-colors hover:bg-gray-1"
         :class="selectedIds.has(comic.id) ? 'bg-blue-1' : ''"

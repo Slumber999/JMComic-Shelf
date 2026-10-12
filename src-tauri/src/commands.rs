@@ -22,12 +22,17 @@ use crate::export::manager::{ExportTaskKind, ExportTaskState};
 use crate::errors::{CommandError, CommandResult};
 use crate::events::{DownloadAllFavoritesEvent, UpdateDownloadedComicsEvent};
 use crate::extensions::{AppHandleExt, EyreReportToMessage};
+use crate::favorites_index::{
+    self, BuildFavoritesIndexResult, FavoritesFolderIndex, UpdateFavoritesIndexResult,
+};
 use crate::jm_client;
 use crate::lines::{self, ApiLineProbeResult, ImageLineProbeResult};
 use crate::local_index;
 use crate::quick_reader::QuickReaderCandidate;
 use crate::reader::{ReaderComic, ReaderState};
-use crate::responses::{FavoriteFolderRespData, GetUserProfileRespData, GetWeeklyInfoRespData};
+use crate::responses::{
+    FavoriteFolderRespData, GetUserProfileRespData, GetWeeklyInfoRespData, ToggleType,
+};
 use crate::storage::{self, StorageStats};
 use crate::types::{
     CategoryResp, ChapterInfo, Comic, ComicInFavorite, ComicInSearch, ComicInWeekly, FavoriteSort,
@@ -117,6 +122,8 @@ pub async fn login(
 #[instrument(level = "error", skip_all)]
 pub fn logout(app: AppHandle) -> CommandResult<()> {
     app.get_jm_client().logout();
+    // 索引文件按账号分，换账号后不能再用缓存里的 uid
+    favorites_index::reset_account_uid();
     Ok(())
 }
 
@@ -303,10 +310,17 @@ pub async fn search(
 pub async fn toggle_favorite(app: AppHandle, comic_id: i64) -> CommandResult<()> {
     let jm_client = app.get_jm_client();
 
-    jm_client
+    let resp = jm_client
         .toggle_favorite_comic(comic_id)
         .await
         .map_err(|err| CommandError::from("收藏/取消收藏失败", err))?;
+
+    // 取消收藏后本地索引里这本也要删掉；索引更新失败不影响这次取消收藏
+    if resp.toggle_type == ToggleType::Remove {
+        if let Err(err) = favorites_index::remove_comic(&app, comic_id).await {
+            tracing::error!(message = ?err, "取消收藏后删除收藏夹索引失败");
+        }
+    }
 
     Ok(())
 }
@@ -321,6 +335,9 @@ pub async fn get_favorite_folders(app: AppHandle) -> CommandResult<Vec<FavoriteF
         .get_favorite_folder(0, 1, FavoriteSort::FavoriteTime)
         .await
         .map_err(|err| CommandError::from("获取收藏夹失败", err))?;
+
+    // 收藏夹列表里就有账号 uid，顺手记给索引用，省掉一次请求
+    favorites_index::remember_account_uid(&favorites.folder_list);
 
     Ok(favorites.folder_list)
 }
@@ -839,6 +856,22 @@ pub fn show_path_in_file_manager(app: AppHandle, path: &str) -> CommandResult<()
         .reveal_item_in_dir(path)
         .map_err(|err| CommandError::from("在文件管理器中打开失败", err))?;
     Ok(())
+}
+
+/// 打开数据目录（config.json 所在的那层）
+///
+/// 路径一律由后端解析：前端的 appDataDir() 在部分 Tauri 版本上返回的是 %APPDATA% 本身，
+/// 少了一层 bundle identifier，打开会落到外层目录。
+#[tauri::command(async)]
+#[specta::specta]
+#[instrument(level = "error", skip_all)]
+pub fn show_config_dir_in_file_manager(app: AppHandle) -> CommandResult<()> {
+    let dir = app
+        .path()
+        .app_data_dir()
+        .map_err(|err| CommandError::from("在文件管理器中打开失败", err))?;
+    let dir = dir.to_string_lossy().to_string();
+    show_path_in_file_manager(app, &dir)
 }
 
 #[tauri::command(async)]
@@ -1479,6 +1512,50 @@ pub async fn get_all_favorite_comics(
         .map_err(|err| CommandError::from("获取收藏夹失败", err))?;
 
     Ok(comics)
+}
+
+/// 读本地收藏夹索引；没有索引（或拿不到索引文件）返回 None，不影响收藏夹页
+#[tauri::command(async)]
+#[specta::specta]
+#[instrument(level = "error", skip_all, fields(folder_id = folder_id))]
+pub async fn get_favorites_index(app: AppHandle, folder_id: i64) -> Option<FavoritesFolderIndex> {
+    favorites_index::get(&app, folder_id).await
+}
+
+/// 全量扫描该收藏夹，整层覆盖写入索引
+#[tauri::command(async)]
+#[specta::specta]
+#[instrument(level = "error", skip_all, fields(folder_id = folder_id))]
+pub async fn build_favorites_index(
+    app: AppHandle,
+    folder_id: i64,
+) -> CommandResult<BuildFavoritesIndexResult> {
+    favorites_index::build(&app, folder_id)
+        .await
+        .map_err(|err| CommandError::from("建立收藏夹索引失败", err))
+}
+
+/// 增量扫描该收藏夹：从第 1 页往后扫，整页没有新漫画就停
+#[tauri::command(async)]
+#[specta::specta]
+#[instrument(level = "error", skip_all, fields(folder_id = folder_id))]
+pub async fn update_favorites_index(
+    app: AppHandle,
+    folder_id: i64,
+) -> CommandResult<UpdateFavoritesIndexResult> {
+    favorites_index::update(&app, folder_id)
+        .await
+        .map_err(|err| CommandError::from("更新收藏夹索引失败", err))
+}
+
+/// 从该账号所有收藏夹层里删掉这本漫画
+#[tauri::command(async)]
+#[specta::specta]
+#[instrument(level = "error", skip_all, fields(comic_id = comic_id))]
+pub async fn remove_from_favorites_index(app: AppHandle, comic_id: i64) -> CommandResult<()> {
+    favorites_index::remove_comic(&app, comic_id)
+        .await
+        .map_err(|err| CommandError::from("更新收藏夹索引失败", err))
 }
 
 #[allow(clippy::needless_pass_by_value)]

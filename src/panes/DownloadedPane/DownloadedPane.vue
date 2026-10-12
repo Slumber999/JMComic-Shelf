@@ -428,7 +428,6 @@ function useDropdown() {
         :layout="store.comicLayout"
         :from-export-dir="fromExportDir"
         :checkbox-checked="checkboxChecked"
-        :handle-checkbox-click="handleCheckboxClick"
         :handle-click="handleCardClick"
         @read="openReader" />
     </div>

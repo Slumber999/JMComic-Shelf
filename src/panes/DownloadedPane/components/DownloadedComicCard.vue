@@ -3,7 +3,6 @@ import { Comic, commands } from '../../../bindings.ts'
 import { showError } from '../../../errors.ts'
 import { useStore } from '../../../store.ts'
 import { PhBookOpen, PhBookmarkSimple, PhFilePdf, PhFileZip, PhFolderOpen } from '@phosphor-icons/vue'
-import { NCheckbox } from 'naive-ui'
 import IconButton from '../../../components/IconButton.vue'
 import AuthorLinks from '../../../components/AuthorLinks.vue'
 import { computed } from 'vue'
@@ -22,7 +21,6 @@ const props = withDefaults(
     comic: Comic
     fromExportDir?: boolean
     checkboxChecked: (comic: Comic) => boolean
-    handleCheckboxClick: (comic: Comic) => void
     handleClick: (comic: Comic, event: MouseEvent) => void
     layout?: ComicLayout
   }>(),
@@ -109,16 +107,11 @@ function onCoverClick(event: MouseEvent) {
 <template>
   <div
     :class="[
-      'relative border border-solid rounded-md border-gray-2 p-1',
+      'relative border border-solid rounded-md p-1',
+      checkboxChecked(comic) ? 'border-blue-5' : 'border-gray-2',
       layout === 'list' ? 'flex' : 'group flex flex-col',
     ]"
     @click="handleClick(comic, $event)">
-    <!-- 导出目录没有批量操作，选择框没用 -->
-    <n-checkbox
-      v-if="!fromExportDir"
-      class="absolute top-2 left-2 z-1"
-      :checked="checkboxChecked(comic)"
-      @click.stop="handleCheckboxClick(comic)" />
     <img
       :class="
         layout === 'list'

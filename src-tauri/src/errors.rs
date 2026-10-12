@@ -75,6 +75,8 @@ fn code_for(err_title: &str) -> &'static str {
         "在文件管理器中打开失败" => "open-in-file-manager",
         "应用代理设置失败" => "proxy-apply",
         "移动收藏夹失败" => "favorite-move",
+        "建立收藏夹索引失败" => "favorite-index-build",
+        "更新收藏夹索引失败" => "favorite-index-update",
         "同步ComicInFavorite字段失败" => "sync-favorite-fields",
         "同步ComicInSearch字段失败" => "sync-search-fields",
         "删除本地漫画失败" => "local-comic-delete",

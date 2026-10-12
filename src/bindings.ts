@@ -149,6 +149,45 @@ async getAllFavoriteComics(folderId: number, sort: FavoriteSort) : Promise<Resul
     else return { status: "error", error: e  as any };
 }
 },
+/**
+ * 读本地收藏夹索引；没有索引（或拿不到索引文件）返回 None，不影响收藏夹页
+ */
+async getFavoritesIndex(folderId: number) : Promise<FavoritesFolderIndex | null> {
+    return await TAURI_INVOKE("get_favorites_index", { folderId });
+},
+/**
+ * 全量扫描该收藏夹，整层覆盖写入索引
+ */
+async buildFavoritesIndex(folderId: number) : Promise<Result<BuildFavoritesIndexResult, CommandError>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("build_favorites_index", { folderId }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+/**
+ * 增量扫描该收藏夹：从第 1 页往后扫，整页没有新漫画就停
+ */
+async updateFavoritesIndex(folderId: number) : Promise<Result<UpdateFavoritesIndexResult, CommandError>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("update_favorites_index", { folderId }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+/**
+ * 从该账号所有收藏夹层里删掉这本漫画
+ */
+async removeFromFavoritesIndex(comicId: number) : Promise<Result<null, CommandError>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("remove_from_favorites_index", { comicId }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
 async getWeeklyInfo() : Promise<Result<GetWeeklyInfoRespData, CommandError>> {
     try {
     return { status: "ok", data: await TAURI_INVOKE("get_weekly_info") };
@@ -253,6 +292,20 @@ async updateExportedComics() : Promise<Result<number, CommandError>> {
 async showPathInFileManager(path: string) : Promise<Result<null, CommandError>> {
     try {
     return { status: "ok", data: await TAURI_INVOKE("show_path_in_file_manager", { path }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+/**
+ * 打开数据目录（config.json 所在的那层）
+ * 
+ * 路径一律由后端解析：前端的 appDataDir() 在部分 Tauri 版本上返回的是 %APPDATA% 本身，
+ * 少了一层 bundle identifier，打开会落到外层目录。
+ */
+async showConfigDirInFileManager() : Promise<Result<null, CommandError>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("show_config_dir_in_file_manager") };
 } catch (e) {
     if(e instanceof Error) throw e;
     else return { status: "error", error: e  as any };
@@ -599,6 +652,10 @@ label: string;
  * 对应设置页的线路选项
  */
 mode: ApiDomainMode; domain: string; ok: boolean; latencyMs: number | null; error: string | null }
+/**
+ * 全量扫描结果：这次比原索引多收了几本、扫完一共几本
+ */
+export type BuildFavoritesIndexResult = { added: number; total: number }
 export type Category = { id: string | null; title: string | null }
 export type CategoryInWeeklyInfo = { id: string; title: string; time: string }
 /**
@@ -754,6 +811,18 @@ export type ExportTaskKind = "Cbz" | "CbzDirect"
 export type ExportTaskState = "Exporting" | "Paused" | "Completed" | "Failed"
 export type FavoriteFolderRespData = { FID: string; UID: string; name: string }
 export type FavoriteSort = "FavoriteTime" | "UpdateTime"
+/**
+ * 一个收藏夹层的索引，comics 按收藏时间倒序
+ */
+export type FavoritesFolderIndex = { folderName: string; 
+/**
+ * ISO8601（UTC）
+ */
+updatedAt: string; total: number; comics: FavoritesIndexComic[] }
+/**
+ * 索引里的一本漫画：只留搜索要用的三个字段
+ */
+export type FavoritesIndexComic = { id: number; name: string; author: string }
 export type GetFavoriteResult = { list: ComicInFavorite[]; folderList: FavoriteFolderRespData[]; total: number; count: number }
 export type GetUserProfileRespData = { uid: string; username: string; email: string; emailverified: string; photo: string; fname: string; gender: string; message: string | null; coin: number; album_favorites: number; s: string; level_name: string; level: number; nextLevelExp: number; exp: string; expPercent: number; album_favorites_max: number; ad_free: boolean; charge: string; jar: string; invitation_qrcode: string; invitation_url: string; invited_cnt: string }
 export type GetWeeklyInfoRespData = { categories: CategoryInWeeklyInfo[]; type: WeeklyType[] }
@@ -874,6 +943,10 @@ export type SubCategoryNode = { cid: number; name: string; slug: string }
  */
 export type TagBlock = { title: string; content: string[] }
 export type UpdateDownloadedComicsEvent = { event: "GetComicStart"; data: { total: number } } | { event: "GetComicProgress"; data: { current: number; total: number } } | { event: "CreateDownloadTasksStart"; data: { comicId: number; comicTitle: string; current: number; total: number } } | { event: "CreateDownloadTaskProgress"; data: { comicId: number; current: number } } | { event: "CreateDownloadTasksEnd"; data: { comicId: number } } | { event: "GetComicEnd" }
+/**
+ * 增量扫描结果：added / removed 都是这次扫描相对原索引的变化量
+ */
+export type UpdateFavoritesIndexResult = { added: number; removed: number; total: number }
 export type WeeklyType = { id: string; title: string }
 
 /** tauri-specta globals **/
