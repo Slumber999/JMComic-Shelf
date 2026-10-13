@@ -12,11 +12,14 @@ import FavoritePane from './panes/FavoritePane.vue'
 import AboutDialog from './dialogs/AboutDialog.vue'
 import { PhGearSix, PhInfo, PhUser, PhBookmarkSimple } from '@phosphor-icons/vue'
 import DownloadedPane from './panes/DownloadedPane/DownloadedPane.vue'
+import HistoryPane from './panes/HistoryPane.vue'
 import { useStore } from './store.ts'
 import { getCurrentWindow } from '@tauri-apps/api/window'
 import RankingPane from './panes/RankingPane.vue'
 import CommentsPane from './panes/CommentsPane.vue'
+import NovelPane from './panes/NovelPane.vue'
 import ComicReader from './reader/ComicReader.vue'
+import NovelReader from './reader/NovelReader.vue'
 import DownloadStatusBar from './components/DownloadStatusBar.vue'
 import CoverPreview from './components/CoverPreview.vue'
 import SettingsDialog from './dialogs/SettingsDialog/SettingsDialog.vue'
@@ -27,6 +30,9 @@ import { useI18n } from './i18n.ts'
 const store = useStore()
 const { t, locale, setLocale } = useI18n()
 
+/// 顶部这排页签按钮的间距：naive-ui 线型页签默认 36px（tabGapSmallLine），这里减掉 1/3 改成 24px
+const mainTabsThemeOverrides = { tabGapSmallLine: '24px' }
+
 const message = useMessage()
 // 错误通知统一走右下角，实例在这里注册一次
 setErrorNotifier(useNotification())
@@ -34,6 +40,8 @@ listenLogErrors()
 
 
 const readerShowing = ref<boolean>(false)
+/// 小说阅读浮层：与漫画阅读器并列，跟 store.novelReaderTarget 一起开关
+const novelReaderShowing = ref<boolean>(false)
 const loginDialogShowing = ref<boolean>(false)
 
 
@@ -51,6 +59,22 @@ watch(
 watch(readerShowing, (value) => {
   if (!value) {
     store.readerTarget = undefined
+  }
+})
+
+// 小说阅读浮层：和漫画一样的开关方式
+watch(
+  () => store.novelReaderTarget,
+  (target) => {
+    if (target !== undefined) {
+      novelReaderShowing.value = true
+    }
+  },
+)
+
+watch(novelReaderShowing, (value) => {
+  if (!value) {
+    store.novelReaderTarget = undefined
   }
 })
 // 继续阅读：跳到上次读到的地方（本地有就读本地，没有就从网上读）
@@ -148,6 +172,52 @@ function rememberWindowSize() {
   store.config.windowHeight = window.innerHeight
 }
 
+/// 今天是否已签到：undefined = 未登录或还没查到（这两种情况都不显示签到按钮）
+const signedToday = ref<boolean>()
+const signingIn = ref<boolean>(false)
+
+/// 查今天是否已签到。未登录不查：后端会先走 get_user_profile 校验，未登录必然报「登录态无效或已过期」
+async function refreshSignStatus() {
+  if (store.userProfile === undefined) {
+    signedToday.value = undefined
+    return
+  }
+
+  const result = await commands.getSignStatus()
+  if (result.status === 'error') {
+    // 查不到就放行按钮兜底：点下去若其实已签过，后端会回 already_signed，一样能收起来
+    signedToday.value = false
+    showError(result.error)
+    return
+  }
+  signedToday.value = result.data.signed_today === true
+}
+
+// 登录（含启动时的自动登录、切换账号）后查一次，退出登录后状态复位、按钮随之消失
+watch(() => store.userProfile, () => void refreshSignStatus(), { immediate: true })
+
+/// 签到：成功后按钮立即消失；今天已经签过时后端也返回 Ok（already_signed），同样收起来
+async function signInNow() {
+  signingIn.value = true
+  try {
+    const result = await commands.signIn()
+    if (result.status === 'error') {
+      showError(result.error)
+      return
+    }
+
+    signedToday.value = true
+    if (result.data.already_signed === true) {
+      message.success(t('sign.alreadySigned'))
+      return
+    }
+    // 优先用官方返回的文案（如「签到成功」），没有就用本地文案兜底
+    message.success(result.data.msg ?? t('sign.success'))
+  } finally {
+    signingIn.value = false
+  }
+}
+
 onMounted(async () => {
   // 屏蔽浏览器右键菜单
   document.oncontextmenu = (event) => {
@@ -222,6 +292,10 @@ onMounted(async () => {
         {{ t('app.continueReading') }}
       </n-button>
       <div v-if="store.userProfile !== undefined" class="flex items-center gap-1 ml-auto overflow-hidden">
+        <!-- 签到按钮只在「已登录且今天还没签到」时占位，签完（v-if 转 false）整块从布局里移除 -->
+        <n-button v-if="signedToday === false" size="small" :loading="signingIn" @click="signInNow">
+          {{ t('sign.button') }}
+        </n-button>
         <n-avatar
           class="flex-shrink-0"
           round
@@ -235,7 +309,13 @@ onMounted(async () => {
     </div>
 
     <!-- 内容区：占满整个宽度 -->
-    <n-tabs class="flex-1 min-h-0" v-model:value="store.currentTabName" type="line" size="small" animated>
+    <n-tabs
+      class="flex-1 min-h-0"
+      v-model:value="store.currentTabName"
+      type="line"
+      size="small"
+      animated
+      :theme-overrides="mainTabsThemeOverrides">
       <n-tab-pane
         class="h-full overflow-auto p-0!"
         name="search"
@@ -270,11 +350,27 @@ onMounted(async () => {
       </n-tab-pane>
       <n-tab-pane
         class="h-full overflow-auto p-0!"
+        name="novel"
+        :tab="t('tab.novel')"
+        :key="locale"
+        display-directive="show">
+        <NovelPane />
+      </n-tab-pane>
+      <n-tab-pane
+        class="h-full overflow-auto p-0!"
         name="downloaded"
         :tab="t('tab.downloaded')"
         :key="locale"
         display-directive="show">
         <DownloadedPane />
+      </n-tab-pane>
+      <n-tab-pane
+        class="h-full overflow-auto p-0!"
+        name="history"
+        :tab="t('tab.history')"
+        :key="locale"
+        display-directive="show">
+        <HistoryPane />
       </n-tab-pane>
       <n-tab-pane
         class="h-full overflow-auto p-0!"
@@ -299,6 +395,10 @@ onMounted(async () => {
       v-model:showing="readerShowing"
       :comic="store.readerTarget?.comic"
       :comic-id="store.readerTarget?.comicId" />
+    <novel-reader
+      v-if="store.novelReaderTarget !== undefined"
+      v-model:showing="novelReaderShowing"
+      :target="store.novelReaderTarget" />
     <SettingsDialog v-model:showing="settingsDialogShowing" />
     <LoginDialog v-model:showing="loginDialogShowing" />
     <AboutDialog v-model:showing="aboutDialogShowing" />

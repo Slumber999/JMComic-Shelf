@@ -21,9 +21,9 @@ const page = computed({
   },
 })
 
-// 全站评论没有漫画 ID：传 null 让后端按时间倒序给全站最新评论
+// 全站评论没有归属：传 null 让后端按时间倒序给全站最新评论
 const { loading, comments, total, pageCount, loadComments, goToPage } = useComments({
-  comicId: () => null,
+  target: () => null,
   page,
 })
 
@@ -46,8 +46,7 @@ async function openComic(aid: string | undefined) {
     return
   }
 
-  store.pickedComic = result.data
-  store.currentTabName = 'chapter'
+  store.pickComic(result.data)
 }
 
 /// 条目悬停提示：点它会跳到这本漫画

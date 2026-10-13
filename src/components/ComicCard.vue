@@ -44,8 +44,7 @@ async function pickComic() {
     console.error(result.error)
     return
   }
-  store.pickedComic = result.data
-  store.currentTabName = 'chapter'
+  store.pickComic(result.data)
 }
 
 function downloadComic() {

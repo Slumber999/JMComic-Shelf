@@ -2,6 +2,41 @@
 
 use super::*;
 
+/// 签到接口没登录时的文案：/daily 不带 user_id、/daily_chk 没登录态都返回 `data: []`
+const SIGN_NOT_LOGGED_IN: &str = "登录态无效或已过期，请重新登录";
+
+/// 评论归属：官方 /forum 按 mode 区分——全站/漫画是 `mode=all`（漫画多带 aid），
+/// 小说是 `mode=novel` + nid。注意带 `mode=all` 时官方会直接忽略 nid，只会回全站评论
+#[derive(Debug, Clone, Copy)]
+enum CommentTarget {
+    All,
+    Comic(i64),
+    Novel(i64),
+}
+
+impl CommentTarget {
+    /// 拼官方接口的查询参数（page 是官方那套每页 10 条的页码）
+    fn to_query(self, api_page: i64) -> serde_json::Value {
+        let mut query = serde_json::Map::new();
+        query.insert("page".to_string(), serde_json::Value::from(api_page));
+        let mode = match self {
+            CommentTarget::Novel(_) => "novel",
+            CommentTarget::All | CommentTarget::Comic(_) => "all",
+        };
+        query.insert("mode".to_string(), serde_json::Value::from(mode));
+        match self {
+            CommentTarget::All => {}
+            CommentTarget::Comic(aid) => {
+                query.insert("aid".to_string(), serde_json::Value::from(aid));
+            }
+            CommentTarget::Novel(nid) => {
+                query.insert("nid".to_string(), serde_json::Value::from(nid));
+            }
+        }
+        serde_json::Value::Object(query)
+    }
+}
+
 impl JmClient {
     /// 创建客户端。不会失败：代理配置不合法时退化为直连（并记错误日志），
     /// 保证应用永远能启动
@@ -119,6 +154,30 @@ impl JmClient {
         err_title: &str,
         unauthorized_err: Option<&str>,
     ) -> eyre::Result<String> {
+        self.request_decrypted_data_with(
+            method,
+            path,
+            query,
+            form,
+            err_title,
+            unauthorized_err,
+            None,
+        )
+        .await
+    }
+
+    /// 同上，外加 `no_data_err`：data 不是加密字符串时的专属文案。
+    /// 签到接口没登录/没数据时返回的是 `data: []`（HTTP 200），单独给个人话
+    async fn request_decrypted_data_with(
+        &self,
+        method: reqwest::Method,
+        path: ApiPath,
+        query: Option<serde_json::Value>,
+        form: Option<serde_json::Value>,
+        err_title: &str,
+        unauthorized_err: Option<&str>,
+        no_data_err: Option<&str>,
+    ) -> eyre::Result<String> {
         let ts = SystemTime::now().duration_since(UNIX_EPOCH)?.as_secs();
         let http_resp = self.jm_request(method, path, query, form, ts).await?;
         // 检查http响应状态码
@@ -140,10 +199,12 @@ impl JmClient {
             return Err(eyre!("{err_title}，预料之外的code: {jm_resp:?}"));
         }
         // 检查JmResp的data字段
-        let data = jm_resp
-            .data
-            .as_str()
-            .ok_or_eyre(format!("{err_title}，data字段不是字符串: {jm_resp:?}"))?;
+        let Some(data) = jm_resp.data.as_str() else {
+            if let Some(message) = no_data_err {
+                return Err(eyre!("{message}"));
+            }
+            return Err(eyre!("{err_title}，data字段不是字符串: {jm_resp:?}"));
+        };
         // 解密data字段
         decrypt_data(ts, data)
     }
@@ -289,6 +350,56 @@ impl JmClient {
         Ok(user_profile)
     }
 
+    /// 今日签到状态：/daily 只认 user_id，登录态靠 /login（用户信息）校验
+    #[instrument(level = "error", skip_all)]
+    pub async fn get_sign_status(&self) -> eyre::Result<SignStatus> {
+        let uid = self.get_user_profile().await?.uid;
+        self.fetch_sign_status(&uid).await
+    }
+
+    /// 执行签到：官方要 user_id + daily_id，daily_id 只能先问一次签到活动
+    #[instrument(level = "error", skip_all)]
+    pub async fn sign_in(&self) -> eyre::Result<SignInResult> {
+        let uid = self.get_user_profile().await?.uid;
+        let status = self.fetch_sign_status(&uid).await?;
+
+        let data = self
+            .request_decrypted_data_with(
+                reqwest::Method::POST,
+                ApiPath::DailyCheck,
+                None,
+                Some(json!({ "user_id": uid, "daily_id": status.daily_id })),
+                "签到失败",
+                Some(SIGN_NOT_LOGGED_IN),
+                Some(SIGN_NOT_LOGGED_IN),
+            )
+            .await?;
+        let mut result = serde_json::from_str::<SignInResult>(&data)
+            .wrap_err(format!("将解密后的data字段解析为SignInResult失败: {data}"))?;
+        result.daily_id = status.daily_id;
+        result.already_signed = result.msg.contains("已签到过");
+        Ok(result)
+    }
+
+    /// 问一次签到活动：record 里「今天」由 SignStatus 按日期自己算
+    async fn fetch_sign_status(&self, uid: &str) -> eyre::Result<SignStatus> {
+        let data = self
+            .request_decrypted_data_with(
+                reqwest::Method::GET,
+                ApiPath::Daily,
+                Some(json!({ "user_id": uid })),
+                None,
+                "获取签到状态失败",
+                Some(SIGN_NOT_LOGGED_IN),
+                Some(SIGN_NOT_LOGGED_IN),
+            )
+            .await?;
+        let mut status = serde_json::from_str::<SignStatus>(&data)
+            .wrap_err(format!("将解密后的data字段解析为SignStatus失败: {data}"))?;
+        status.resolve_signed_today();
+        Ok(status)
+    }
+
     #[instrument(
         level = "error",
         skip_all,
@@ -369,15 +480,31 @@ impl JmClient {
     /// 官方接口每页固定 10 条、且不接受页大小参数，这里并发拉 3 页合成 30 条一页
     #[instrument(level = "error", skip_all, fields(aid = ?aid, page = page))]
     pub async fn get_comments(&self, aid: Option<i64>, page: i64) -> eyre::Result<CommentPage> {
+        let target = aid.map_or(CommentTarget::All, CommentTarget::Comic);
+        self.get_comments_by_target(target, page).await
+    }
+
+    /// 小说评论：官方 /forum 要 mode=novel + nid=<小说id>，响应结构与漫画评论一致
+    #[instrument(level = "error", skip_all, fields(nid = nid, page = page))]
+    pub async fn get_novel_comments(&self, nid: i64, page: i64) -> eyre::Result<CommentPage> {
+        self.get_comments_by_target(CommentTarget::Novel(nid), page).await
+    }
+
+    /// 漫画 / 小说 / 全站评论共用的取页逻辑（说明见 get_comments）
+    async fn get_comments_by_target(
+        &self,
+        target: CommentTarget,
+        page: i64,
+    ) -> eyre::Result<CommentPage> {
         const API_PAGE_SIZE: i64 = 10;
         const PAGES_PER_REQUEST: i64 = COMMENT_PAGE_SIZE / API_PAGE_SIZE;
 
         let first_api_page = (page.max(1) - 1) * PAGES_PER_REQUEST + 1;
 
         let (first, second, third) = tokio::join!(
-            self.fetch_comment_api_page(aid, first_api_page),
-            self.fetch_comment_api_page(aid, first_api_page + 1),
-            self.fetch_comment_api_page(aid, first_api_page + 2),
+            self.fetch_comment_api_page(target, first_api_page),
+            self.fetch_comment_api_page(target, first_api_page + 1),
+            self.fetch_comment_api_page(target, first_api_page + 2),
         );
 
         // 第一页必须成功（total 也取自它）
@@ -407,24 +534,17 @@ impl JmClient {
     }
 
     /// 拉官方的一页评论（固定 10 条）
-    #[instrument(level = "error", skip_all, fields(aid = ?aid, api_page = api_page))]
+    #[instrument(level = "error", skip_all, fields(comment_target = ?target, api_page = api_page))]
     async fn fetch_comment_api_page(
         &self,
-        aid: Option<i64>,
+        target: CommentTarget,
         api_page: i64,
     ) -> eyre::Result<CommentPage> {
-        let mut query = serde_json::Map::new();
-        query.insert("mode".to_string(), serde_json::Value::String("all".to_string()));
-        query.insert("page".to_string(), serde_json::Value::from(api_page));
-        if let Some(aid) = aid {
-            query.insert("aid".to_string(), serde_json::Value::from(aid));
-        }
-
         let mut comment_page: CommentPage = self
             .request_decrypted(
                 reqwest::Method::GET,
                 ApiPath::GetComments,
-                Some(serde_json::Value::Object(query)),
+                Some(target.to_query(api_page)),
                 None,
                 "获取评论失败",
                 "将解密后的数据解析为CommentPage",
@@ -433,6 +553,123 @@ impl JmClient {
         // 正文是 HTML，统一转成纯文本
         comment_page.strip_html();
         Ok(comment_page)
+    }
+
+    /// 浏览记录：page 从 1 开始，返回的是漫画元数据（与漫画列表元素同形）
+    #[instrument(level = "error", skip_all, fields(page = page))]
+    pub async fn get_watch_history(&self, page: i64) -> eyre::Result<WatchHistoryPage> {
+        let query = json!({
+            "page": page,
+        });
+        self.request_decrypted(
+            reqwest::Method::GET,
+            ApiPath::WatchList,
+            Some(query),
+            None,
+            "获取浏览记录失败",
+            "将解密后的数据解析为WatchHistoryPage",
+        )
+        .await
+    }
+
+    /// 删除一条浏览记录：表单 `id=<记录id>`，服务端只回 {"status":1,"msg":"刪除成功"}
+    #[instrument(level = "error", skip_all, fields(id = id))]
+    pub async fn delete_watch_history(&self, id: &str) -> eyre::Result<()> {
+        let form = json!({
+            "id": id,
+        });
+        let data = self
+            .request_decrypted_data(
+                reqwest::Method::POST,
+                ApiPath::WatchList,
+                None,
+                Some(form),
+                "删除浏览记录失败",
+                None,
+            )
+            .await?;
+
+        // status 不是 1 就是没删掉，服务端的说法在 msg 里
+        let resp: WatchHistoryDeleteResp = serde_json::from_str(&data)
+            .wrap_err(format!("将解密后的数据解析为WatchHistoryDeleteResp失败: {data}"))?;
+        if resp.status != 1 {
+            return Err(eyre!(
+                "删除浏览记录失败，服务端返回 status={}: {}",
+                resp.status,
+                resp.msg
+            ));
+        }
+        Ok(())
+    }
+
+    /// 小说列表：`o` 是排序（"mr" = 最近更新），`page` 从 1 开始
+    #[instrument(level = "error", skip_all, fields(order = o, page = page))]
+    pub async fn get_novel_list(&self, o: &str, page: i64) -> eyre::Result<NovelPage> {
+        let ts = SystemTime::now().duration_since(UNIX_EPOCH)?.as_secs();
+        let query = json!({
+            "o": o,
+            "page": page,
+            "t": ts,
+        });
+        // 发送获取小说列表请求
+        self.request_decrypted(
+            reqwest::Method::GET,
+            ApiPath::Novels,
+            Some(query),
+            None,
+            "获取小说列表失败",
+            "将解密后的数据解析为NovelPage",
+        )
+        .await
+    }
+
+    #[instrument(level = "error", skip_all, fields(nid = nid))]
+    pub async fn get_novel_detail(&self, nid: &str) -> eyre::Result<NovelDetail> {
+        let query = json!({"nid": nid});
+        // 发送获取小说详情请求
+        self.request_decrypted(
+            reqwest::Method::GET,
+            ApiPath::Novel,
+            Some(query),
+            None,
+            "获取小说详情失败",
+            "将解密后的数据解析为NovelDetail",
+        )
+        .await
+    }
+
+    /// 小说章节正文：`content` 是 HTML，原样交给前端
+    #[instrument(level = "error", skip_all, fields(ncid = ncid, lang = lang))]
+    pub async fn get_novel_chapter(&self, ncid: &str, lang: &str) -> eyre::Result<NovelChapter> {
+        let query = json!({
+            "ncid": ncid,
+            "lang": lang,
+        });
+        // 发送获取小说章节请求
+        self.request_decrypted(
+            reqwest::Method::GET,
+            ApiPath::NovelChapters,
+            Some(query),
+            None,
+            "获取小说章节失败",
+            "将解密后的数据解析为NovelChapter",
+        )
+        .await
+    }
+
+    #[instrument(level = "error", skip_all, fields(search_query = query))]
+    pub async fn search_novels(&self, query: &str) -> eyre::Result<NovelPage> {
+        let params = json!({"search_query": query});
+        // 发送搜索小说请求
+        self.request_decrypted(
+            reqwest::Method::GET,
+            ApiPath::SearchNovels,
+            Some(params),
+            None,
+            "搜索小说失败",
+            "将解密后的数据解析为NovelPage",
+        )
+        .await
     }
 
     #[instrument(level = "error", skip_all, fields(aid = aid))]

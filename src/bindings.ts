@@ -133,6 +133,77 @@ async getComments(aid: number | null, page: number) : Promise<Result<CommentPage
     else return { status: "error", error: e  as any };
 }
 },
+/**
+ * 小说评论（只读）：官方 /forum 走 mode=novel + nid，返回结构和漫画评论一致
+ */
+async getNovelComments(nid: number, page: number) : Promise<Result<CommentPage, CommandError>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("get_novel_comments", { nid, page }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+/**
+ * 浏览记录（只读）：page 从 1 开始，需要登录态
+ */
+async getWatchHistory(page: number) : Promise<Result<WatchHistoryPage, CommandError>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("get_watch_history", { page }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+/**
+ * 删除一条浏览记录：记录 id 就是漫画 id（官方 /watch_list 的 list 元素 id）
+ */
+async deleteWatchHistory(id: string) : Promise<Result<null, CommandError>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("delete_watch_history", { id }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+/**
+ * 小说列表：`o` 是排序（"mr" = 最近更新），`page` 从 1 开始
+ */
+async getNovelList(o: string, page: number) : Promise<Result<NovelPage, CommandError>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("get_novel_list", { o, page }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+async getNovelDetail(nid: string) : Promise<Result<NovelDetail, CommandError>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("get_novel_detail", { nid }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+/**
+ * 小说章节正文：`content` 是 HTML，后端不剥标签，原样返回给前端
+ */
+async getNovelChapter(ncid: string, lang: string) : Promise<Result<NovelChapter, CommandError>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("get_novel_chapter", { ncid, lang }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+async searchNovels(query: string) : Promise<Result<NovelPage, CommandError>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("search_novels", { query }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
 async getFavoriteFolder(folderId: number, page: number, sort: FavoriteSort) : Promise<Result<GetFavoriteResult, CommandError>> {
     try {
     return { status: "ok", data: await TAURI_INVOKE("get_favorite_folder", { folderId, page, sort }) };
@@ -207,6 +278,22 @@ async getWeekly(categoryId: string, typeId: string) : Promise<Result<GetWeeklyRe
 async getUserProfile() : Promise<Result<GetUserProfileRespData, CommandError>> {
     try {
     return { status: "ok", data: await TAURI_INVOKE("get_user_profile") };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+async getSignStatus() : Promise<Result<SignStatus, CommandError>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("get_sign_status") };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+async signIn() : Promise<Result<SignInResult, CommandError>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("sign_in") };
 } catch (e) {
     if(e instanceof Error) throw e;
     else return { status: "error", error: e  as any };
@@ -710,7 +797,7 @@ export type Comment = {
  */
 CID: string; 
 /**
- * 所属漫画 id（全站评论靠它定位来源）
+ * 所属漫画 id（全站评论靠它定位来源）；小说的评论这里给的是 null
  */
 AID?: string; username?: string; nickname?: string; 
 /**
@@ -722,7 +809,7 @@ content?: string; likes?: string;
  */
 addtime?: string; 
 /**
- * 父评论 id，"0" 表示主评论
+ * 父评论 id，"0" 表示主评论；小说的评论这里是 null
  */
 parent_CID?: string; 
 /**
@@ -858,6 +945,58 @@ export type LogEvent = { jsonRaw: string }
 export type LogLevel = "TRACE" | "DEBUG" | "INFO" | "WARN" | "ERROR"
 export type LogMetadata = { timestamp: string; level: LogLevel; fields: { [key in string]: JsonValue }; target: string; filename: string; line_number: number; span?: JsonValue; spans?: LogSpan[] }
 export type LogSpan = ({ [key in string]: null | boolean | number | string | JsonValue[] | { [key in string]: JsonValue } }) & { name: string }
+/**
+ * 小说章节正文（/novelchapters 的返回）
+ */
+export type NovelChapter = { ncid: number; nid: number; name?: string; title?: string; 
+/**
+ * 正文 HTML，原样返回给前端渲染，后端不剥标签
+ */
+content?: string; last_chapter_title?: string; total_favorites?: number; total_views?: number; total_likes?: number; is_favorite?: boolean; liked?: boolean }
+/**
+ * 小说详情里的一个章节条目（官方 series 数组的元素）
+ */
+export type NovelChapterMeta = { 
+/**
+ * 官方写作 `NCID`
+ */
+NCID?: string; title?: string; sort?: number; created_at?: string; status?: string; on_at?: string; buy_nc?: string; 
+/**
+ * "1" 表示需要购买
+ */
+is_need_buy_nc?: string; 
+/**
+ * "1" 表示需要登录
+ */
+is_need_login?: string; id?: string; name?: string; 
+/**
+ * 官方写作 `new`
+ */
+new?: boolean; purchased?: boolean }
+/**
+ * 小说详情（/novel 的返回）
+ */
+export type NovelDetail = { id: number; name?: string; author?: string; description?: string; tags?: string[]; 
+/**
+ * "1" 表示已完结
+ */
+is_end?: string; serial_status?: string; total_views?: number; likes?: number; is_favorite?: boolean; 
+/**
+ * 官方有时给条数、有时直接给评论数组，这里统一折成条数
+ */
+comment_total?: number; series?: NovelChapterMeta[] }
+/**
+ * 小说列表里的一本（/novels、/search_novels 的 list 元素）
+ */
+export type NovelMeta = { id: number; author?: string; name?: string; image?: string; liked?: boolean; 
+/**
+ * 未登录时官方给的是 null，所以这里保留三态
+ */
+is_favorite?: boolean | null; update_at?: number; likes?: number; last_chapter_index?: number; last_chapter_title?: string }
+/**
+ * 一页小说（/novels 与 /search_novels 的完整返回）
+ */
+export type NovelPage = { list?: NovelMeta[]; total: number }
 export type ProxyMode = "System" | "NoProxy" | "Custom"
 /**
  * 可以导出进阅读器的漫画（给前端勾选用）
@@ -901,6 +1040,102 @@ export type RelatedListRespData = { id: string; author: string; name: string; im
 export type SearchResult = { searchQuery: string; total: number; content: ComicInSearch[] }
 export type SearchResultVariant = { SearchResult: SearchResult } | { Comic: Comic }
 export type SearchSort = "Latest" | "View" | "Picture" | "Like"
+/**
+ * 执行签到的结果（官方 /daily_chk 解密后的 data，官方只保证有 msg）
+ */
+export type SignInResult = { 
+/**
+ * 官方文案：成功是「签到成功」，今天签过是「已签到过」
+ */
+msg?: string; 
+/**
+ * 官方若带 status 就原样给出
+ */
+status?: string; 
+/**
+ * 这次签到用的活动 id（来自签到状态，官方不返回）
+ */
+daily_id?: number; 
+/**
+ * 官方文案里带「已签到过」：今天已经签过了，按成功返回，前端同样可以把按钮收起来
+ */
+already_signed?: boolean }
+/**
+ * 签到记录里的一天
+ */
+export type SignRecordDay = { 
+/**
+ * 当月第几天，两位数字符串，如 "01"
+ */
+date?: string; 
+/**
+ * 是否已签到；null 表示今天或之后（还没签到）
+ */
+signed?: boolean | null; 
+/**
+ * 是否为奖励日
+ */
+bonus?: boolean }
+/**
+ * 今日签到状态（官方 /daily 的返回）
+ */
+export type SignStatus = { 
+/**
+ * 今天是否已签到：官方不返回这个字段，由 record 里今天的日期推出来
+ */
+signed_today?: boolean; 
+/**
+ * 签到活动 id，执行签到时原样传回
+ */
+daily_id?: number; 
+/**
+ * 三天签到总金币
+ */
+three_days_coin?: number; 
+/**
+ * 三天签到总经验
+ */
+three_days_exp?: number; 
+/**
+ * 七天签到总金币
+ */
+seven_days_coin?: number; 
+/**
+ * 七天签到总经验
+ */
+seven_days_exp?: number; 
+/**
+ * 活动名称，如「10月-「來都來了」」
+ */
+event_name?: string; 
+/**
+ * PC 背景图路径（官方没带域名）
+ */
+background_pc?: string; 
+/**
+ * 手机背景图路径（官方没带域名）
+ */
+background_phone?: string; 
+/**
+ * 当前进度，如 "0%"
+ */
+currentProgress?: string; 
+/**
+ * 签到记录：周 × 天，日期是当月第几天
+ */
+record?: SignRecordDay[][]; 
+/**
+ * 本月已补签次数
+ */
+makeup_used?: number; 
+/**
+ * 本月补签上限
+ */
+makeup_limit?: number; 
+/**
+ * 当前是否还能补签
+ */
+makeup_available?: boolean }
 /**
  * 某个目录的占用情况
  */
@@ -947,6 +1182,16 @@ export type UpdateDownloadedComicsEvent = { event: "GetComicStart"; data: { tota
  * 增量扫描结果：added / removed 都是这次扫描相对原索引的变化量
  */
 export type UpdateFavoritesIndexResult = { added: number; removed: number; total: number }
+/**
+ * 浏览记录里的一条（GET /watch_list 的 list 元素）
+ * - id 就是漫画 id，删除时也用它当记录 id
+ * - image 官方常常给空串，前端拿不到就自己按 id 取封面
+ */
+export type WatchHistoryItem = { id: number; author?: string; name?: string; image?: string; category?: CategoryRespData; category_sub?: CategorySubRespData }
+/**
+ * 一页浏览记录（GET /watch_list 的完整返回）
+ */
+export type WatchHistoryPage = { list?: WatchHistoryItem[]; total?: number }
 export type WeeklyType = { id: string; title: string }
 
 /** tauri-specta globals **/

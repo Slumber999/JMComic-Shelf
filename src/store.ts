@@ -4,11 +4,13 @@ import {
   CurrentTabName,
   ExportProgressData,
   GridSize,
+  NovelReaderTarget,
   ProgressData,
   ProgressesPaneTabName,
 } from './types.ts'
+import { setPendingNovelTarget } from './reader/novelTarget.ts'
 import { GRID_ITEM_WIDTHS, resizeMainWindowForGridSize } from './comicGrid.ts'
-import { CategoryResp, Comic, commands, Config, GetFavoriteResult, GetUserProfileRespData, GetWeeklyResult, LocalLibrarySource, SearchResult } from './bindings.ts'
+import { CategoryResp, Comic, commands, Config, GetFavoriteResult, GetUserProfileRespData, GetWeeklyResult, LocalLibrarySource, NovelMeta, SearchResult } from './bindings.ts'
 
 /// 本地库存读哪个目录：这是"看哪个目录"的视图偏好，存 localStorage，
 /// 不写进 config.json（切一下目录不该触发保存配置，也不该弹"保存配置成功"）
@@ -27,9 +29,13 @@ export const useStore = defineStore('store', () => {
   const config = ref<Config>()
   const userProfile = ref<GetUserProfileRespData>()
   const pickedComic = ref<Comic>()
+  /// 「详情」页签显示哪本小说：和 pickedComic 共用同一个页签，同一时间只有一个有值
+  const pickedNovel = ref<NovelMeta>()
   const currentTabName = ref<CurrentTabName>('search')
   /// 待搜索的关键词：别的页面点作者名时写进来，搜索页看到就去搜
   const pendingSearch = ref<string>()
+  /// 待搜索的小说关键词：小说详情点作者/标签时写进来，小说页看到就去搜
+  const pendingNovelSearch = ref<string>()
   const progresses = ref<Map<number, ProgressData>>(new Map())
   /// 导出进度：和下载进度并排放在「未完成 / 已完成」两个页签里
   const exportProgresses = ref<Map<string, ExportProgressData>>(new Map())
@@ -50,6 +56,8 @@ export const useStore = defineStore('store', () => {
   const downloadedComics = ref<Comic[]>([])
   // 阅读器目标：传 comic = 本地优先；只传 comicId = 可以从网络读
   const readerTarget = ref<{ comic?: Comic; comicId?: number }>()
+  // 小说阅读目标：与 readerTarget 并列的另一套，同一时间只会显示其中一个
+  const novelReaderTarget = ref<NovelReaderTarget>()
   // 官方分类树 + 常用标签：整个会话只拉一次，避免重复请求和选项抖动
   const categoryResp = ref<CategoryResp>()
   // 本地库存读「下载目录」还是「导出目录」
@@ -67,6 +75,26 @@ export const useStore = defineStore('store', () => {
     currentTabName.value = 'search'
   }
 
+  /// 跳到小说页搜这个关键词（点小说的作者名/标签用）
+  function searchNovelsByKeyword(keyword: string) {
+    pendingNovelSearch.value = keyword
+    currentTabName.value = 'novel'
+  }
+
+  /// 在「详情」页签看这本漫画：清掉小说，避免两者抢同一个页签
+  function pickComic(comic: Comic) {
+    pickedComic.value = comic
+    pickedNovel.value = undefined
+    currentTabName.value = 'chapter'
+  }
+
+  /// 在「详情」页签看这本小说：只带列表里那本，详情由页签自己去取
+  function pickNovel(novel: NovelMeta) {
+    pickedNovel.value = novel
+    pickedComic.value = undefined
+    currentTabName.value = 'chapter'
+  }
+
   /// 打开阅读器：设置里开了「阅读器独立窗口」就开新窗口，否则用现在这种内嵌浮层
   function openReader(target: { comic?: Comic; comicId?: number }) {
     if (config.value?.splitReader === true) {
@@ -74,6 +102,21 @@ export const useStore = defineStore('store', () => {
       return
     }
     readerTarget.value = target
+  }
+
+  /// 打开小说阅读器：和漫画一样，开了「阅读器独立窗口」就走独立窗口。
+  /// 后端只会把漫画目标推给阅读窗口，小说的目标写进 localStorage 让阅读窗口自己取；
+  /// 独立窗口没开成功（后端拒绝空目标等）就退回内嵌浮层，保证点章节一定有反应
+  async function openNovelReader(target: NovelReaderTarget) {
+    if (config.value?.splitReader === true) {
+      setPendingNovelTarget(target)
+      const result = await commands.openReaderWindow({ comic: null, comicId: null })
+      if (result.status === 'error') {
+        novelReaderTarget.value = target
+      }
+      return
+    }
+    novelReaderTarget.value = target
   }
 
   function setLocalLibrarySource(source: LocalLibrarySource) {
@@ -169,9 +212,14 @@ export const useStore = defineStore('store', () => {
     config,
     userProfile,
     pickedComic,
+    pickedNovel,
+    pickComic,
+    pickNovel,
     currentTabName,
     pendingSearch,
+    pendingNovelSearch,
     searchByKeyword,
+    searchNovelsByKeyword,
     progresses,
     exportProgresses,
     getFavoriteResult,
@@ -184,6 +232,8 @@ export const useStore = defineStore('store', () => {
     downloadedComics,
     readerTarget,
     openReader,
+    novelReaderTarget,
+    openNovelReader,
     categoryResp,
     localLibrarySource,
     setLocalLibrarySource,

@@ -11,8 +11,10 @@ const props = withDefaults(
     prefix?: boolean
     /// 卡片是"Ctrl 多选"的列表时打开：按住 Ctrl 时作者名不跳搜索，交给卡片去勾选
     ctrlSelects?: boolean
+    /// 作者属于小说时跳小说页搜索，其余（漫画）跳搜索页
+    target?: 'comic' | 'novel'
   }>(),
-  { prefix: true, ctrlSelects: false },
+  { prefix: true, ctrlSelects: false, target: 'comic' },
 )
 
 const store = useStore()
@@ -28,6 +30,10 @@ function searchAuthor(name: string, event: MouseEvent) {
     return
   }
   event.stopPropagation()
+  if (props.target === 'novel') {
+    store.searchNovelsByKeyword(name)
+    return
+  }
   store.searchByKeyword(name)
 }
 </script>

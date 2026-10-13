@@ -17,6 +17,7 @@ import { useI18n } from '../i18n.ts'
 import FavoriteButton from '../components/FavoriteButton.vue'
 import LoadingSpinner from '../components/LoadingSpinner.vue'
 import CommentDrawer from './CommentDrawer.vue'
+import type { CommentTarget } from '../comments/useComments.ts'
 
 // 传 comic 表示本地库存（本地优先），只传 comicId 表示可以从网络读
 const props = defineProps<{ comic?: Comic; comicId?: number; keepSessionOnUnmount?: boolean }>()
@@ -39,6 +40,10 @@ const isFavorite = ref<boolean>(false)
 const commentDrawerShowing = ref<boolean>(false)
 /// 评论用的漫画 id：本地库存走 comic.id，在线阅读走 comicId
 const commentComicId = computed(() => props.comicId ?? props.comic?.id)
+/// 评论抽屉的目标；拿不到 id（都不传）就没有评论可看
+const commentTarget = computed<CommentTarget | undefined>(() =>
+  commentComicId.value === undefined ? undefined : { kind: 'comic', id: commentComicId.value },
+)
 
 let closed = true
 
@@ -706,9 +711,9 @@ onBeforeUnmount(() => {
 
     <!-- 评论抽屉：自下而上弹出 -->
     <CommentDrawer
-      v-if="commentComicId !== undefined"
+      v-if="commentTarget !== undefined"
       v-model:showing="commentDrawerShowing"
-      :comic-id="commentComicId" />
+      :target="commentTarget" />
   </div>
 </template>
 

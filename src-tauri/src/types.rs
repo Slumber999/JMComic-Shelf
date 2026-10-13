@@ -8,9 +8,13 @@ mod favorite_sort;
 mod get_favorite_result;
 mod get_weekly_result;
 mod log_metadata;
+mod novel;
 mod proxy_mode;
 mod search_result;
 mod search_sort;
+mod sign_in_result;
+mod sign_status;
+mod watch_history;
 
 pub use category::*;
 pub use chapter_info::*;
@@ -22,9 +26,13 @@ pub use favorite_sort::*;
 pub use get_favorite_result::*;
 pub use get_weekly_result::*;
 pub use log_metadata::*;
+pub use novel::*;
 pub use proxy_mode::*;
 pub use search_result::*;
 pub use search_sort::*;
+pub use sign_in_result::*;
+pub use sign_status::*;
+pub use watch_history::*;
 
 use serde::{Deserialize, Serialize};
 use specta::Type;

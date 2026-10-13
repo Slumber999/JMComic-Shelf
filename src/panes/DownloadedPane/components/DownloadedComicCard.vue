@@ -37,8 +37,7 @@ const progressTitle = computed(() =>
 )
 
 function pickComic() {
-  store.pickedComic = props.comic
-  store.currentTabName = 'chapter'
+  store.pickComic(props.comic)
 }
 
 function exportCbz() {

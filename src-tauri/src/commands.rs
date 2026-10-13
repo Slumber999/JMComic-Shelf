@@ -36,7 +36,8 @@ use crate::responses::{
 use crate::storage::{self, StorageStats};
 use crate::types::{
     CategoryResp, ChapterInfo, Comic, ComicInFavorite, ComicInSearch, ComicInWeekly, FavoriteSort,
-    GetFavoriteResult, GetWeeklyResult, LogMetadata, SearchResult, SearchResultVariant, SearchSort,
+    GetFavoriteResult, GetWeeklyResult, LogMetadata, NovelChapter, NovelDetail, NovelPage,
+    SearchResult, SearchResultVariant, SearchSort, SignInResult, SignStatus, WatchHistoryPage,
 };
 use crate::{export, logger, utils};
 
@@ -278,6 +279,34 @@ pub async fn get_user_profile(app: AppHandle) -> CommandResult<GetUserProfileRes
 
 #[tauri::command]
 #[specta::specta]
+#[instrument(level = "error", skip_all)]
+pub async fn get_sign_status(app: AppHandle) -> CommandResult<SignStatus> {
+    let jm_client = app.get_jm_client();
+
+    let status = jm_client
+        .get_sign_status()
+        .await
+        .map_err(|err| CommandError::from("获取签到状态失败", err))?;
+
+    Ok(status)
+}
+
+#[tauri::command]
+#[specta::specta]
+#[instrument(level = "error", skip_all)]
+pub async fn sign_in(app: AppHandle) -> CommandResult<SignInResult> {
+    let jm_client = app.get_jm_client();
+
+    let result = jm_client
+        .sign_in()
+        .await
+        .map_err(|err| CommandError::from("签到失败", err))?;
+
+    Ok(result)
+}
+
+#[tauri::command]
+#[specta::specta]
 #[instrument(
     level = "error",
     skip_all,
@@ -401,6 +430,103 @@ pub async fn get_comments(
         .get_comments(aid, page)
         .await
         .map_err(|err| CommandError::from("获取评论失败", err))
+}
+
+/// 小说评论（只读）：官方 /forum 走 mode=novel + nid，返回结构和漫画评论一致
+#[tauri::command]
+#[specta::specta]
+#[instrument(level = "error", skip_all, fields(nid = nid, page = page))]
+pub async fn get_novel_comments(
+    app: AppHandle,
+    nid: i64,
+    page: i64,
+) -> CommandResult<crate::types::CommentPage> {
+    let jm_client = app.get_jm_client();
+
+    jm_client
+        .get_novel_comments(nid, page)
+        .await
+        .map_err(|err| CommandError::from("获取小说评论失败", err))
+}
+
+/// 浏览记录（只读）：page 从 1 开始，需要登录态
+#[tauri::command]
+#[specta::specta]
+#[instrument(level = "error", skip_all, fields(page = page))]
+pub async fn get_watch_history(app: AppHandle, page: i64) -> CommandResult<WatchHistoryPage> {
+    let jm_client = app.get_jm_client();
+
+    jm_client
+        .get_watch_history(page)
+        .await
+        .map_err(|err| CommandError::from("获取浏览记录失败", err))
+}
+
+/// 删除一条浏览记录：记录 id 就是漫画 id（官方 /watch_list 的 list 元素 id）
+#[tauri::command]
+#[specta::specta]
+#[instrument(level = "error", skip_all, fields(id = id))]
+pub async fn delete_watch_history(app: AppHandle, id: String) -> CommandResult<()> {
+    let jm_client = app.get_jm_client();
+
+    jm_client
+        .delete_watch_history(&id)
+        .await
+        .map_err(|err| CommandError::from("删除浏览记录失败", err))
+}
+
+/// 小说列表：`o` 是排序（"mr" = 最近更新），`page` 从 1 开始
+#[tauri::command]
+#[specta::specta]
+#[instrument(level = "error", skip_all, fields(order = o, page = page))]
+pub async fn get_novel_list(app: AppHandle, o: String, page: i64) -> CommandResult<NovelPage> {
+    let jm_client = app.get_jm_client();
+
+    jm_client
+        .get_novel_list(&o, page)
+        .await
+        .map_err(|err| CommandError::from("获取小说列表失败", err))
+}
+
+#[tauri::command]
+#[specta::specta]
+#[instrument(level = "error", skip_all, fields(nid = nid))]
+pub async fn get_novel_detail(app: AppHandle, nid: String) -> CommandResult<NovelDetail> {
+    let jm_client = app.get_jm_client();
+
+    jm_client
+        .get_novel_detail(&nid)
+        .await
+        .map_err(|err| CommandError::from("获取小说详情失败", err))
+}
+
+/// 小说章节正文：`content` 是 HTML，后端不剥标签，原样返回给前端
+#[tauri::command]
+#[specta::specta]
+#[instrument(level = "error", skip_all, fields(ncid = ncid, lang = lang))]
+pub async fn get_novel_chapter(
+    app: AppHandle,
+    ncid: String,
+    lang: String,
+) -> CommandResult<NovelChapter> {
+    let jm_client = app.get_jm_client();
+
+    jm_client
+        .get_novel_chapter(&ncid, &lang)
+        .await
+        .map_err(|err| CommandError::from("获取小说章节失败", err))
+}
+
+#[tauri::command]
+#[specta::specta]
+#[instrument(level = "error", skip_all, fields(search_query = query))]
+pub async fn search_novels(app: AppHandle, query: String) -> CommandResult<NovelPage> {
+    let jm_client = app.get_jm_client();
+
+    jm_client
+        .search_novels(&query)
+        .await
+        .map_err(|err| CommandError::from("搜索小说失败", err))
 }
 
 #[tauri::command]

@@ -12,10 +12,14 @@ export function userNameOf(comment: Comment): string {
   return nickname === '' ? (comment.username ?? '') : nickname
 }
 
+/// 评论归属：单本漫画 / 单本小说；null 表示全站最新评论。
+/// 漫画和小说走的是不同命令（官方 /forum 的 mode 不同），返回结构一致。
+export type CommentTarget = { kind: 'comic' | 'novel'; id: number }
+
 /// 评论列表的分页加载：全站评论页和阅读器评论抽屉共用这一套加载 / 翻页逻辑。
 /// 页码由调用方持有：全站评论放在 store 里（跳去看漫画再回来接着看），
-/// 抽屉用组件内的 ref（每次打开回到第一页）；comicId 为 null 表示拉全站评论。
-export function useComments(options: { comicId: () => number | null; page: Ref<number> }) {
+/// 抽屉用组件内的 ref（每次打开回到第一页）；target 返回 null 表示拉全站评论。
+export function useComments(options: { target: () => CommentTarget | null; page: Ref<number> }) {
   const loading = ref<boolean>(false)
   const comments = ref<Comment[]>([])
   const total = ref<number>(0)
@@ -27,8 +31,14 @@ export function useComments(options: { comicId: () => number | null; page: Ref<n
       return
     }
 
+    const target = options.target()
     loading.value = true
-    const result = await commands.getComments(options.comicId(), options.page.value)
+    const result =
+      target === null
+        ? await commands.getComments(null, options.page.value)
+        : target.kind === 'novel'
+          ? await commands.getNovelComments(target.id, options.page.value)
+          : await commands.getComments(target.id, options.page.value)
     loading.value = false
 
     if (result.status === 'error') {

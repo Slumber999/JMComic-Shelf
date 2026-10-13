@@ -9,8 +9,8 @@ pub struct Comment {
     /// 评论 id
     #[serde(rename = "CID")]
     pub cid: String,
-    /// 所属漫画 id（全站评论靠它定位来源）
-    #[serde(rename = "AID", default)]
+    /// 所属漫画 id（全站评论靠它定位来源）；小说的评论这里给的是 null
+    #[serde(rename = "AID", default, deserialize_with = "null_to_string")]
     pub aid: String,
     #[serde(default)]
     pub username: String,
@@ -24,8 +24,8 @@ pub struct Comment {
     /// 形如 "Aug 30, 2026"
     #[serde(default)]
     pub addtime: String,
-    /// 父评论 id，"0" 表示主评论
-    #[serde(rename = "parent_CID", default)]
+    /// 父评论 id，"0" 表示主评论；小说的评论这里是 null
+    #[serde(rename = "parent_CID", default, deserialize_with = "null_to_string")]
     pub parent_cid: String,
     /// "1" 表示剧透
     #[serde(default)]
@@ -132,7 +132,40 @@ mod tests {
         assert_eq!(page.list[0].content, "正文");
         assert_eq!(page.list[0].spoiler, "1");
         assert!(page.list[0].replies.is_empty());
+
+        // 小说的评论（mode=novel）里 AID / parent_CID 都是 null，应折成空串
+        let novel_json = r#"{
+            "total": "4",
+            "list": [
+                {
+                    "AID": null,
+                    "CID": "949",
+                    "NID": "94",
+                    "username": "gouging",
+                    "nickname": "",
+                    "content": "<div>正文</div>",
+                    "likes": "0",
+                    "addtime": "Sep 10, 2026",
+                    "parent_CID": null,
+                    "spoiler": "1"
+                }
+            ]
+        }"#;
+
+        let novel_page = serde_json::from_str::<CommentPage>(novel_json).expect("解析小说评论失败");
+        assert_eq!(novel_page.total, 4);
+        assert_eq!(novel_page.list[0].cid, "949");
+        assert!(novel_page.list[0].aid.is_empty());
+        assert!(novel_page.list[0].parent_cid.is_empty());
     }
+}
+
+/// 兼容字符串字段给 null 的情况（小说的评论里 AID / parent_CID 都是 null）
+fn null_to_string<'de, D>(deserializer: D) -> Result<String, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    Ok(Option::<String>::deserialize(deserializer)?.unwrap_or_default())
 }
 
 /// 兼容字段缺失或为 null 的数组

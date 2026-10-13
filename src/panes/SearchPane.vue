@@ -316,8 +316,7 @@ async function search(keyword: string, page: number, sort: SearchSort) {
     await nextTick()
     scrollListToTop(listRef.value)
   } else if ('Comic' in searchResultVariant) {
-    store.pickedComic = searchResultVariant.Comic
-    store.currentTabName = 'chapter'
+    store.pickComic(searchResultVariant.Comic)
   }
 
   searching.value = false

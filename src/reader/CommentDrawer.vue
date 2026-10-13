@@ -4,9 +4,10 @@ import { NButton, NDrawer, NDrawerContent } from 'naive-ui'
 import LoadingSpinner from '../components/LoadingSpinner.vue'
 import { useI18n } from '../i18n.ts'
 import CommentList from '../comments/CommentList.vue'
-import { useComments } from '../comments/useComments.ts'
+import { CommentTarget, useComments } from '../comments/useComments.ts'
 
-const props = defineProps<{ comicId: number }>()
+/// 评论抽屉：漫画和小说共用，target 决定拉哪一边的评论
+const props = defineProps<{ target: CommentTarget }>()
 const showing = defineModel<boolean>('showing', { required: true })
 
 const { t } = useI18n()
@@ -14,14 +15,14 @@ const { t } = useI18n()
 /// 抽屉的页码是组件内的：每次打开都从第一页重新开始
 const page = ref<number>(1)
 const { loading, comments, total, pageCount, loadComments, goToPage } = useComments({
-  comicId: () => props.comicId,
+  target: () => props.target,
   page,
 })
 
-// 每次打开抽屉都重新拉第一页
+// 每次打开抽屉、或换了一本书，都重新拉第一页
 watch(
-  () => showing.value,
-  (visible) => {
+  () => [showing.value, props.target.kind, props.target.id] as const,
+  ([visible]) => {
     if (!visible) {
       return
     }

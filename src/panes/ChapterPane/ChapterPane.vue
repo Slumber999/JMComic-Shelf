@@ -2,9 +2,13 @@
 import { computed, ref, watch } from 'vue'
 import { commands } from '../../bindings.ts'
 import { useStore } from '../../store.ts'
-import { PhBookOpen, PhFolderOpen } from '@phosphor-icons/vue'
+import { PhBookOpen, PhChatCircleDots, PhFolderOpen } from '@phosphor-icons/vue'
 import IconButton from '../../components/IconButton.vue'
 import AuthorLinks from '../../components/AuthorLinks.vue'
+import TagLinks from '../../components/TagLinks.vue'
+import NovelDetail from './components/NovelDetail.vue'
+import CommentDrawer from '../../reader/CommentDrawer.vue'
+import type { CommentTarget } from '../../comments/useComments.ts'
 import ChapterDownloadPanel from './components/ChapterDownloadPanel.vue'
 import ChapterExportPanel from './components/ChapterExportPanel.vue'
 import FavoriteButton from '../../components/FavoriteButton.vue'
@@ -19,6 +23,12 @@ const store = useStore()
 const { t } = useI18n()
 
 const chapterPaneMode = ref<ChapterPaneMode>('download')
+
+/// 详情页的评论抽屉（这本漫画）；浏览历史在顶部页签里
+const commentsShowing = ref<boolean>(false)
+const commentTarget = computed<CommentTarget | undefined>(() =>
+  store.pickedComic === undefined ? undefined : { kind: 'comic', id: store.pickedComic.id },
+)
 
 watch(
   () => store.pickedComic,
@@ -86,7 +96,9 @@ async function showComicDownloadDirInFileManager() {
 
 <template>
   <div class="h-full flex flex-col box-border">
-    <n-empty v-if="store.pickedComic === undefined" :description="t('comic.selectComic')" />
+    <!-- 小说详情和漫画共用这个页签：选中的是小说就整页换成小说详情 -->
+    <novel-detail v-if="store.pickedNovel !== undefined" :novel="store.pickedNovel" />
+    <n-empty v-else-if="store.pickedComic === undefined" :description="t('comic.selectComic')" />
     <template v-else>
       <div class="flex p-2 shrink-0">
         <img
@@ -97,7 +109,7 @@ async function showComicDownloadDirInFileManager() {
         <div class="flex flex-col w-full">
           <span class="font-bold text-lg line-clamp-2">{{ store.pickedComic.name }}</span>
           <author-links class="text-red" :author="store.pickedComic.author" />
-          <span class="text-gray">{{ t('comic.tags') }}{{ store.pickedComic.tags.join(' / ') }}</span>
+          <span class="text-gray"><tag-links :tags="store.pickedComic.tags" /></span>
           <div class="flex items-center gap-2 mt-auto">
             <n-button size="small" type="primary" secondary :title="readTitle" @click="readComic">
               <template #icon>
@@ -113,6 +125,15 @@ async function showComicDownloadDirInFileManager() {
               :is-favorite="store.pickedComic.is_favorite"
               variant="button"
               @favorite-changed="reloadPickedComic" />
+            <!-- 评论入口：就在收藏按钮右边 -->
+            <n-button size="small" @click="commentsShowing = true">
+              <template #icon>
+                <n-icon>
+                  <PhChatCircleDots />
+                </n-icon>
+              </template>
+              {{ t('common.comments') }}
+            </n-button>
             <IconButton
               v-if="store.pickedComic.isDownloaded"
               class="ml-auto"
@@ -134,6 +155,11 @@ async function showComicDownloadDirInFileManager() {
         class="min-h-0"
         v-model:chapter-pane-mode="chapterPaneMode"
         :reload="reloadPickedComic" />
+
+      <CommentDrawer
+        v-if="commentTarget !== undefined"
+        v-model:showing="commentsShowing"
+        :target="commentTarget" />
     </template>
   </div>
 </template>

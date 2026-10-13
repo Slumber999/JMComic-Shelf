@@ -31,7 +31,9 @@ use crate::responses::{
     SearchResp, SearchRespData, ToggleFavoriteRespData,
 };
 use crate::types::{
-    CategoryNode, CategoryResp, CommentPage, FavoriteSort, ProxyMode, SearchSort, SubCategoryNode, TagBlock,
+    CategoryNode, CategoryResp, CommentPage, FavoriteSort, NovelChapter, NovelDetail, NovelPage,
+    ProxyMode, SearchSort, SignInResult, SignStatus, SubCategoryNode, TagBlock, WatchHistoryPage,
+    WatchHistoryDeleteResp,
 };
 use crate::utils;
 
@@ -141,6 +143,13 @@ enum ApiPath {
     GetRanking,
     GetComments,
     ManageFavoriteFolder,
+    Novels,
+    Novel,
+    NovelChapters,
+    SearchNovels,
+    Daily,
+    DailyCheck,
+    WatchList,
 }
 
 impl ApiPath {
@@ -161,6 +170,13 @@ impl ApiPath {
             ApiPath::GetRanking => "/categories/filter/",
             ApiPath::GetComments => "/forum",
             ApiPath::ManageFavoriteFolder => "/favorite_folder",
+            ApiPath::Novels => "/novels",
+            ApiPath::Novel => "/novel",
+            ApiPath::NovelChapters => "/novelchapters",
+            ApiPath::SearchNovels => "/search_novels",
+            ApiPath::Daily => "/daily",
+            ApiPath::DailyCheck => "/daily_chk",
+            ApiPath::WatchList => "/watch_list",
         }
     }
 }
