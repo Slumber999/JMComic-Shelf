@@ -138,6 +138,8 @@ function onCoverPointerEnter(event: PointerEvent) {
           </span>
         </div>
         <div :class="layout === 'list' ? 'flex' : 'flex opacity-0 transition-opacity duration-150 group-hover:opacity-100'">
+          <!-- 调用方自己的操作（历史页的删除）插在左侧，不传就什么都不渲染，收藏夹/本地库存行为不变 -->
+          <slot name="extra-actions" />
           <IconButton
             v-if="comicDownloaded"
             :title="t('comic.openDownloadDir')"

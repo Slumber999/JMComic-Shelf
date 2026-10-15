@@ -25,6 +25,7 @@ import UpdateDownloadedComicsButton from './components/UpdateDownloadedComicsBut
 import UpdateExportedComicsButton from './components/UpdateExportedComicsButton.vue'
 import { useI18n } from '../../i18n.ts'
 import { useLocalTags } from '../../localTags.ts'
+import { splitAuthorNames } from '../../authorNames.ts'
 
 const store = useStore()
 const { t } = useI18n()
@@ -37,37 +38,73 @@ const gridStyle = useGridColumns(listRef, () => store.gridItemWidth)
 const checkedIds = ref<Set<number>>(new Set())
 const { dropdownX, dropdownY, dropdownShowing, dropdownOptions, showDropdown } = useDropdown()
 
-// 标签云：下载目录 + 导出目录共用一份（同一本两个目录都有也只算一次），按出现次数排序
-const selectedTags = ref<string[]>([])
+// 标签云：本地标签（下载目录 + 导出目录共用一份）和收藏的作者是两类 facet，分开取、分开筛
+// 选中的筛选项用前缀区分（tag: / author:），同名也不会串
+const selectedFilters = ref<string[]>([])
 const tagsExpanded = ref<boolean>(false)
 const {
   tags: tagStats,
+  authors: favoriteAuthorItems,
   expanded: tagsShowAll,
   visibleTags,
   hasMoreTags,
   loadLocalTags: reloadTags,
 } = useLocalTags()
 
-function toggleTag(tag: string) {
-  selectedTags.value = selectedTags.value.includes(tag)
-    ? selectedTags.value.filter((item) => item !== tag)
-    : [...selectedTags.value, tag]
+/// 标签云里一共多少项（本地标签 + 收藏的作者）
+const tagCloudCount = computed(() => tagStats.value.length + favoriteAuthorItems.value.length)
+
+function tagFilterKey(name: string): string {
+  return `tag:${name}`
+}
+
+function authorFilterKey(name: string): string {
+  return `author:${name}`
+}
+
+/// 筛选项 key -> 要比漫画的哪个字段：标签比 tags，收藏的作者比 author
+const filterByKey = computed(() => {
+  const filters = new Map<string, { name: string; byAuthor: boolean }>()
+  for (const tag of tagStats.value) {
+    filters.set(tagFilterKey(tag.name), { name: tag.name, byAuthor: false })
+  }
+  for (const author of favoriteAuthorItems.value) {
+    filters.set(authorFilterKey(author.name), { name: author.name, byAuthor: true })
+  }
+  return filters
+})
+
+/// 一项筛选项算不算命中：作者是作者名，要和漫画的 author 比，不能去 tags 里找
+function comicMatchesFilter(comic: Comic, key: string): boolean {
+  const filter = filterByKey.value.get(key)
+  if (filter === undefined) {
+    return false
+  }
+  // 作者字段可能整串带着分隔符，切分后再比，保证单个作者名能对上
+  return filter.byAuthor
+    ? splitAuthorNames(comic.author ?? []).includes(filter.name)
+    : (comic.tags ?? []).includes(filter.name)
+}
+
+function toggleFilter(key: string) {
+  selectedFilters.value = selectedFilters.value.includes(key)
+    ? selectedFilters.value.filter((item) => item !== key)
+    : [...selectedFilters.value, key]
   currentPage.value = 1
 }
 
-// 换目录/更新库存后，把已经不存在标签从筛选里去掉
-watch(tagStats, (stats) => {
-  if (selectedTags.value.length === 0) {
+// 换目录/更新库存、取消收藏作者后，把已经不存在的筛选项从筛选里去掉
+watch([tagStats, favoriteAuthorItems], () => {
+  if (selectedFilters.value.length === 0) {
     return
   }
-  const names = new Set(stats.map((tag) => tag.name))
-  const kept = selectedTags.value.filter((tag) => names.has(tag))
-  if (kept.length !== selectedTags.value.length) {
-    selectedTags.value = kept
+  const kept = selectedFilters.value.filter((key) => filterByKey.value.has(key))
+  if (kept.length !== selectedFilters.value.length) {
+    selectedFilters.value = kept
   }
 })
 
-const PAGE_SIZE = 20
+const PAGE_SIZE = 40
 // 当前页码
 const currentPage = ref<number>(1)
 // 总页数
@@ -77,13 +114,13 @@ const pageCount = computed<number>(() => {
   }
   return Math.ceil(filteredComics.value.length / PAGE_SIZE)
 })
-// 标签筛选后的漫画（没选标签就是全部）
+// 筛选后的漫画（没选就是全部），多个筛选项之间是「且」
 const filteredComics = computed<Comic[]>(() => {
-  if (selectedTags.value.length === 0) {
+  if (selectedFilters.value.length === 0) {
     return store.downloadedComics
   }
   return store.downloadedComics.filter((comic) =>
-    selectedTags.value.every((tag) => comic.tags?.includes(tag)),
+    selectedFilters.value.every((key) => comicMatchesFilter(comic, key)),
   )
 })
 // 当前页的漫画
@@ -348,26 +385,45 @@ function useDropdown() {
         :width="440"
         raw>
         <template #trigger>
-          <n-button class="ml-auto" size="small" quaternary :disabled="tagStats.length === 0">
+          <n-button class="ml-auto" size="small" quaternary :disabled="tagCloudCount === 0">
             <template #icon>
               <n-icon>
                 <PhTag />
               </n-icon>
             </template>
-            {{ t('downloaded.tagCloud', { count: tagStats.length }) }}
+            {{ t('downloaded.tagCloud', { count: tagCloudCount }) }}
           </n-button>
         </template>
         <div class="flex max-h-[60vh] flex-col gap-2 overflow-auto rounded-md bg-white p-3 shadow-lg">
-          <div class="flex flex-wrap items-center gap-1">
-            <n-tag
-              v-for="tag in visibleTags"
-              :key="tag.name"
-              size="small"
-              checkable
-              :checked="selectedTags.includes(tag.name)"
-              @update:checked="toggleTag(tag.name)">
-              {{ tag.name }} {{ tag.count }}
-            </n-tag>
+          <!-- 收藏的作者单独一组：点它筛的是漫画的 author 字段，不是 tags -->
+          <div v-if="favoriteAuthorItems.length > 0" class="flex flex-col gap-1">
+            <span class="text-xs text-gray-500">{{ t('author.favoriteGroup') }}</span>
+            <div class="flex flex-wrap items-center gap-1">
+              <n-tag
+                v-for="author in favoriteAuthorItems"
+                :key="`author-${author.name}`"
+                size="small"
+                checkable
+                :checked="selectedFilters.includes(authorFilterKey(author.name))"
+                @update:checked="toggleFilter(authorFilterKey(author.name))">
+                {{ author.name }}
+              </n-tag>
+            </div>
+          </div>
+
+          <div v-if="tagStats.length > 0" class="flex flex-col gap-1">
+            <span class="text-xs text-gray-500">{{ t('downloaded.localTags') }}</span>
+            <div class="flex flex-wrap items-center gap-1">
+              <n-tag
+                v-for="tag in visibleTags"
+                :key="tag.name"
+                size="small"
+                checkable
+                :checked="selectedFilters.includes(tagFilterKey(tag.name))"
+                @update:checked="toggleFilter(tagFilterKey(tag.name))">
+                {{ tag.name }} {{ tag.count }}
+              </n-tag>
+            </div>
           </div>
           <div class="flex items-center gap-2">
             <n-button
@@ -377,11 +433,11 @@ function useDropdown() {
               @click="tagsShowAll = !tagsShowAll">
               {{ tagsShowAll ? t('common.collapse') : t('search.expandAllLocal', { count: tagStats.length }) }}
             </n-button>
-            <template v-if="selectedTags.length > 0">
+            <template v-if="selectedFilters.length > 0">
               <span class="text-xs text-gray-500">
                 {{ t('downloaded.filteredCount', { count: filteredComics.length }) }}
               </span>
-              <n-button size="small" quaternary type="error" @click="selectedTags = []">
+              <n-button size="small" quaternary type="error" @click="selectedFilters = []">
                 {{ t('search.resetFilters') }}
               </n-button>
             </template>

@@ -20,6 +20,7 @@ use tracing_subscriber::{
 };
 
 use crate::{
+    errors::human_message,
     events::LogEvent,
     extensions::{AppHandleExt, EyreReportToMessage},
 };
@@ -30,7 +31,7 @@ struct LogEventWriter {
 
 impl Write for LogEventWriter {
     fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
-        let json_raw = String::from_utf8_lossy(buf).to_string();
+        let json_raw = ui_brief(&String::from_utf8_lossy(buf));
         let _ = LogEvent { json_raw }.emit(&self.app);
         Ok(buf.len())
     }
@@ -38,6 +39,34 @@ impl Write for LogEventWriter {
     fn flush(&mut self) -> std::io::Result<()> {
         Ok(())
     }
+}
+
+/// 前端拿到这条日志会直接弹通知。后台任务的错误日志里 message 是 eyre 报告的 Debug
+/// 文本（带 Location / SpanTrace 和整条原因链），整段弹给用户等于没说；
+/// 只在这一路换成「人话」，文件和控制台日志保持原样。
+fn ui_brief(json_raw: &str) -> String {
+    // 报告转储才会带上这两个标记，普通日志不做 JSON 解析
+    if !json_raw.contains("Location:") && !json_raw.contains("SpanTrace:") {
+        return json_raw.to_string();
+    }
+
+    let Ok(mut event) = serde_json::from_str::<serde_json::Value>(json_raw) else {
+        return json_raw.to_string();
+    };
+    let Some(message) = event
+        .get("fields")
+        .and_then(|fields| fields.get("message"))
+        .and_then(serde_json::Value::as_str)
+    else {
+        return json_raw.to_string();
+    };
+
+    let brief = human_message(message);
+    if brief == message {
+        return json_raw.to_string();
+    }
+    event["fields"]["message"] = serde_json::Value::String(brief);
+    event.to_string()
 }
 
 struct LogEventWriterFactory {

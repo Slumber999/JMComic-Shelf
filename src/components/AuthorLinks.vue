@@ -2,6 +2,7 @@
 import { computed } from 'vue'
 import { useStore } from '../store.ts'
 import { useI18n } from '../i18n.ts'
+import { splitAuthorNames } from '../authorNames.ts'
 
 const { t } = useI18n()
 
@@ -19,11 +20,8 @@ const props = withDefaults(
 
 const store = useStore()
 
-/// 本地元数据里作者是数组，接口返回的是字符串（多个作者用逗号隔开）
-const authors = computed(() => {
-  const raw = Array.isArray(props.author) ? props.author : props.author.split(/[,，]/)
-  return raw.map((name) => name.trim()).filter((name) => name !== '')
-})
+/// 作者字段可能是字符串（多个作者用 / 或 , 隔开）也可能是数组，统一拆成单个作者名
+const authors = computed(() => splitAuthorNames(props.author))
 
 function searchAuthor(name: string, event: MouseEvent) {
   if (props.ctrlSelects && (event.ctrlKey || event.metaKey)) {

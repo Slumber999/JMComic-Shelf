@@ -23,7 +23,7 @@ use crate::{
     },
     events::ExportCbzEvent,
     export::manager::{ExportTask, ExportTaskKind, ExportTaskState},
-    extensions::AppHandleExt,
+    extensions::{AppHandleExt, EyreReportToMessage},
     jm_client::IMAGE_DOMAIN,
     types::{ChapterInfo, Comic, ComicInfo, DownloadFormat},
     utils,
@@ -94,7 +94,7 @@ pub async fn export_cbz_without_download(
             Ok(comic) => comic,
             Err(err) => {
                 let err_title = format!("获取ID为`{comic_id}`的漫画失败，已跳过");
-                tracing::error!(err_title, message = format!("{err:?}"));
+                tracing::error!(err_title, message = err.to_message());
                 sleep(Duration::from_secs(interval_sec)).await;
                 continue;
             }
@@ -119,7 +119,7 @@ pub async fn export_cbz_without_download(
 
         if let Err(err) = export_comic_cbz(&app, &comic, img_concurrency, &task, skip_mode, None).await {
             let err_title = format!("漫画`{}`导出cbz失败", comic.name);
-            tracing::error!(err_title, message = format!("{err:?}"));
+            tracing::error!(err_title, message = err.to_message());
             task.set_state(ExportTaskState::Failed);
         }
 
@@ -233,7 +233,7 @@ pub async fn export_cbz_chapters_without_download(
     .await
     {
         let err_title = format!("漫画{}导出指定章节cbz失败", comic.name);
-        tracing::error!(err_title, message = format!("{err:?}"));
+        tracing::error!(err_title, message = err.to_message());
         task.set_state(ExportTaskState::Failed);
         return Err(err);
     }
@@ -268,7 +268,7 @@ async fn export_comic_cbz(
     // 导出目录也写一份元数据，这样「本地库存」可以直接读导出目录
     if let Err(err) = comic.save_metadata_to_dir(&comic_export_dir) {
         let err_title = format!("漫画`{}`写入导出目录元数据失败", comic.name);
-        tracing::error!(err_title, message = format!("{err:?}"));
+        tracing::error!(err_title, message = err.to_message());
     }
     // 导出目录内容变了，本地库索引（本地标签云等）要重建
     crate::local_index::invalidate();
@@ -299,7 +299,7 @@ async fn export_comic_cbz(
     // 封面失败不影响章节导出
     if let Err(err) = download_cover(app, comic, &cbz_dir).await {
         let err_title = format!("漫画`{}`下载封面失败", comic.name);
-        tracing::error!(err_title, message = format!("{err:?}"));
+        tracing::error!(err_title, message = err.to_message());
     }
 
     let sem = Arc::new(Semaphore::new(img_concurrency.max(1)));
@@ -353,7 +353,7 @@ async fn export_comic_cbz(
                 } else {
                     failed_chapters += 1;
                     let err_title = format!("章节`{chapter_title}`导出cbz失败");
-                    tracing::error!(err_title, message = format!("{err:?}"));
+                    tracing::error!(err_title, message = err.to_message());
                     emit_progress(app, &uuid, index + 1, None, None, Some(chapter_title));
                 }
             }

@@ -18,7 +18,7 @@ use tracing::instrument;
 
 use crate::{
     downloader::download_img_task::{calculate_block_num, decode_and_encode_img},
-    extensions::{AppHandleExt, PathIsImg},
+    extensions::{AppHandleExt, EyreReportToMessage, PathIsImg},
     jm_client::IMAGE_DOMAIN,
 };
 
@@ -565,7 +565,11 @@ pub fn handle_request(app: &AppHandle, path: &str) -> tauri::http::Response<Vec<
             image_response(bytes.to_vec(), content_type)
         }
         Err(err) => {
-            tracing::error!("读取页面失败: {err:?}");
+            // 在线阅读取图失败：err_title 当通知标题，message 里是完整报告，
+            // 发给前端时会换成一句人话（见 logger::ui_brief）
+            let err_title = "读取页面失败";
+            let message = err.to_message();
+            tracing::error!(err_title, message);
             not_found("read page failed")
         }
     }

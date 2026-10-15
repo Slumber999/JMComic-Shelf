@@ -6,6 +6,7 @@ import { PhBookOpen, PhChatCircleDots, PhFolderOpen } from '@phosphor-icons/vue'
 import IconButton from '../../components/IconButton.vue'
 import AuthorLinks from '../../components/AuthorLinks.vue'
 import TagLinks from '../../components/TagLinks.vue'
+import FavoriteAuthorButton from '../../components/FavoriteAuthorButton.vue'
 import NovelDetail from './components/NovelDetail.vue'
 import CommentDrawer from '../../reader/CommentDrawer.vue'
 import type { CommentTarget } from '../../comments/useComments.ts'
@@ -108,7 +109,11 @@ async function showComicDownloadDirInFileManager() {
           referrerpolicy="no-referrer" />
         <div class="flex flex-col w-full">
           <span class="font-bold text-lg line-clamp-2">{{ store.pickedComic.name }}</span>
-          <author-links class="text-red" :author="store.pickedComic.author" />
+          <!-- 作者行：收藏作者是纯本地功能，文字按钮跟在作者名后面，不撑高这一行 -->
+          <div class="flex items-center gap-2">
+            <author-links class="text-red" :author="store.pickedComic.author" />
+            <favorite-author-button :author="store.pickedComic.author" />
+          </div>
           <span class="text-gray"><tag-links :tags="store.pickedComic.tags" /></span>
           <div class="flex items-center gap-2 mt-auto">
             <n-button size="small" type="primary" secondary :title="readTitle" @click="readComic">

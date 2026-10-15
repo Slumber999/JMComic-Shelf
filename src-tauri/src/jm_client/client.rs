@@ -880,7 +880,6 @@ impl JmClient {
         }
 
         let candidates = lines::image_line_candidates(host);
-        let mut errors = Vec::with_capacity(candidates.len());
         for domain in &candidates {
             let target = if *domain == host {
                 url.to_string()
@@ -893,19 +892,21 @@ impl JmClient {
                     return Ok(result);
                 }
                 Err(err) => {
-                    let message = err.to_string();
-                    tracing::warn!(domain = *domain, message, "图片线路失败，自动换下一条");
+                    // 每条线路的失败原因单独留一条 warn，聚合错误只给人话
+                    tracing::warn!(
+                        domain = *domain,
+                        message = %err,
+                        "图片线路失败，自动换下一条"
+                    );
                     lines::mark_image_line_failed(domain);
-                    let brief = message.lines().next().unwrap_or("未知错误").to_string();
-                    errors.push(format!("{domain}: {brief}"));
                 }
             }
         }
 
+        // 每条线路的失败原因上面已经逐条 warn 过了，这里只给用户一句能照着做的话
         Err(eyre!(
-            "图片线路全部失败（已尝试{}条）: {}",
-            candidates.len(),
-            errors.join("; ")
+            "图片线路全部失败（已尝试{}条）：请到设置里换一条图片线路，或检查代理是否正常",
+            candidates.len()
         ))
     }
 

@@ -21,6 +21,7 @@ use crate::reader_window::{
     READER_WINDOW_LABEL,
 };
 
+mod comic_tags;
 mod commands;
 mod config;
 mod covers;
@@ -103,6 +104,9 @@ pub fn run() {
             build_favorites_index,
             update_favorites_index,
             remove_from_favorites_index,
+            get_favorites_tags,
+            fetch_comic_tags,
+            get_comic_tags,
             get_weekly_info,
             get_weekly,
             get_user_profile,

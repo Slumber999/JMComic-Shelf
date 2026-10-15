@@ -259,6 +259,36 @@ async removeFromFavoritesIndex(comicId: number) : Promise<Result<null, CommandEr
     else return { status: "error", error: e  as any };
 }
 },
+/**
+ * 收藏夹的标签快照：标签云（按出现次数倒序）+ 已经取到标签的每本漫画
+ * - 纯本地读缓存，不发请求；没缓存过的本不参与统计
+ */
+async getFavoritesTags(folderId: number) : Promise<FavoritesTagsSnapshot> {
+    return await TAURI_INVOKE("get_favorites_tags", { folderId });
+},
+/**
+ * 给这些漫画补标签：最多请求 limit 本（并发 8）
+ * - 已经在缓存里、或本地元数据里就有标签的本，一次请求都不发
+ */
+async fetchComicTags(comicIds: number[], limit: number) : Promise<Result<FetchComicTagsResult, CommandError>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("fetch_comic_tags", { comicIds, limit }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+/**
+ * 一本漫画的标签：缓存优先（收藏夹标签筛选和多关键词搜索共用这一份缓存）
+ */
+async getComicTags(comicId: number) : Promise<Result<string[], CommandError>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("get_comic_tags", { comicId }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
 async getWeeklyInfo() : Promise<Result<GetWeeklyInfoRespData, CommandError>> {
     try {
     return { status: "ok", data: await TAURI_INVOKE("get_weekly_info") };
@@ -899,6 +929,10 @@ export type ExportTaskState = "Exporting" | "Paused" | "Completed" | "Failed"
 export type FavoriteFolderRespData = { FID: string; UID: string; name: string }
 export type FavoriteSort = "FavoriteTime" | "UpdateTime"
 /**
+ * 标签缓存里的一本漫画的标签
+ */
+export type FavoritesComicTags = { id: number; tags: string[] }
+/**
  * 一个收藏夹层的索引，comics 按收藏时间倒序
  */
 export type FavoritesFolderIndex = { folderName: string; 
@@ -910,6 +944,22 @@ updatedAt: string; total: number; comics: FavoritesIndexComic[] }
  * 索引里的一本漫画：只留搜索要用的三个字段
  */
 export type FavoritesIndexComic = { id: number; name: string; author: string }
+/**
+ * 收藏夹的标签快照：标签云（按出现次数倒序）+ 已经取到标签的每本漫画
+ */
+export type FavoritesTagsSnapshot = { tags: LocalTag[]; comics: FavoritesComicTags[]; 
+/**
+ * 该收藏夹索引里的漫画总数
+ */
+total: number; 
+/**
+ * 其中已经取到标签的本数
+ */
+cached: number }
+/**
+ * 补标签的结果：pending 是这批漫画里这次调用后仍没有标签的本数，前端据此报进度
+ */
+export type FetchComicTagsResult = { fetched: number; failed: number; pending: number }
 export type GetFavoriteResult = { list: ComicInFavorite[]; folderList: FavoriteFolderRespData[]; total: number; count: number }
 export type GetUserProfileRespData = { uid: string; username: string; email: string; emailverified: string; photo: string; fname: string; gender: string; message: string | null; coin: number; album_favorites: number; s: string; level_name: string; level: number; nextLevelExp: number; exp: string; expPercent: number; album_favorites_max: number; ad_free: boolean; charge: string; jar: string; invitation_qrcode: string; invitation_url: string; invited_cnt: string }
 export type GetWeeklyInfoRespData = { categories: CategoryInWeeklyInfo[]; type: WeeklyType[] }

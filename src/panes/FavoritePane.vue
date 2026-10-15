@@ -1,7 +1,15 @@
 <script setup lang="ts">
-import { computed, h, nextTick, onBeforeUnmount, ref, watch } from 'vue'
+import { computed, h, nextTick, onBeforeUnmount, ref, shallowRef, watch } from 'vue'
 import { showError } from '../errors.ts'
-import { commands, ComicInFavorite, FavoritesFolderIndex, FavoriteSort } from '../bindings.ts'
+import {
+  commands,
+  ComicInFavorite,
+  FavoritesFolderIndex,
+  FavoritesIndexComic,
+  FavoriteSort,
+  GetFavoriteResult,
+  LocalTag,
+} from '../bindings.ts'
 import { scrollListToTop } from '../listScroll.ts'
 import {
   DropdownOption,
@@ -22,7 +30,7 @@ import AuthorLinks from '../components/AuthorLinks.vue'
 import { localCoverUrl } from '../reader/protocol.ts'
 import { useStore } from '../store.ts'
 import DownloadAllFavoriteButton from '../components/DownloadAllFavoriteButton.vue'
-import { PhArrowClockwise, PhCaretDown, PhCheckCircle, PhCircle, PhDownloadSimple, PhFileZip, PhMagnifyingGlass } from '@phosphor-icons/vue'
+import { PhArrowClockwise, PhCaretDown, PhCheckCircle, PhCircle, PhDownloadSimple, PhFileZip, PhMagnifyingGlass, PhTag } from '@phosphor-icons/vue'
 import { useI18n } from '../i18n.ts'
 
 const store = useStore()
@@ -61,6 +69,11 @@ const listPageCount = ref<number>(0)
 const listBottomReached = ref<boolean>(false)
 const busy = ref<boolean>(false)
 
+/// 展示层每页 40 条（卡片模式）
+const PAGE_SIZE = 40
+/// 服务端 get_favorite_folder 每页固定约 20 条，所以一页 40 条要并发取两个服务端页
+const SERVER_PAGES_PER_PAGE = 2
+
 const dialog = useDialog()
 
 /// 搜索索引：当前收藏夹本地索引的缓存，换收藏夹/排序时清空后重读
@@ -71,15 +84,46 @@ const indexBuilding = ref<boolean>(false)
 const syncing = ref<boolean>(false)
 const keyword = ref<string>('')
 
-/// 搜索命中：关键词为空时返回 undefined，表示照常显示原列表；没有索引就是空结果
-const searchHits = computed(() => {
+/// 标签云默认只展示前 N 个，剩下的折在「展开全部」后面
+const TAG_PREVIEW_COUNT = 30
+/// 一次「筛选 / 继续核对」最多核对多少本（和多关键词搜索的核对上限一致）
+const TAG_CHECK_BUDGET = 240
+/// 分小批回报进度：一小批核对完就刷新结果和进度，不用干等整轮
+const TAG_CHECK_CHUNK = 60
+/// 官方标签结果集最多翻多少页；翻不到结尾就说明不完整，不能拿来排除漫画
+const OFFICIAL_TAG_MAX_PAGES = 12
+/// 官方搜索每页条数
+const OFFICIAL_PAGE_SIZE = 80
+
+/// 常用标签抽屉：默认收起，触发筛选后自动收起
+const tagsExpanded = ref<boolean>(false)
+/// 抽屉里正在勾选的标签（单选多选都行，多选 = 同时包含）
+const tagSelection = ref<Set<string>>(new Set())
+/// 已经生效的筛选标签（点「筛选」时提交）
+const appliedTags = ref<string[]>([])
+/// 标签云：只统计已取到标签的漫画，按出现次数倒序
+const favoriteTags = shallowRef<LocalTag[]>([])
+const tagsShowAll = ref<boolean>(false)
+/// comicId -> 标签（后端持久化，收藏夹筛选和多关键词搜索共用这一份）
+const comicTags = shallowRef<Map<number, string[]>>(new Map())
+/// 索引里的漫画总数 / 其中已经取到标签的本数
+const tagTotal = ref<number>(0)
+const tagCached = ref<number>(0)
+/// 正在核对标签
+const tagChecking = ref<boolean>(false)
+const tagCheckCancelled = ref<boolean>(false)
+const tagCheckFailed = ref<number>(0)
+/// 本会话里已经确认过「首次核对」代价的收藏夹
+const tagCheckConfirmed = new Set<number>()
+/// 官方标签结果集：tag -> { ids, complete }；complete=翻到了结尾，可以零请求排除漫画
+const officialTagSets = shallowRef<Map<string, { ids: Set<number>; complete: boolean }>>(new Map())
+
+/// 关键词过滤后的索引条目
+const keywordComics = computed<FavoritesIndexComic[]>(() => {
+  const comics = favoritesIndex.value?.comics ?? []
   const kw = keyword.value.trim().toLowerCase()
   if (kw === '') {
-    return undefined
-  }
-  const comics = favoritesIndex.value?.comics
-  if (comics === undefined) {
-    return []
+    return comics
   }
   return comics.filter(
     (comic) =>
@@ -89,9 +133,89 @@ const searchHits = computed(() => {
   )
 })
 
+/// 官方标签结果集完整翻过、这本却不在里面：它一定没有这个标签，零请求排除
+function isExcludedByOfficial(comicId: number, tags: string[]): boolean {
+  for (const tag of tags) {
+    const official = officialTagSets.value.get(tag)
+    if (official !== undefined && official.complete && !official.ids.has(comicId)) {
+      return true
+    }
+  }
+  return false
+}
+
+/// 标签筛选的候选：关键词过滤后，再用官方标签结果集排掉肯定没有该标签的本
+const tagCandidates = computed<FavoritesIndexComic[]>(() => {
+  const tags = appliedTags.value
+  if (tags.length === 0) {
+    return keywordComics.value
+  }
+  return keywordComics.value.filter((comic) => !isExcludedByOfficial(comic.id, tags))
+})
+
+/// 候选里还没有标签可判定的本：这些才要逐本请求详情
+const tagUnknownComics = computed<FavoritesIndexComic[]>(() => {
+  if (appliedTags.value.length === 0) {
+    return []
+  }
+  return tagCandidates.value.filter((comic) => comicTags.value.get(comic.id) === undefined)
+})
+
+/// 标签命中：已有的标签同时包含所有选中标签（多选 = AND）
+const tagHitComics = computed<FavoritesIndexComic[]>(() => {
+  const tags = appliedTags.value
+  if (tags.length === 0) {
+    return tagCandidates.value
+  }
+  return tagCandidates.value.filter((comic) => {
+    const own = comicTags.value.get(comic.id)
+    return own !== undefined && tags.every((tag) => own.includes(tag))
+  })
+})
+
+/// 关键词和标签任一非空就算在筛选
+const filterActive = computed(() => keyword.value.trim() !== '' || appliedTags.value.length > 0)
+
+/// 命中列表；没筛选时返回 undefined，表示照常显示服务端那一页
+const filteredIndexComics = computed<FavoritesIndexComic[] | undefined>(() =>
+  filterActive.value ? tagHitComics.value : undefined,
+)
+
+/// 这次要核对哪些本：选了标签就是候选里没核对过的，没选标签（先攒标签）就是整层里缺标签的
+const tagCheckQueue = computed<FavoritesIndexComic[]>(() => {
+  if (appliedTags.value.length > 0) {
+    return tagUnknownComics.value
+  }
+  return (favoritesIndex.value?.comics ?? []).filter(
+    (comic) => comicTags.value.get(comic.id) === undefined,
+  )
+})
+
+const visibleFavoriteTags = computed(() =>
+  tagsShowAll.value ? favoriteTags.value : favoriteTags.value.slice(0, TAG_PREVIEW_COUNT),
+)
+const hasMoreFavoriteTags = computed(() => favoriteTags.value.length > TAG_PREVIEW_COUNT)
+
+/// 进度必须说人话：没选标签时报「攒了多少」，选了标签时报「核对了多少、命中多少」
+const tagProgressText = computed(() => {
+  if (appliedTags.value.length === 0) {
+    return t('favorite.tags.fetching', { done: tagCached.value, total: tagTotal.value })
+  }
+  const total = tagCandidates.value.length
+  const hits = tagHitComics.value.length
+  if (tagUnknownComics.value.length === 0) {
+    return t('favorite.tags.checkDone', { total, hits })
+  }
+  return t('favorite.tags.checkProgress', {
+    checked: total - tagUnknownComics.value.length,
+    total,
+    hits,
+  })
+})
+
 /// 索引里只有编号/标题/作者，其余字段按默认值补齐（空下载目录会回落到在线封面）
 const displayedComics = computed<ComicInFavorite[]>(() => {
-  const hits = searchHits.value
+  const hits = filteredIndexComics.value
   if (hits === undefined) {
     return store.getFavoriteResult?.list ?? []
   }
@@ -113,7 +237,7 @@ const displayedComics = computed<ComicInFavorite[]>(() => {
 
 /// 长列表模式按同一批命中的 id 过滤（只过滤已经加载出来的那部分）
 const listModeComics = computed(() => {
-  const hits = searchHits.value
+  const hits = filteredIndexComics.value
   if (hits === undefined) {
     return allComics.value
   }
@@ -121,20 +245,18 @@ const listModeComics = computed(() => {
   return allComics.value.filter((comic) => ids.has(comic.id))
 })
 
-/// 长列表头部计数：搜索时跟着命中数走
+/// 长列表头部计数：筛选时跟着命中数走
 const listModeCount = computed(() =>
-  searchHits.value === undefined
+  filteredIndexComics.value === undefined
     ? listTotal.value || Number(store.getFavoriteResult?.total ?? 0)
     : listModeComics.value.length,
 )
 
 const favoritePageCount = computed(() => {
-  const PAGE_SIZE = 20
   if (store.getFavoriteResult === undefined) {
     return 0
   }
-  const total = store.getFavoriteResult.total
-  return Math.ceil(total / PAGE_SIZE)
+  return Math.ceil(store.getFavoriteResult.total / PAGE_SIZE)
 })
 const folderOptions = computed<SelectProps['options']>(() => [
   { label: t('favorite.allFolders'), value: 0 },
@@ -155,9 +277,13 @@ watch(
       return
     }
     await getFavourite(0, 1, 'FavoriteTime')
-    // 换账号就是另一份索引文件，缓存和关键词都要重来
+    // 换账号就是另一份索引文件，缓存、关键词和标签都要重来
     clearIndexSearch()
+    tagCheckConfirmed.clear()
     await loadFavoritesIndex()
+    if (favoritesIndex.value !== null) {
+      await loadFavoriteTags()
+    }
   },
   { immediate: true },
 )
@@ -171,14 +297,34 @@ async function getFavourite(folderId: number, page: number, sort: FavoriteSort) 
   // 切换文件夹/排序后，长列表缓存失效
   resetListPaging()
   loading.value = true
-  const result = await commands.getFavoriteFolder(folderId, page, sort)
+  // 一页 40 条 = 服务端两页（每页约 20 条）：两页并发发出，再按页序拼起来
+  const firstServerPage = (page - 1) * SERVER_PAGES_PER_PAGE + 1
+  const results = await Promise.all(
+    Array.from({ length: SERVER_PAGES_PER_PAGE }, (_, index) =>
+      commands.getFavoriteFolder(folderId, firstServerPage + index, sort),
+    ),
+  )
   loading.value = false
-  if (result.status === 'error') {
-    console.error(result.error)
-    showError(result.error)
+  const pages: GetFavoriteResult[] = []
+  for (const result of results) {
+    if (result.status === 'error') {
+      console.error(result.error)
+      showError(result.error)
+      return
+    }
+    pages.push(result.data)
+  }
+  const firstPage = pages[0]
+  if (firstPage === undefined) {
     return
   }
-  store.getFavoriteResult = result.data
+  // 越界页码会被服务端当成最后一页返回，按 id 去重，避免同一本重复出现
+  const seenIds = new Set<number>()
+  const list = pages
+    .flatMap((data) => data.list)
+    .filter((comic) => (seenIds.has(comic.id) ? false : (seenIds.add(comic.id), true)))
+  // count 仍是服务端的每页条数（索引规模估算要用它），只有 list 是合并后的
+  store.getFavoriteResult = { ...firstPage, list }
 
   // 列表模式下换了收藏夹/排序：接着把新收藏夹的第一批取回来
   if (listMode.value) {
@@ -193,11 +339,14 @@ async function changePage(page: number) {
   scrollListToTop(listRef.value)
 }
 
-/// 换收藏夹/排序：索引缓存和关键词一起作废，再读一次新收藏夹的索引
+/// 换收藏夹/排序：索引缓存、关键词和标签一起作废，再读一次新收藏夹的
 async function changeFilter(folderId: number, sort: FavoriteSort) {
   await getFavourite(folderId, 1, sort)
   clearIndexSearch()
   await loadFavoritesIndex()
+  if (favoritesIndex.value !== null) {
+    await loadFavoriteTags()
+  }
   await nextTick()
   scrollListToTop(listRef.value)
 }
@@ -255,10 +404,234 @@ async function loadFavoritesIndex() {
   favoritesIndex.value = await commands.getFavoritesIndex(folderIdSelected.value)
 }
 
-/// 索引缓存和关键词一起作废
+/// 读标签快照：纯本地读缓存文件，不发请求
+async function loadFavoriteTags() {
+  const snapshot = await commands.getFavoritesTags(folderIdSelected.value)
+  favoriteTags.value = snapshot.tags
+  comicTags.value = new Map(snapshot.comics.map((comic) => [comic.id, comic.tags]))
+  tagTotal.value = snapshot.total
+  tagCached.value = snapshot.cached
+}
+
+/// 索引缓存、关键词和标签一起作废
 function clearIndexSearch() {
   keyword.value = ''
   favoritesIndex.value = null
+  appliedTags.value = []
+  tagSelection.value = new Set()
+  favoriteTags.value = []
+  comicTags.value = new Map()
+  tagTotal.value = 0
+  tagCached.value = 0
+  tagCheckFailed.value = 0
+  // 换收藏夹/账号了：还在跑的核对立刻停，别让它继续拉旧索引里的漫画
+  tagCheckCancelled.value = true
+  officialTagSets.value = new Map()
+}
+
+/// 展开/收起抽屉：展开时读一次本地缓存，并把已经生效的筛选带进勾选里
+async function toggleTagsDrawer() {
+  tagsExpanded.value = !tagsExpanded.value
+  if (!tagsExpanded.value) {
+    return
+  }
+  if (favoritesIndex.value === null) {
+    // 索引可能已经在配置页建好了，先读一次本地文件再决定
+    await loadFavoritesIndex()
+  }
+  if (favoritesIndex.value === null) {
+    return
+  }
+  await loadFavoriteTags()
+  tagSelection.value = new Set(appliedTags.value)
+}
+
+/// 点一个标签：选中/取消（多选 = 同时包含这些标签）
+function toggleTag(tag: string) {
+  const next = new Set(tagSelection.value)
+  if (next.has(tag)) {
+    next.delete(tag)
+  } else {
+    next.add(tag)
+  }
+  tagSelection.value = next
+}
+
+/// 触发筛选：提交勾选、自动收起抽屉，再按需核对标签
+async function applyTagFilter() {
+  if (tagSelection.value.size > 0 && favoritesIndex.value === null) {
+    message.warning(t('favorite.tags.needIndex'))
+    return
+  }
+
+  appliedTags.value = [...tagSelection.value]
+  tagsExpanded.value = false
+  await nextTick()
+  scrollListToTop(listRef.value)
+
+  if (appliedTags.value.length === 0) {
+    return
+  }
+  // 已经取过的标签立刻能筛出结果，剩下没取过的才要核对
+  await loadFavoriteTags()
+  await startTagCheck()
+}
+
+/// 清空筛选：勾选和已生效的都清掉
+async function clearTagFilter() {
+  tagSelection.value = new Set()
+  appliedTags.value = []
+  tagsExpanded.value = false
+  await nextTick()
+  scrollListToTop(listRef.value)
+}
+
+/// 官方标签结果集整体替换：不用深响应式，省掉上千个 id 的代理开销
+function setOfficialTagSet(tag: string, ids: Set<number>, complete: boolean) {
+  const next = new Map(officialTagSets.value)
+  next.set(tag, { ids, complete })
+  officialTagSets.value = next
+}
+
+/// 官方标签通道：按标签名搜官方，结果集能完整翻完时就能零请求排除「肯定没有这个标签」的漫画
+/// - 官方搜索按关键词命中（标题 / 作者 / 标签），结果集是「有这个标签」的超集，不在里面的可以排除
+/// - 只有翻到结尾（某页不满）才算完整；到页数上限、或一条结果都没有，都不用排除（宁可不加速也不错杀）
+async function resolveOfficialTagSets(tags: string[]) {
+  for (const tag of tags) {
+    if (officialTagSets.value.has(tag)) {
+      continue
+    }
+    setOfficialTagSet(tag, new Set<number>(), false)
+
+    const probe = await commands.search(tag, 1, 'Latest', null, null)
+    if (probe.status === 'error' || !('SearchResult' in probe.data)) {
+      continue
+    }
+    const first = probe.data.SearchResult
+    if (first.content.length === 0 || first.total > OFFICIAL_TAG_MAX_PAGES * OFFICIAL_PAGE_SIZE) {
+      continue
+    }
+
+    const ids = new Set(first.content.map((comic) => comic.id))
+    let complete = first.content.length < OFFICIAL_PAGE_SIZE
+    let page = 1
+    while (!complete && page < OFFICIAL_TAG_MAX_PAGES && !tagCheckCancelled.value) {
+      page += 1
+      const more = await commands.search(tag, page, 'Latest', null, null)
+      if (more.status === 'error' || !('SearchResult' in more.data)) {
+        break
+      }
+      const content = more.data.SearchResult.content
+      content.forEach((comic) => ids.add(comic.id))
+      complete = content.length < OFFICIAL_PAGE_SIZE
+    }
+    setOfficialTagSet(tag, ids, complete)
+  }
+}
+
+/// 首次核对的耗时粗估：并发 8、一本约 0.5 秒
+function tagFetchDuration(count: number): string {
+  const seconds = Math.ceil(count / 16)
+  return seconds <= 90
+    ? t('favorite.tags.durationUnderMinute')
+    : t('favorite.tags.durationMinutes', { minutes: Math.ceil(seconds / 60) })
+}
+
+/// 开始筛选核对：先走官方标签通道收窄，再看还剩多少本要逐本取详情
+async function startTagCheck() {
+  if (tagChecking.value) {
+    return
+  }
+  tagCheckFailed.value = 0
+  tagCheckCancelled.value = false
+  // 官方通道要翻页，这段也得有进度提示（不然点完像卡住了）
+  tagChecking.value = true
+  try {
+    await resolveOfficialTagSets(appliedTags.value)
+  } finally {
+    tagChecking.value = false
+  }
+  await scheduleTagCheck()
+}
+
+/// 继续核对下一批；还没选标签时它就是「先攒一批标签」（同样有上限）
+async function continueTagCheck() {
+  if (tagChecking.value) {
+    return
+  }
+  tagCheckFailed.value = 0
+  tagCheckCancelled.value = false
+  await scheduleTagCheck()
+}
+
+/// 排期：确认过代价就直接跑，否则先把请求量和耗时说清楚
+async function scheduleTagCheck() {
+  const count = tagCheckQueue.value.length
+  if (count === 0) {
+    return
+  }
+  if (tagCheckConfirmed.has(folderIdSelected.value)) {
+    await runTagCheck()
+    return
+  }
+
+  const first = Math.min(count, TAG_CHECK_BUDGET)
+  const scopeKey = count > first ? 'favorite.tags.fetchScopeMore' : 'favorite.tags.fetchScope'
+  dialog.warning({
+    title: t('favorite.tags.fetchTitle'),
+    content: () =>
+      h('div', { class: 'flex flex-col gap-1' }, [
+        h('div', t(scopeKey, { count: first })),
+        h('div', t('favorite.tags.fetchOfficialNote')),
+        h('div', t('favorite.tags.fetchTime', { duration: tagFetchDuration(first) })),
+        h('div', t('favorite.tags.fetchCacheNote')),
+      ]),
+    positiveText: t('favorite.tags.fetchConfirm'),
+    negativeText: t('common.cancel'),
+    onPositiveClick: () => {
+      tagCheckConfirmed.add(folderIdSelected.value)
+      void runTagCheck()
+    },
+  })
+}
+
+/// 分批核对标签：一次最多 TAG_CHECK_BUDGET 本，每小批回报一次进度，可随时停止
+async function runTagCheck() {
+  if (tagChecking.value) {
+    return
+  }
+  tagChecking.value = true
+  try {
+    let budget = TAG_CHECK_BUDGET
+    while (!tagCheckCancelled.value && budget > 0) {
+      const ids = tagCheckQueue.value
+        .slice(0, Math.min(TAG_CHECK_CHUNK, budget))
+        .map((comic) => comic.id)
+      if (ids.length === 0) {
+        break
+      }
+      const result = await commands.fetchComicTags(ids, ids.length)
+      budget -= ids.length
+      if (result.status === 'error') {
+        console.error(result.error)
+        showError(result.error)
+        break
+      }
+      tagCheckFailed.value += result.data.failed
+      await loadFavoriteTags()
+      // 一本都没取到：多半是网络或登录问题，别在这儿无限转
+      if (result.data.fetched === 0) {
+        break
+      }
+    }
+  } finally {
+    tagChecking.value = false
+  }
+}
+
+function cancelTagCheck() {
+  tagCheckCancelled.value = true
+  message.info(t('favorite.tags.fetchStopped'))
 }
 
 /// 首次建立索引的规模估算：页数按接口返回的每页条数折算
@@ -314,6 +687,7 @@ async function buildFavoritesIndex() {
       return
     }
     await loadFavoritesIndex()
+    await loadFavoriteTags()
     message.success(t('favorite.index.built', { total: result.data.total }))
   } finally {
     indexBuilding.value = false
@@ -399,8 +773,8 @@ watch(listMode, async (entering) => {
 
 onBeforeUnmount(stopWatchingListScroll)
 
-/// 一批最多取多少页
-const PAGES_PER_BATCH = 5
+/// 列表模式一批 40 条 = 服务端两页（每页约 20 条），两页并发、按页序接上
+const PAGES_PER_BATCH = 2
 
 /// 取第 page 页，并记下总条数与总页数（越界页会返回最后一页，所以只请求有效页）
 async function fetchFavoritePage(page: number): Promise<ComicInFavorite[] | undefined> {
@@ -441,9 +815,10 @@ async function loadNextBatch(): Promise<boolean> {
       }
     }
 
-    // 只请求到最后一页为止
+    // 首批的第 1 页已经在上面取过，这里补齐到当前批次末页，保证每批 40 条；只请求到最后一页为止
     const firstPage = listPage.value + 1
-    const lastPage = Math.min(firstPage + PAGES_PER_BATCH - 1, listPageCount.value)
+    const batchEnd = (Math.floor(listPage.value / PAGES_PER_BATCH) + 1) * PAGES_PER_BATCH
+    const lastPage = Math.min(batchEnd, listPageCount.value)
     const pageIndexes = Array.from({ length: Math.max(0, lastPage - firstPage + 1) }, (_, index) => index)
     const pages: (ComicInFavorite[] | undefined)[] = new Array(pageIndexes.length)
     let nextToAppend = 0
@@ -652,6 +1027,99 @@ async function exportCbz() {
       </n-button>
     </div>
 
+    <!-- 常用标签抽屉：默认收起，点「筛选」触发后自动收起 -->
+    <div
+      v-if="store.getFavoriteResult !== undefined"
+      class="flex items-center gap-2 flex-wrap box-border px-2">
+      <div
+        class="flex items-center gap-1 text-xs text-gray-500 cursor-pointer select-none"
+        @click="toggleTagsDrawer">
+        <n-icon size="14">
+          <PhTag />
+        </n-icon>
+        <span>{{ t('favorite.tags.header', { count: favoriteTags.length }) }}</span>
+        <span v-if="appliedTags.length > 0" class="text-orange">
+          {{ t('favorite.tags.applied', { count: appliedTags.length }) }}
+        </span>
+        <span class="text-gray-4">{{ tagsExpanded ? t('common.collapse') : t('common.expand') }}</span>
+      </div>
+
+      <span v-if="tagChecking" class="flex items-center gap-1 text-xs text-gray-500">
+        <loading-spinner :size="10" />
+        {{ tagProgressText }}
+        <n-button size="tiny" @click="cancelTagCheck">{{ t('favorite.tags.cancelFetch') }}</n-button>
+      </span>
+      <template v-else-if="appliedTags.length > 0">
+        <span class="text-xs text-gray-500">{{ tagProgressText }}</span>
+        <n-button v-if="tagCheckQueue.length > 0" size="tiny" @click="continueTagCheck">
+          {{ t('favorite.tags.checkMore') }}
+        </n-button>
+      </template>
+      <span v-if="!tagChecking && tagCheckFailed > 0" class="text-xs text-orange">
+        {{ t('favorite.tags.fetchFailed', { count: tagCheckFailed }) }}
+      </span>
+    </div>
+
+    <!-- 抽屉内容：标签按出现次数倒序，显示计数，可单选可多选 -->
+    <div
+      v-if="store.getFavoriteResult !== undefined && tagsExpanded"
+      class="flex flex-col gap-1 box-border px-2">
+      <div v-if="favoritesIndex === null" class="flex items-center gap-2 text-xs text-gray-500">
+        <span>{{ t('favorite.tags.noIndex') }}</span>
+        <n-button size="tiny" @click="onSearchFocus">{{ t('favorite.tags.buildIndex') }}</n-button>
+      </div>
+      <template v-else>
+        <div v-if="favoriteTags.length === 0" class="text-xs text-gray-500">
+          {{ t('favorite.tags.empty') }}
+        </div>
+        <div v-else class="flex flex-wrap items-center gap-1">
+          <n-button
+            v-for="tag in visibleFavoriteTags"
+            :key="tag.name"
+            size="tiny"
+            secondary
+            :type="tagSelection.has(tag.name) ? 'primary' : 'default'"
+            @click="toggleTag(tag.name)">
+            {{ tag.name }}
+            <span class="ml-1 text-[10px] opacity-60">{{ tag.count }}</span>
+          </n-button>
+          <span
+            v-if="hasMoreFavoriteTags"
+            class="text-xs text-gray-4 cursor-pointer select-none hover:text-gray-6"
+            @click="tagsShowAll = !tagsShowAll">
+            {{
+              tagsShowAll
+                ? t('common.collapse')
+                : t('favorite.tags.expandAll', { count: favoriteTags.length })
+            }}
+          </span>
+        </div>
+
+        <div class="flex items-center gap-2 flex-wrap">
+          <n-button size="tiny" type="primary" :disabled="tagSelection.size === 0" @click="applyTagFilter">
+            {{ t('favorite.tags.search') }}
+          </n-button>
+          <n-button
+            size="tiny"
+            :disabled="tagSelection.size === 0 && appliedTags.length === 0"
+            @click="clearTagFilter">
+            {{ t('favorite.tags.clear') }}
+          </n-button>
+          <n-button
+            v-if="tagCheckQueue.length > 0 && appliedTags.length === 0"
+            size="tiny"
+            :loading="tagChecking"
+            @click="continueTagCheck">
+            {{ t('favorite.tags.fetchButton', { count: tagCheckQueue.length }) }}
+          </n-button>
+          <span class="text-xs text-gray-400">
+            {{ t('favorite.tags.cachedCount', { cached: tagCached, total: tagTotal }) }}
+          </span>
+          <span class="text-xs text-gray-400">{{ t('favorite.tags.multiHint') }}</span>
+        </div>
+      </template>
+    </div>
+
     <!-- 选择与批量操作只在列表模式下出现 -->
     <div
       v-if="store.getFavoriteResult !== undefined && listMode"
@@ -686,9 +1154,7 @@ async function exportCbz() {
         <span class="text-sm text-gray-500">{{ t('favorite.loadingFolder') }}</span>
       </div>
 
-      <div
-        v-if="keyword.trim() !== '' && favoritesIndex === null"
-        class="px-2 text-xs text-gray-500">
+      <div v-if="filterActive && favoritesIndex === null" class="px-2 text-xs text-gray-500">
         {{ t('favorite.index.noIndexHint') }}
       </div>
 
@@ -717,13 +1183,13 @@ async function exportCbz() {
         <!-- 搜索时列表换成索引结果：条数跟着结果走，分页先收起来 -->
         <span class="text-xs text-gray-500">
           {{
-            searchHits === undefined
+            filteredIndexComics === undefined
               ? t('favorite.totalCount', { count: store.getFavoriteResult?.total ?? 0 })
-              : t('favorite.index.hitCount', { count: searchHits.length })
+              : t('favorite.index.hitCount', { count: filteredIndexComics.length })
           }}
         </span>
         <n-pagination
-          v-if="searchHits === undefined"
+          v-if="filteredIndexComics === undefined"
           :page-count="favoritePageCount"
           :page="pageSelected"
           @update:page="changePage($event)" />

@@ -71,7 +71,12 @@ pub(super) fn build_quick_reader(
                                 "{comic_dir_name}/{chapter_dir_name}/{file_name}"
                             )),
                             Err(err) => {
-                                tracing::error!("复制`{}`失败: {err:?}", path.display());
+                                // 单个文件复制失败不中断导出，但通知里要说清是哪个文件
+                                let err_title = "复制图片失败";
+                                let message = eyre::Report::from(err)
+                                    .wrap_err(format!("复制`{}`失败", path.display()))
+                                    .to_message();
+                                tracing::error!(err_title, message);
                             }
                         }
 

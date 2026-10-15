@@ -1,7 +1,23 @@
+<script lang="ts">
+import type { MultiScanState } from '../search/multiKeyword.ts'
+
+/// 多关键词扫描缓存：key = 关键词组 + 排序 + 年月，切页签、换分组回来都不重扫
+const multiScanCache = new Map<string, MultiScanState>()
+</script>
+
 <script setup lang="ts">
-import { computed, nextTick, onMounted, ref, watch } from 'vue'
+import { computed, nextTick, onMounted, reactive, ref, watch } from 'vue'
 import { showError } from '../errors.ts'
 import { commands, SearchSort } from '../bindings.ts'
+import {
+  createMultiScanState,
+  HIT_BATCH_SIZE,
+  pickPrimaryIndex,
+  probeTotal,
+  scanPages,
+  splitKeywords,
+} from '../search/multiKeyword.ts'
+import type { PageFetcher } from '../search/multiKeyword.ts'
 import { scrollListToTop } from '../listScroll.ts'
 import {
   NButton,
@@ -17,7 +33,7 @@ import {
 import ComicCard from '../components/ComicCard.vue'
 import { useGridColumns } from '../comicGrid.ts'
 import LoadingSpinner from '../components/LoadingSpinner.vue'
-import { PhClockCounterClockwise, PhMagnifyingGlass, PhTag } from '@phosphor-icons/vue'
+import { PhClockCounterClockwise, PhMagnifyingGlass, PhTag, PhTagSimple } from '@phosphor-icons/vue'
 import { useStore } from '../store.ts'
 import { useI18n } from '../i18n.ts'
 import { useLocalTags } from '../localTags.ts'
@@ -38,8 +54,14 @@ const sortOptions = computed<SelectProps['options']>(() => [
 
 const searchInput = ref<string>('')
 const searching = ref<boolean>(false)
+/// 多标签搜索开关：默认关闭，关闭时多关键词也交回官方（官方按 OR 处理）；不写配置，重进即为关闭
+const multiTagSearchEnabled = ref<boolean>(false)
 const sortSelected = ref<SearchSort>('Latest')
 const searchPage = ref<number>(1)
+/// 当前展示的多关键词 AND 结果（undefined = 普通关键词搜索或分类浏览）
+const multiState = ref<MultiScanState>()
+/// 「加载更多」进行中：只让按钮转圈，列表保持可见
+const loadingMore = ref<boolean>(false)
 const listRef = ref<HTMLElement>()
 /// 网格列数跟着窗口宽度走
 const gridStyle = useGridColumns(listRef, () => store.gridItemWidth)
@@ -50,7 +72,8 @@ const categorySelected = ref<string | null>(null)
 /// 正在浏览的官方分类（slug）：为 null 表示普通关键词搜索
 const browsingCategorySlug = ref<string | null>(null)
 const browsingCategoryName = ref<string>('')
-const tagsExpanded = ref<boolean>(true)
+/// 常用标签区（整块）展开状态：跟当前视图绑定——回首页展开、真正搜索/分类浏览时收起，用户点标题也可手动切换
+const officialTagsExpanded = ref<boolean>(true)
 
 // 年月筛选
 const currentYear = new Date().getFullYear()
@@ -73,14 +96,21 @@ const history = ref<string[]>([])
 
 // 本地标签云：只跟后端要「标签 + 次数」，不再为了标签云把整库漫画都拉下来
 // （以前进搜索页会触发一次全库扫描 + 全量反序列化）
-// 下载目录和导出目录共用同一份，切换来源时不变
+// 下载目录和导出目录共用同一份，切换来源时不变；收藏的作者是另一组，由 localTags 一起给出
 const {
   tags: localTags,
-  expanded: localTagsExpanded,
+  authors: localAuthors,
+  expanded: localTagsShowAll,
   visibleTags: visibleLocalTags,
   hasMoreTags: hasMoreLocalTags,
   loadLocalTags,
 } = useLocalTags()
+
+/// 两块标签区的展开状态一起跟当前视图走：首页（关键词为空）展开，搜索/分类浏览收起
+function setTagsExpanded(expanded: boolean) {
+  officialTagsExpanded.value = expanded
+  localTagsShowAll.value = expanded
+}
 
 const tagsHeaderText = computed(() => {
   const official =
@@ -122,6 +152,34 @@ const searchPageCount = computed(() => {
   }
   return Math.ceil(store.searchResult.total / PAGE_SIZE)
 })
+
+/// 多关键词的进度文案：官方 total 显示不准（写几千条、翻几页就没了），只报真实扫描进度
+const multiProgressText = computed(() => {
+  const state = multiState.value
+  if (state === undefined) {
+    return ''
+  }
+  if (state.limitReached) {
+    return t('search.scanLimitReached', { scanned: state.scanned })
+  }
+  if (state.exhausted) {
+    return t('search.scanFinished', { scanned: state.scanned, hits: state.hits.length })
+  }
+  // 拉过详情就说明这批命中是核对过标签的，条数也如实报出来
+  if (state.looked > 0) {
+    return t('search.scanProgressTagged', {
+      scanned: state.scanned,
+      looked: state.looked,
+      hits: state.hits.length,
+    })
+  }
+  return t('search.scanProgress', { scanned: state.scanned, hits: state.hits.length })
+})
+
+/// 还能继续往后扫才给「加载更多」
+const multiCanLoadMore = computed(
+  () => multiState.value !== undefined && !multiState.value.exhausted && !multiState.value.limitReached,
+)
 
 /// 官方分类接口的全部漫画（「最新A漫」这个空节点的等价物）
 const ALL_CATEGORY_SLUG = '0'
@@ -267,9 +325,12 @@ async function search(keyword: string, page: number, sort: SearchSort) {
   browsingCategorySlug.value = null
   browsingCategoryName.value = ''
 
-  // 关键词为空：直接回到「未搜索」状态，不发请求、也不提示"没搜到"
+  // 关键词为空：回到「未搜索」状态（首页默认视图），两块标签都自动展开
   if (trimmed === '') {
+    officialTagsExpanded.value = true
+    localTagsShowAll.value = false
     store.searchResult = undefined
+    multiState.value = undefined
     searchPage.value = 1
     message.info(t('search.needKeyword'))
     return
@@ -280,8 +341,19 @@ async function search(keyword: string, page: number, sort: SearchSort) {
     return
   }
 
-  // 真正发起搜索了，把标签区收起来给结果让位置
-  tagsExpanded.value = false
+  // 真正发起搜索：两块标签都收起
+  setTagsExpanded(false)
+  multiState.value = undefined
+
+  // 只有开了多标签开关、且切出 2 个以上关键词才走本地严格 AND；否则一律官方路径（多关键词官方按 OR）
+  const keywords = splitKeywords(trimmed)
+  if (multiTagSearchEnabled.value && keywords.length > 1) {
+    if (page === 1) {
+      pushHistory(trimmed)
+    }
+    await searchMultiAnd(keywords, sort)
+    return
+  }
 
   searching.value = true
   searchPage.value = page
@@ -322,6 +394,122 @@ async function search(keyword: string, page: number, sort: SearchSort) {
   searching.value = false
 }
 
+/// 多关键词缓存的 key：关键词组 + 排序 + 年月（排序或筛选不同，结果就不同）
+function multiCacheKey(keywords: string[], sort: SearchSort): string {
+  return [keywords.join(' '), sort, yearSelected.value, monthSelected.value].join('|')
+}
+
+/// 主检索词的分页请求：排序与年月筛选都跟着当前选择走
+function fetchPageFor(sort: SearchSort): PageFetcher {
+  return (keyword: string, page: number) =>
+    commands.search(
+      keyword,
+      page,
+      sort,
+      yearSelected.value === 0 ? null : yearSelected.value,
+      monthSelected.value === 0 ? null : monthSelected.value,
+    )
+}
+
+/// 逐本取标签：搜索结果条目本身没有 tags 字段，标签只在 /album 详情里
+/// - 后端有一份全局标签缓存（收藏夹的标签筛选共用这一份），取过的不会再请求
+async function fetchTagsOf(comicId: number) {
+  return await commands.getComicTags(comicId)
+}
+
+/// 把一份扫描结果挂到界面上：列表复用 store.searchResult，进度另算
+function showMultiState(state: MultiScanState) {
+  multiState.value = state
+  store.searchResult = {
+    searchQuery: state.keywords.join(' '),
+    total: state.hits.length,
+    content: state.hits,
+  }
+}
+
+/// 多关键词严格 AND：
+/// 1. 并发探每个关键词的 total（各只拉第 1 页）
+/// 2. 选 total 最小的当主检索词（要扫的结果集最短）
+/// 3. 按页扫主检索词：标题/作者/分类能全命中的直接收下，
+///    其余逐本拉详情核对标签（官方搜索条目里没有标签），命中满一批就先渲染
+async function searchMultiAnd(keywords: string[], sort: SearchSort) {
+  const key = multiCacheKey(keywords, sort)
+  const cached = multiScanCache.get(key)
+  // 这一组关键词 + 排序已经扫过：直接显示缓存，不重扫
+  if (cached !== undefined) {
+    showMultiState(cached)
+    await nextTick()
+    scrollListToTop(listRef.value)
+    return
+  }
+
+  searching.value = true
+  try {
+    const year = yearSelected.value === 0 ? null : yearSelected.value
+    const month = monthSelected.value === 0 ? null : monthSelected.value
+    const probes = await Promise.all(keywords.map((keyword) => commands.search(keyword, 1, sort, year, month)))
+
+    const totals: number[] = []
+    for (const probe of probes) {
+      if (probe.status === 'error') {
+        console.error(probe.error)
+        showError(probe.error)
+        return
+      }
+      totals.push(probeTotal(probe.data))
+    }
+
+    const primaryIndex = pickPrimaryIndex(totals)
+    const state = reactive(
+      createMultiScanState(keywords, keywords[primaryIndex], totals[primaryIndex]),
+    ) as MultiScanState
+    multiScanCache.set(key, state)
+    // 先挂上去：state.hits 是同一个响应式数组，边扫边出时列表和进度都实时长
+    showMultiState(state)
+
+    const outcome = await scanPages(state, fetchPageFor(sort), fetchTagsOf, HIT_BATCH_SIZE)
+    if (outcome.reason === 'error') {
+      console.error(outcome.error)
+      showError(outcome.error)
+      // 扫崩了就把这份缓存丢掉、界面清干净，下次重新扫
+      multiScanCache.delete(key)
+      multiState.value = undefined
+      store.searchResult = undefined
+      return
+    }
+    if (state.hits.length === 0) {
+      message.warning(t('search.andNothingFound', { scanned: state.scanned }))
+    }
+    await nextTick()
+    scrollListToTop(listRef.value)
+  } finally {
+    searching.value = false
+  }
+}
+
+/// 加载更多：接着往后扫，再攒一批命中
+async function loadMoreHits() {
+  const state = multiState.value
+  if (state === undefined || loadingMore.value) {
+    return
+  }
+  loadingMore.value = true
+  try {
+    const outcome = await scanPages(
+      state,
+      fetchPageFor(sortSelected.value),
+      fetchTagsOf,
+      state.hits.length + HIT_BATCH_SIZE,
+    )
+    if (outcome.reason === 'error') {
+      console.error(outcome.error)
+      showError(outcome.error)
+    }
+  } finally {
+    loadingMore.value = false
+  }
+}
+
 /// 搜索排序 → 官方分类接口的排序参数（实测 mr/mp/tf/mv 都通用）
 function sortToOrder(sort: SearchSort): string {
   switch (sort) {
@@ -344,7 +532,9 @@ async function browseCategory(slug: string, page: number, sort: SearchSort) {
     return
   }
 
-  tagsExpanded.value = false
+  // 分类浏览按「执行搜索」处理：两块标签都收起
+  setTagsExpanded(false)
+  multiState.value = undefined
   searching.value = true
   searchPage.value = page
 
@@ -462,6 +652,21 @@ function resetFilters() {
           </n-icon>
         </template>
       </n-input>
+      <!-- 多标签搜索开关：紧贴搜索框右侧；橙色=启用严格 AND，灰色=走官方搜索
+           关闭态加 multi-tag-toggle-off：默认按钮 hover/focus 时描边和图标都会变橙，
+           点完开关焦点还留在按钮上，就会一直挂着一道橙线 -->
+      <n-button
+        size="small"
+        :type="multiTagSearchEnabled ? 'primary' : 'default'"
+        :class="multiTagSearchEnabled ? '' : 'multi-tag-toggle-off'"
+        :title="t('search.multiTagHint')"
+        @click="multiTagSearchEnabled = !multiTagSearchEnabled">
+        <template #icon>
+          <n-icon size="16">
+            <PhTagSimple />
+          </n-icon>
+        </template>
+      </n-button>
       <n-select
         class="w-32%"
         v-model:value="sortSelected"
@@ -523,18 +728,18 @@ function resetFilters() {
       <n-button size="small" @click="resetFilters">{{ t('search.resetFilters') }}</n-button>
     </div>
 
-    <!-- 官方常用标签 -->
+    <!-- 常用标签（官方 + 本地）：展开状态跟视图走（首页展开、搜索收起），用户点标题可手动覆盖 -->
     <div v-if="categoryResp !== undefined && categoryResp.blocks.length > 0" class="flex flex-col gap-1 box-border px-2">
       <div
         class="flex items-center gap-1 text-xs text-gray-500 cursor-pointer select-none"
-        @click="tagsExpanded = !tagsExpanded">
+        @click="officialTagsExpanded = !officialTagsExpanded">
         <n-icon size="14">
           <PhTag />
         </n-icon>
         <span>{{ tagsHeaderText }}</span>
-        <span class="text-gray-4">{{ tagsExpanded ? t('common.collapse') : t('common.expand') }}</span>
+        <span class="text-gray-4">{{ officialTagsExpanded ? t('common.collapse') : t('common.expand') }}</span>
       </div>
-      <div v-if="tagsExpanded" class="flex flex-col gap-1">
+      <div v-if="officialTagsExpanded" class="flex flex-col gap-1">
         <div v-for="block in categoryResp.blocks" :key="block.title" class="flex items-start gap-1">
           <span class="text-xs text-gray-400 shrink-0 w-18 text-right pt-0.5">{{ block.title }}</span>
           <div class="flex flex-wrap gap-1">
@@ -550,7 +755,24 @@ function resetFilters() {
           </div>
         </div>
 
-        <!-- 本地标签云：来自已下载 / 已导出漫画的元数据，样式和官方标签一致，点一下就是按这个标签搜索 -->
+        <!-- 收藏的作者：单独一组（不是标签），点一下同样是把关键词填进搜索框 -->
+        <div v-if="localAuthors.length > 0" class="flex items-start gap-1">
+          <span class="text-xs text-gray-400 shrink-0 w-18 text-right pt-0.5">{{ t('author.favoriteGroup') }}</span>
+          <div class="flex flex-wrap items-center gap-1">
+            <n-button
+              v-for="author in localAuthors"
+              :key="`author-${author.name}`"
+              size="tiny"
+              secondary
+              :type="keywordTokens.has(author.name) ? 'primary' : 'default'"
+              @click="onTagClick(author.name)">
+              {{ author.name }}
+            </n-button>
+          </div>
+        </div>
+
+        <!-- 本地标签云：来自已下载 / 已导出漫画的元数据，样式和官方标签一致，点一下就是按这个标签搜索
+             首次进入默认只展示前 N 个；搜索时收起、回首页时随视图展开，也可点「展开全部」手动切换 -->
         <div v-if="localTags.length > 0" class="flex items-start gap-1">
           <span class="text-xs text-gray-400 shrink-0 w-18 text-right pt-0.5">{{ t('search.local') }}</span>
           <div class="flex flex-wrap items-center gap-1">
@@ -566,22 +788,24 @@ function resetFilters() {
             <span
               v-if="hasMoreLocalTags"
               class="text-xs text-gray-4 cursor-pointer select-none hover:text-gray-6"
-              @click="localTagsExpanded = !localTagsExpanded">
-              {{ localTagsExpanded ? t('common.collapse') : t('search.expandAllLocal', { count: localTags.length }) }}
+              @click="localTagsShowAll = !localTagsShowAll">
+              {{ localTagsShowAll ? t('common.collapse') : t('search.expandAllLocal', { count: localTags.length }) }}
             </span>
           </div>
         </div>
       </div>
     </div>
 
-    <div v-if="searching" class="flex flex-col items-center gap-3 py-16 text-orange">
+    <div v-if="searching" class="flex flex-col items-center gap-3 py-8 text-orange">
       <loading-spinner :size="14" />
       <span class="text-sm text-gray-500">{{ t('search.searching') }}</span>
+      <span v-if="multiState !== undefined" class="text-xs text-gray-400">{{ multiProgressText }}</span>
     </div>
 
+    <!-- 多关键词：扫描中就把已经核实的命中显示出来，不再空等整轮 -->
     <div
       ref="listRef"
-      v-if="!searching && store.searchResult !== undefined"
+      v-if="store.searchResult !== undefined && (!searching || multiState !== undefined)"
       class="overflow-auto box-border px-2"
       :class="store.comicLayout === 'list' ? 'flex flex-col gap-row-2' : 'grid gap-2 content-start'"
       :style="store.comicLayout === 'grid' ? gridStyle : undefined">
@@ -599,7 +823,19 @@ function resetFilters() {
         :is-favorite="comicInSearch.isFavorite" />
     </div>
 
-    <div v-if="searchPageCount > 0" class="flex items-center justify-center gap-3 box-border p-2 pt-0 mt-auto">
+    <!-- 多关键词：不显示官方 total（会误导），只报「已扫描多少条、命中多少条」 -->
+    <div
+      v-if="multiState !== undefined && !searching"
+      class="flex items-center justify-center gap-3 box-border p-2 pt-0 mt-auto">
+      <span class="text-xs text-gray-500">{{ multiProgressText }}</span>
+      <n-button v-if="multiCanLoadMore" size="tiny" :loading="loadingMore" @click="loadMoreHits">
+        {{ t('search.loadMore') }}
+      </n-button>
+    </div>
+
+    <div
+      v-if="searchPageCount > 0 && multiState === undefined"
+      class="flex items-center justify-center gap-3 box-border p-2 pt-0 mt-auto">
       <span class="text-xs text-gray-500">
         {{ browsingCategoryName === '' ? '' : t('search.resultInCategory', { name: browsingCategoryName }) }}{{
           t('search.resultTotalShort', { count: store.searchResult?.total ?? 0 })
@@ -609,3 +845,16 @@ function resetFilters() {
     </div>
   </div>
 </template>
+
+<style scoped>
+/* 关闭态保持中性灰：naive 的默认按钮 hover/focus 会把描边和文字色换成 primary（橙），
+   这里把它们钉回按钮自己的灰色（!important 是因为 naive 的主题变量写在行内 style 上） */
+.multi-tag-toggle-off {
+  --n-border-hover: var(--n-border) !important;
+  --n-border-focus: var(--n-border) !important;
+  --n-text-color-hover: var(--n-text-color) !important;
+  --n-text-color-focus: var(--n-text-color) !important;
+  --n-color-hover: rgb(0 0 0 / 0.04) !important;
+  --n-color-focus: rgb(0 0 0 / 0.04) !important;
+}
+</style>

@@ -19,6 +19,7 @@ use tracing::{instrument, Instrument};
 
 use crate::config::{api_line_domains, ApiDomainMode, Config, ExportSkipMode, LocalLibrarySource};
 use crate::export::manager::{ExportTaskKind, ExportTaskState};
+use crate::comic_tags::{self, FavoritesTagsSnapshot, FetchComicTagsResult};
 use crate::errors::{CommandError, CommandResult};
 use crate::events::{DownloadAllFavoritesEvent, UpdateDownloadedComicsEvent};
 use crate::extensions::{AppHandleExt, EyreReportToMessage};
@@ -963,7 +964,7 @@ pub async fn update_exported_comics(app: AppHandle) -> CommandResult<u32> {
             Ok(false) => {}
             Err(err) => {
                 let err_title = format!("漫画`{comic_title}`补导章节失败");
-                tracing::error!(err_title, message = format!("{err:?}"));
+                tracing::error!(err_title, message = err.to_message());
             }
         }
 
@@ -1530,7 +1531,9 @@ pub async fn resume_export_task(app: AppHandle, uuid: String) -> CommandResult<(
 
             tauri::async_runtime::spawn_blocking(move || {
                 if let Err(err) = export::cbz(&app, &comic, &task, ExportSkipMode::SkipExisting) {
-                    tracing::error!(message = format!("{err:?}"), "继续导出cbz失败");
+                    let err_title = "继续导出cbz失败";
+                    let message = err.to_message();
+                    tracing::error!(err_title, message);
                     task.set_state(ExportTaskState::Failed);
                 }
             });
@@ -1545,7 +1548,9 @@ pub async fn resume_export_task(app: AppHandle, uuid: String) -> CommandResult<(
 
             tauri::async_runtime::spawn(async move {
                 if let Err(err) = export::resume_comic_cbz(&app, &comic, &task).await {
-                    tracing::error!(message = format!("{err:?}"), "继续导出cbz失败");
+                    let err_title = "继续导出cbz失败";
+                    let message = err.to_message();
+                    tracing::error!(err_title, message);
                     task.set_state(ExportTaskState::Failed);
                 }
             });
@@ -1682,6 +1687,40 @@ pub async fn remove_from_favorites_index(app: AppHandle, comic_id: i64) -> Comma
     favorites_index::remove_comic(&app, comic_id)
         .await
         .map_err(|err| CommandError::from("更新收藏夹索引失败", err))
+}
+
+/// 收藏夹的标签快照：标签云（按出现次数倒序）+ 已经取到标签的每本漫画
+/// - 纯本地读缓存，不发请求；没缓存过的本不参与统计
+#[tauri::command(async)]
+#[specta::specta]
+#[instrument(level = "error", skip_all, fields(folder_id = folder_id))]
+pub async fn get_favorites_tags(app: AppHandle, folder_id: i64) -> FavoritesTagsSnapshot {
+    comic_tags::favorites_snapshot(&app, folder_id).await
+}
+
+/// 给这些漫画补标签：最多请求 limit 本（并发 8）
+/// - 已经在缓存里、或本地元数据里就有标签的本，一次请求都不发
+#[tauri::command(async)]
+#[specta::specta]
+#[instrument(level = "error", skip_all, fields(limit = limit))]
+pub async fn fetch_comic_tags(
+    app: AppHandle,
+    comic_ids: Vec<i64>,
+    limit: usize,
+) -> CommandResult<FetchComicTagsResult> {
+    comic_tags::fetch_many(&app, comic_ids, limit)
+        .await
+        .map_err(|err| CommandError::from("获取漫画标签失败", err))
+}
+
+/// 一本漫画的标签：缓存优先（收藏夹标签筛选和多关键词搜索共用这一份缓存）
+#[tauri::command]
+#[specta::specta]
+#[instrument(level = "error", skip_all, fields(comic_id = comic_id))]
+pub async fn get_comic_tags(app: AppHandle, comic_id: i64) -> CommandResult<Vec<String>> {
+    comic_tags::tags_of(&app, comic_id)
+        .await
+        .map_err(|err| CommandError::from("获取漫画信息失败", err))
 }
 
 #[allow(clippy::needless_pass_by_value)]

@@ -304,21 +304,29 @@ async fn account_uid(app: &AppHandle) -> eyre::Result<String> {
     Ok(uid)
 }
 
-/// 索引文件：app_data_dir/收藏索引/favorites-index-<uid>.json（一个账号一份）
-fn index_path(app: &AppHandle, uid: &str) -> eyre::Result<PathBuf> {
-    // uid 只进文件名，过滤掉可能的路径分隔符
-    let uid: String = uid.chars().filter(char::is_ascii_alphanumeric).collect();
-    if uid.is_empty() {
-        return Err(eyre!("账号uid不合法"));
-    }
-
+/// 本地索引目录：app_data_dir/收藏索引（不存在就建）；漫画标签缓存也放这里
+pub(crate) fn index_dir(app: &AppHandle) -> eyre::Result<PathBuf> {
     let dir = app.path().app_data_dir()?.join("收藏索引");
     if !dir.exists() {
         std::fs::create_dir_all(&dir)
             .wrap_err_with(|| format!("创建索引目录失败: {}", dir.display()))?;
     }
 
-    Ok(dir.join(format!("favorites-index-{uid}.json")))
+    Ok(dir)
+}
+
+/// uid 只进文件名，过滤掉可能的路径分隔符
+pub(crate) fn sanitize_uid(uid: &str) -> eyre::Result<String> {
+    let uid: String = uid.chars().filter(char::is_ascii_alphanumeric).collect();
+    if uid.is_empty() {
+        return Err(eyre!("账号uid不合法"));
+    }
+    Ok(uid)
+}
+
+/// 索引文件：app_data_dir/收藏索引/favorites-index-<uid>.json（一个账号一份）
+fn index_path(app: &AppHandle, uid: &str) -> eyre::Result<PathBuf> {
+    Ok(index_dir(app)?.join(format!("favorites-index-{}.json", sanitize_uid(uid)?)))
 }
 
 /// 读索引文件：文件不存在、读不出来、解析失败都返回空索引

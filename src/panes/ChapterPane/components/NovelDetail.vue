@@ -105,11 +105,10 @@ function openReader(index: number) {
           :draggable="false" />
         <div class="flex flex-col gap-1 min-w-0">
           <span class="font-medium text-base">{{ detail.name }}</span>
-          <author-links
-            v-if="(detail.author ?? '') !== ''"
-            class="text-sm text-gray-500"
-            :author="detail.author ?? ''"
-            target="novel" />
+          <!-- 作者行：小说暂不提供收藏作者 -->
+          <div v-if="(detail.author ?? '') !== ''" class="flex items-center gap-2">
+            <author-links class="text-sm text-gray-500" :author="detail.author ?? ''" target="novel" />
+          </div>
           <span class="text-xs" :class="ended ? 'text-green-6' : 'text-blue-6'">
             {{ ended ? t('novel.ended') : t('novel.ongoing') }}
           </span>

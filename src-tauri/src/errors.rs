@@ -49,6 +49,17 @@ fn human_reason(message: &str) -> Option<String> {
         .find(|text| !text.is_empty())
 }
 
+/// 给人看的那一句：优先取中文层，没有中文才退回第一层原因。
+/// 命令错误（CommandError）和后台错误（写日志后由前端弹通知）共用这条规则。
+pub fn human_message(message: &str) -> String {
+    let brief = message
+        .lines()
+        .find_map(|line| line.trim().strip_prefix("0: "))
+        .unwrap_or(message)
+        .to_string();
+    human_reason(message).unwrap_or(brief)
+}
+
 /// 标题 -> 错误码。标题是给日志看的，错误码是给界面看的。
 fn code_for(err_title: &str) -> &'static str {
     match err_title {
@@ -62,6 +73,7 @@ fn code_for(err_title: &str) -> &'static str {
         "同步Comic字段失败" => "sync-comic",
         "获取每周必看失败" => "weekly-fetch",
         "获取漫画信息失败" => "comic-fetch",
+        "获取漫画标签失败" => "comic-tags-fetch",
         "读取漫画列表失败" => "comic-list-read",
         "创建测速客户端失败" => "probe-client",
         "导出快速阅读器失败" => "export-quick-reader",
@@ -124,13 +136,8 @@ impl CommandError {
         // 日志里保留完整调用链；code 供前端查多语言文案
         let code = code_for(err_title);
         tracing::error!(err_title, code, message);
-        let brief = message
-            .lines()
-            .find_map(|line| line.trim().strip_prefix("0: "))
-            .unwrap_or(&message)
-            .to_string();
         // 界面上只给人话：有中文层就用中文层，没有才退回英文的第一层原因
-        let human = human_reason(&message).unwrap_or(brief);
+        let human = human_message(&message);
         Self {
             err_title: err_title.to_string(),
             code: code.to_string(),

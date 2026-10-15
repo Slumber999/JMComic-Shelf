@@ -18,7 +18,12 @@ function isVueTsxScript(id: string): boolean {
     return false
   }
   const query = new URLSearchParams(id.slice(queryIndex + 1))
-  return query.has('vue') && query.get('type') === 'script' && query.get('lang') === 'tsx'
+  // vue 插件拼的是无值参数 lang.tsx（不是 lang=tsx），两种写法都要认，否则这个插件永远不生效
+  return (
+    query.has('vue') &&
+    query.get('type') === 'script' &&
+    (query.get('lang') === 'tsx' || query.has('lang.tsx'))
+  )
 }
 
 /// 先用 esbuild 把这块脚本的类型去掉、保留 JSX：之后 vueJsx 只处理 JSX，不会再误解析类型参数。

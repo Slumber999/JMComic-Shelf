@@ -12,7 +12,7 @@ use tracing::instrument;
 use crate::{
     config::LocalLibrarySource,
     events::ExportQuickReaderEvent,
-    extensions::{AppHandleExt, PathIsImg},
+    extensions::{AppHandleExt, EyreReportToMessage, PathIsImg},
     reader::natural_cmp,
     utils,
 };

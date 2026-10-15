@@ -48,6 +48,8 @@ struct Snapshot {
     export_dir_by_id: HashMap<i64, (PathBuf, String)>,
     /// 下载目录 + 导出目录合并去重后的标签：标签云两个目录共用这一份
     all_tags: Vec<LocalTag>,
+    /// 漫画ID -> 标签：收藏夹补标签时，已下载 / 已导出的这本可以直接用，不请求接口
+    tags_by_id: HashMap<i64, Vec<String>>,
 }
 
 static SNAPSHOT: LazyLock<RwLock<Option<Arc<Snapshot>>>> = LazyLock::new(|| RwLock::new(None));
@@ -124,9 +126,9 @@ fn build_snapshot(download_dir: &Path, export_dir: &Path) -> Snapshot {
     }
 
     // 标签云两个目录共用：按漫画ID合并，同一本两个目录都有也只算一次
-    let mut all_tags = export_tags.clone();
-    for (id, tags) in &download_tags {
-        all_tags.entry(*id).or_insert_with(|| tags.clone());
+    let mut tags_by_id = export_tags;
+    for (id, tags) in download_tags {
+        tags_by_id.entry(id).or_insert(tags);
     }
 
     Snapshot {
@@ -136,7 +138,8 @@ fn build_snapshot(download_dir: &Path, export_dir: &Path) -> Snapshot {
         download_metadata,
         dir_by_id,
         export_dir_by_id,
-        all_tags: count_tags(all_tags),
+        all_tags: count_tags(tags_by_id.clone()),
+        tags_by_id,
     }
 }
 
@@ -167,7 +170,7 @@ fn parse_metadata_lite(path: &Path) -> Option<MetadataLite> {
 }
 
 /// 把"每本漫画的标签"汇总成"标签 -> 出现次数"，按次数倒序（次数相同按名字排）
-fn count_tags(per_comic: HashMap<i64, Vec<String>>) -> Vec<LocalTag> {
+pub(crate) fn count_tags(per_comic: HashMap<i64, Vec<String>>) -> Vec<LocalTag> {
     let mut counter: HashMap<String, u32> = HashMap::new();
     for tags in per_comic.into_values() {
         for tag in tags {
@@ -228,6 +231,11 @@ pub fn exported_id_set(app: &AppHandle) -> HashSet<i64> {
 /// 下载目录 + 导出目录共用的一份标签统计（标签云用）
 pub fn all_local_tags(app: &AppHandle) -> Vec<LocalTag> {
     snapshot(app).all_tags.clone()
+}
+
+/// 漫画ID -> 标签：本地元数据里已经有标签的漫画（补收藏夹标签时可以不请求接口）
+pub fn comic_tags(app: &AppHandle, comic_id: i64) -> Option<Vec<String>> {
+    snapshot(app).tags_by_id.get(&comic_id).cloned()
 }
 
 /// 下载目录里的元数据文件列表（get_downloaded_comics 复用，省掉一次 WalkDir）
