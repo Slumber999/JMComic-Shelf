@@ -25,6 +25,7 @@ import UpdateDownloadedComicsButton from './components/UpdateDownloadedComicsBut
 import UpdateExportedComicsButton from './components/UpdateExportedComicsButton.vue'
 import { useI18n } from '../../i18n.ts'
 import { useLocalTags } from '../../localTags.ts'
+import { tagExpandLabel } from '../../tagCloudPaging.ts'
 import { splitAuthorNames } from '../../authorNames.ts'
 
 const store = useStore()
@@ -42,14 +43,18 @@ const { dropdownX, dropdownY, dropdownShowing, dropdownOptions, showDropdown } =
 // 选中的筛选项用前缀区分（tag: / author:），同名也不会串
 const selectedFilters = ref<string[]>([])
 const tagsExpanded = ref<boolean>(false)
+const { tags: tagStats, authors: favoriteAuthorItems, tagPaging, loadLocalTags: reloadTags } =
+  useLocalTags()
+
+/// 标签分页：初始 30 个，每次「展开更多」+50，收起回 30；收藏的作者仍然全量展示
 const {
-  tags: tagStats,
-  authors: favoriteAuthorItems,
-  expanded: tagsShowAll,
-  visibleTags,
-  hasMoreTags,
-  loadLocalTags: reloadTags,
-} = useLocalTags()
+  visible: visibleTags,
+  remaining: remainingTags,
+  hasMore: hasMoreTags,
+  canCollapse: canCollapseTags,
+  loadMore: loadMoreTags,
+  collapse: collapseTags,
+} = tagPaging
 
 /// 标签云里一共多少项（本地标签 + 收藏的作者）
 const tagCloudCount = computed(() => tagStats.value.length + favoriteAuthorItems.value.length)
@@ -426,12 +431,11 @@ function useDropdown() {
             </div>
           </div>
           <div class="flex items-center gap-2">
-            <n-button
-              v-if="hasMoreTags"
-              size="small"
-              quaternary
-              @click="tagsShowAll = !tagsShowAll">
-              {{ tagsShowAll ? t('common.collapse') : t('search.expandAllLocal', { count: tagStats.length }) }}
+            <n-button v-if="hasMoreTags" size="small" quaternary @click="loadMoreTags">
+              {{ tagExpandLabel(t, remainingTags) }}
+            </n-button>
+            <n-button v-if="canCollapseTags" size="small" quaternary @click="collapseTags">
+              {{ t('common.collapse') }}
             </n-button>
             <template v-if="selectedFilters.length > 0">
               <span class="text-xs text-gray-500">

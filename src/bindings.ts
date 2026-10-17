@@ -847,9 +847,9 @@ parent_CID?: string;
  */
 spoiler?: string; 
 /**
- * 子评论（App 接口目前不返回，有就直接显示）
+ * 回复：官方 JSON 用的键是 replys，可能缺省、为 null，或只给单个对象
  */
-replies?: Comment[] }
+replys?: Comment[] }
 /**
  * 一页评论
  */

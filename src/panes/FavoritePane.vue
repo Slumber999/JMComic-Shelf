@@ -32,6 +32,7 @@ import { useStore } from '../store.ts'
 import DownloadAllFavoriteButton from '../components/DownloadAllFavoriteButton.vue'
 import { PhArrowClockwise, PhCaretDown, PhCheckCircle, PhCircle, PhDownloadSimple, PhFileZip, PhMagnifyingGlass, PhTag } from '@phosphor-icons/vue'
 import { useI18n } from '../i18n.ts'
+import { tagExpandLabel, useTagCloudPaging } from '../tagCloudPaging.ts'
 
 const store = useStore()
 const { t } = useI18n()
@@ -84,8 +85,6 @@ const indexBuilding = ref<boolean>(false)
 const syncing = ref<boolean>(false)
 const keyword = ref<string>('')
 
-/// 标签云默认只展示前 N 个，剩下的折在「展开全部」后面
-const TAG_PREVIEW_COUNT = 30
 /// 一次「筛选 / 继续核对」最多核对多少本（和多关键词搜索的核对上限一致）
 const TAG_CHECK_BUDGET = 240
 /// 分小批回报进度：一小批核对完就刷新结果和进度，不用干等整轮
@@ -103,7 +102,6 @@ const tagSelection = ref<Set<string>>(new Set())
 const appliedTags = ref<string[]>([])
 /// 标签云：只统计已取到标签的漫画，按出现次数倒序
 const favoriteTags = shallowRef<LocalTag[]>([])
-const tagsShowAll = ref<boolean>(false)
 /// comicId -> 标签（后端持久化，收藏夹筛选和多关键词搜索共用这一份）
 const comicTags = shallowRef<Map<number, string[]>>(new Map())
 /// 索引里的漫画总数 / 其中已经取到标签的本数
@@ -191,10 +189,15 @@ const tagCheckQueue = computed<FavoritesIndexComic[]>(() => {
   )
 })
 
-const visibleFavoriteTags = computed(() =>
-  tagsShowAll.value ? favoriteTags.value : favoriteTags.value.slice(0, TAG_PREVIEW_COUNT),
-)
-const hasMoreFavoriteTags = computed(() => favoriteTags.value.length > TAG_PREVIEW_COUNT)
+/// 标签云分页：初始 30 个，每次「展开更多」+50，收起回 30
+const {
+  visible: visibleFavoriteTags,
+  remaining: remainingFavoriteTags,
+  hasMore: hasMoreFavoriteTags,
+  canCollapse: canCollapseFavoriteTags,
+  loadMore: loadMoreFavoriteTags,
+  collapse: collapseFavoriteTags,
+} = useTagCloudPaging(favoriteTags)
 
 /// 进度必须说人话：没选标签时报「攒了多少」，选了标签时报「核对了多少、命中多少」
 const tagProgressText = computed(() => {
@@ -1086,12 +1089,14 @@ async function exportCbz() {
           <span
             v-if="hasMoreFavoriteTags"
             class="text-xs text-gray-4 cursor-pointer select-none hover:text-gray-6"
-            @click="tagsShowAll = !tagsShowAll">
-            {{
-              tagsShowAll
-                ? t('common.collapse')
-                : t('favorite.tags.expandAll', { count: favoriteTags.length })
-            }}
+            @click="loadMoreFavoriteTags">
+            {{ tagExpandLabel(t, remainingFavoriteTags) }}
+          </span>
+          <span
+            v-if="canCollapseFavoriteTags"
+            class="text-xs text-gray-4 cursor-pointer select-none hover:text-gray-6"
+            @click="collapseFavoriteTags">
+            {{ t('common.collapse') }}
           </span>
         </div>
 

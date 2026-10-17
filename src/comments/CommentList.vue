@@ -1,9 +1,8 @@
 <script setup lang="ts">
 import { Comment } from '../bindings.ts'
-import { userNameOf } from './useComments.ts'
 
-/// 评论列表：全站评论页和阅读器评论抽屉共用这一份条目渲染（含子评论）。
-/// 两处只有容器 / 条目的类名和「能不能点击跳转」不同，所以差异都走 props。
+/// 平铺的评论列表：全站评论页用它，只渲染一级、点击跳到来源漫画。
+/// 漫画 / 小说详情抽屉里的多级评论走 CommentThread，别在这里加嵌套。
 defineProps<{
   comments: Comment[]
   /// 列表容器的类：滚动区域、条目间距由调用方决定
@@ -35,11 +34,6 @@ const emit = defineEmits<{ openComic: [aid: string | undefined] }>()
       </div>
       <div v-else class="text-xs text-gray-500">{{ comment.addtime }}</div>
       <div class="mt-1 text-sm whitespace-pre-wrap break-words">{{ comment.content }}</div>
-      <!-- 子评论：只带出用户名 -->
-      <div v-for="reply in comment.replies" :key="reply.CID" class="mt-1 pl-4 text-sm text-gray-600">
-        <span class="text-gray-5">↳ {{ userNameOf(reply) }}：</span>
-        <span class="whitespace-pre-wrap break-words">{{ reply.content }}</span>
-      </div>
     </div>
   </div>
 </template>

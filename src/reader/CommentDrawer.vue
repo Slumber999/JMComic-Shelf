@@ -3,7 +3,7 @@ import { ref, watch } from 'vue'
 import { NButton, NDrawer, NDrawerContent } from 'naive-ui'
 import LoadingSpinner from '../components/LoadingSpinner.vue'
 import { useI18n } from '../i18n.ts'
-import CommentList from '../comments/CommentList.vue'
+import CommentThread from '../comments/CommentThread.vue'
 import { CommentTarget, useComments } from '../comments/useComments.ts'
 
 /// 评论抽屉：漫画和小说共用，target 决定拉哪一边的评论
@@ -52,11 +52,7 @@ watch(
         {{ t('commentDrawer.empty') }}
       </div>
 
-      <comment-list
-        v-else
-        :comments="comments"
-        list-class="flex flex-col"
-        item-class="border-b border-gray-1 py-2 last:border-b-0" />
+      <comment-thread v-else :comments="comments" list-class="flex flex-col" />
 
       <template #footer>
         <div class="flex w-full items-center justify-center gap-2">

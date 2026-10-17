@@ -30,8 +30,8 @@ pub struct Comment {
     /// "1" 表示剧透
     #[serde(default)]
     pub spoiler: String,
-    /// 子评论（App 接口目前不返回，有就直接显示）
-    #[serde(default, deserialize_with = "null_to_empty")]
+    /// 回复：官方 JSON 用的键是 replys，可能缺省、为 null，或只给单个对象
+    #[serde(rename = "replys", default, deserialize_with = "replies_or_empty")]
     pub replies: Vec<Comment>,
 }
 
@@ -118,7 +118,7 @@ mod tests {
                     "parent_CID": "0",
                     "spoiler": "1",
                     "gender": "null",
-                    "replies": null
+                    "replys": null
                 }
             ]
         }"#;
@@ -158,6 +158,69 @@ mod tests {
         assert!(novel_page.list[0].aid.is_empty());
         assert!(novel_page.list[0].parent_cid.is_empty());
     }
+
+    #[test]
+    fn comment_page_parses_nested_replys() {
+        // 真实 /forum 返回：主评论的 replys 是数组，里面每条回复自己可能还有 replys；
+        // 回复对象不带 AID，只有一个回复时官方偶尔直接给对象而不是数组
+        let json = r#"{
+            "total": 272,
+            "list": [
+                {
+                    "CID": "11037661",
+                    "AID": "1044827",
+                    "username": "a",
+                    "nickname": "甲",
+                    "content": "<div>主评论</div>",
+                    "parent_CID": "0",
+                    "replys": [
+                        {
+                            "CID": "11067784",
+                            "username": "b",
+                            "nickname": "乙",
+                            "content": "<div>回复 &amp; 二级</div>",
+                            "parent_CID": "11037661",
+                            "replys": [
+                                {
+                                    "CID": "11067799",
+                                    "username": "c",
+                                    "nickname": "丙",
+                                    "content": "<div>回复的回复</div>",
+                                    "parent_CID": "11067784"
+                                }
+                            ]
+                        }
+                    ]
+                },
+                {
+                    "CID": "11037641",
+                    "AID": "1044827",
+                    "username": "d",
+                    "nickname": "丁",
+                    "content": "<div>另一条</div>",
+                    "parent_CID": "0",
+                    "replys": {
+                        "CID": "11037820",
+                        "username": "e",
+                        "nickname": "戊",
+                        "content": "<div>单个回复</div>",
+                        "parent_CID": "11037641"
+                    }
+                }
+            ]
+        }"#;
+
+        let mut page = serde_json::from_str::<CommentPage>(json).expect("解析多级评论失败");
+        page.strip_html();
+
+        assert_eq!(page.list[0].replies.len(), 1);
+        assert_eq!(page.list[0].replies[0].cid, "11067784");
+        assert_eq!(page.list[0].replies[0].content, "回复 & 二级");
+        assert_eq!(page.list[0].replies[0].parent_cid, "11037661");
+        assert_eq!(page.list[0].replies[0].replies[0].content, "回复的回复");
+        assert_eq!(page.list[1].replies.len(), 1);
+        assert_eq!(page.list[1].replies[0].content, "单个回复");
+    }
 }
 
 /// 兼容字符串字段给 null 的情况（小说的评论里 AID / parent_CID 都是 null）
@@ -166,6 +229,25 @@ where
     D: Deserializer<'de>,
 {
     Ok(Option::<String>::deserialize(deserializer)?.unwrap_or_default())
+}
+
+/// 兼容 replys 缺失 / 为 null / 只给单个对象（不是数组）三种形态
+fn replies_or_empty<'de, D>(deserializer: D) -> Result<Vec<Comment>, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    #[derive(Deserialize)]
+    #[serde(untagged)]
+    enum Replies {
+        Many(Vec<Comment>),
+        One(Comment),
+    }
+
+    Ok(match Option::<Replies>::deserialize(deserializer)? {
+        Some(Replies::Many(list)) => list,
+        Some(Replies::One(one)) => vec![one],
+        None => Vec::new(),
+    })
 }
 
 /// 兼容字段缺失或为 null 的数组

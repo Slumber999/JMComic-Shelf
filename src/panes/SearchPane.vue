@@ -37,6 +37,7 @@ import { PhClockCounterClockwise, PhMagnifyingGlass, PhTag, PhTagSimple } from '
 import { useStore } from '../store.ts'
 import { useI18n } from '../i18n.ts'
 import { useLocalTags } from '../localTags.ts'
+import { tagExpandLabel } from '../tagCloudPaging.ts'
 
 const store = useStore()
 const { t } = useI18n()
@@ -97,19 +98,26 @@ const history = ref<string[]>([])
 // 本地标签云：只跟后端要「标签 + 次数」，不再为了标签云把整库漫画都拉下来
 // （以前进搜索页会触发一次全库扫描 + 全量反序列化）
 // 下载目录和导出目录共用同一份，切换来源时不变；收藏的作者是另一组，由 localTags 一起给出
-const {
-  tags: localTags,
-  authors: localAuthors,
-  expanded: localTagsShowAll,
-  visibleTags: visibleLocalTags,
-  hasMoreTags: hasMoreLocalTags,
-  loadLocalTags,
-} = useLocalTags()
+const { tags: localTags, authors: localAuthors, tagPaging: localTagPaging, loadLocalTags } =
+  useLocalTags()
 
-/// 两块标签区的展开状态一起跟当前视图走：首页（关键词为空）展开，搜索/分类浏览收起
+/// 本地标签云分页：初始 30 个，每次「展开更多」+50，收起回 30；官方标签区仍是整块展开/收起
+const {
+  visible: visibleLocalTags,
+  remaining: remainingLocalTags,
+  hasMore: hasMoreLocalTags,
+  canCollapse: canCollapseLocalTags,
+  loadMore: loadMoreLocalTags,
+  collapse: collapseLocalTags,
+} = localTagPaging
+
+/// 两块标签区一起跟当前视图走：首页（关键词为空）展开官方标签区，搜索/分类浏览收起；
+/// 本地标签云不整块展开，只会被收起回初始 30 个
 function setTagsExpanded(expanded: boolean) {
   officialTagsExpanded.value = expanded
-  localTagsShowAll.value = expanded
+  if (!expanded) {
+    collapseLocalTags()
+  }
 }
 
 const tagsHeaderText = computed(() => {
@@ -328,7 +336,7 @@ async function search(keyword: string, page: number, sort: SearchSort) {
   // 关键词为空：回到「未搜索」状态（首页默认视图），两块标签都自动展开
   if (trimmed === '') {
     officialTagsExpanded.value = true
-    localTagsShowAll.value = false
+    collapseLocalTags()
     store.searchResult = undefined
     multiState.value = undefined
     searchPage.value = 1
@@ -772,7 +780,7 @@ function resetFilters() {
         </div>
 
         <!-- 本地标签云：来自已下载 / 已导出漫画的元数据，样式和官方标签一致，点一下就是按这个标签搜索
-             首次进入默认只展示前 N 个；搜索时收起、回首页时随视图展开，也可点「展开全部」手动切换 -->
+             默认只显示前 30 个，点「展开更多」每次再多 50 个；搜索 / 分类浏览时整块收起回 30 -->
         <div v-if="localTags.length > 0" class="flex items-start gap-1">
           <span class="text-xs text-gray-400 shrink-0 w-18 text-right pt-0.5">{{ t('search.local') }}</span>
           <div class="flex flex-wrap items-center gap-1">
@@ -788,8 +796,14 @@ function resetFilters() {
             <span
               v-if="hasMoreLocalTags"
               class="text-xs text-gray-4 cursor-pointer select-none hover:text-gray-6"
-              @click="localTagsShowAll = !localTagsShowAll">
-              {{ localTagsShowAll ? t('common.collapse') : t('search.expandAllLocal', { count: localTags.length }) }}
+              @click="loadMoreLocalTags">
+              {{ tagExpandLabel(t, remainingLocalTags) }}
+            </span>
+            <span
+              v-if="canCollapseLocalTags"
+              class="text-xs text-gray-4 cursor-pointer select-none hover:text-gray-6"
+              @click="collapseLocalTags">
+              {{ t('common.collapse') }}
             </span>
           </div>
         </div>
