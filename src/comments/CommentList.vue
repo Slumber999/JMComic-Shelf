@@ -18,6 +18,15 @@ defineProps<{
 }>()
 
 const emit = defineEmits<{ openComic: [aid: string | undefined] }>()
+
+/// 用户正在选中文字（比如挑广告关键词）时不跳转，否则一松手就跳到详情页
+function onCommentClick(comment: Comment) {
+  const selection = window.getSelection()?.toString() ?? ''
+  if (selection.trim() !== '') {
+    return
+  }
+  emit('openComic', comment.AID)
+}
 </script>
 
 <template>
@@ -27,13 +36,13 @@ const emit = defineEmits<{ openComic: [aid: string | undefined] }>()
       :key="comment.CID"
       :class="[itemClass, jumping === Number(comment.AID) ? 'opacity-50' : '']"
       :title="titleOf?.(comment)"
-      @click="emit('openComic', comment.AID)">
+      @click="onCommentClick(comment)">
       <div v-if="showAid" class="flex items-center gap-2 text-xs text-gray-500">
         <span>{{ comment.addtime }}</span>
         <span class="ml-auto rounded bg-gray-2 px-1">JM{{ comment.AID }}</span>
       </div>
       <div v-else class="text-xs text-gray-500">{{ comment.addtime }}</div>
-      <div class="mt-1 text-sm whitespace-pre-wrap break-words">{{ comment.content }}</div>
+      <div class="mt-1 text-sm whitespace-pre-wrap break-words select-text">{{ comment.content }}</div>
     </div>
   </div>
 </template>

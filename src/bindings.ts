@@ -35,6 +35,28 @@ async logout() : Promise<Result<null, CommandError>> {
     else return { status: "error", error: e  as any };
 }
 },
+/**
+ * 官方通知（官方 App 的信箱）：只读列表，已读状态由 mark_notification_read 改
+ */
+async getNotifications() : Promise<Result<NotificationPage, CommandError>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("get_notifications") };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+/**
+ * 标记一条通知为已读：官方 POST /notifications，成功后界面的红点随之消失
+ */
+async markNotificationRead(id: number) : Promise<Result<null, CommandError>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("mark_notification_read", { id }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
 async search(keyword: string, page: number, sort: SearchSort, year: number | null, month: number | null) : Promise<Result<SearchResultVariant, CommandError>> {
     try {
     return { status: "ok", data: await TAURI_INVOKE("search", { keyword, page, sort, year, month }) };
@@ -995,6 +1017,31 @@ export type LogEvent = { jsonRaw: string }
 export type LogLevel = "TRACE" | "DEBUG" | "INFO" | "WARN" | "ERROR"
 export type LogMetadata = { timestamp: string; level: LogLevel; fields: { [key in string]: JsonValue }; target: string; filename: string; line_number: number; span?: JsonValue; spans?: LogSpan[] }
 export type LogSpan = ({ [key in string]: null | boolean | number | string | JsonValue[] | { [key in string]: JsonValue } }) & { name: string }
+/**
+ * 一条官方通知（GET /notifications 的 list 元素）
+ * - `read` 是官方已读标记：false 由界面亮红点，点「已读」后调 mark_notification_read
+ */
+export type NotificationItem = { id: number; 
+/**
+ * 官方给的类型标识（如 system），界面暂不用，留着排查
+ */
+type?: string; 
+/**
+ * 官方已读标记：false 表示未读
+ */
+read?: boolean; title?: string; 
+/**
+ * 正文：站点通知是 HTML 字符串，追更通知可能给字符串数组，这里统一折成文本
+ */
+content?: string; 
+/**
+ * 官方给的是 date（形如 "2026-04-26 12:00:00"），兼容 time 和数字时间戳
+ */
+date?: string }
+/**
+ * 通知列表：官方可能返回裸数组，也可能返回 {total, list}，由 get_notifications 统一成这个结构
+ */
+export type NotificationPage = { total?: number; list?: NotificationItem[] }
 /**
  * 小说章节正文（/novelchapters 的返回）
  */

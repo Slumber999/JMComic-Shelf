@@ -32,8 +32,9 @@ use crate::responses::{
 };
 use crate::types::{
     CategoryNode, CategoryResp, CommentPage, FavoriteSort, NovelChapter, NovelDetail, NovelPage,
-    ProxyMode, SearchSort, SignInResult, SignStatus, SubCategoryNode, TagBlock, WatchHistoryPage,
-    WatchHistoryDeleteResp,
+    NotificationItem, NotificationPage, ProxyMode, SearchSort, SignInResult, SignStatus,
+    SubCategoryNode, TagBlock,
+    WatchHistoryDeleteResp, WatchHistoryPage,
 };
 use crate::utils;
 
@@ -150,6 +151,7 @@ enum ApiPath {
     Daily,
     DailyCheck,
     WatchList,
+    Notifications,
 }
 
 impl ApiPath {
@@ -177,6 +179,8 @@ impl ApiPath {
             ApiPath::Daily => "/daily",
             ApiPath::DailyCheck => "/daily_chk",
             ApiPath::WatchList => "/watch_list",
+            // 官方 App 的信箱：GET 列表，POST 标记某条已读
+            ApiPath::Notifications => "/notifications",
         }
     }
 }

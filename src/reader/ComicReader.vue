@@ -16,6 +16,7 @@ import { readerPageUrl } from './protocol.ts'
 import { useI18n } from '../i18n.ts'
 import FavoriteButton from '../components/FavoriteButton.vue'
 import LoadingSpinner from '../components/LoadingSpinner.vue'
+import jmLoading from '../assets/jm-loading.gif'
 import CommentDrawer from './CommentDrawer.vue'
 import type { CommentTarget } from '../comments/useComments.ts'
 
@@ -48,6 +49,7 @@ const commentTarget = computed<CommentTarget | undefined>(() =>
 let closed = true
 
 const scrollContainer = ref<HTMLElement>()
+// 滚动模式才接管滚轮：翻页模式的滚轮要留给翻页
 // 预加载的图片对象要留着引用，否则浏览器会立刻回收解码结果
 let preloaded: HTMLImageElement[] = []
 let lastFlipAt = 0
@@ -296,6 +298,7 @@ function scrollToCurrentPage() {
   if (readingMode.value === 'paged') {
     container.scrollTop = 0
     container.scrollLeft = 0
+    // 跳转后 target 必须跟着走，否则会被未完成的动画拽回原处
     return
   }
 
@@ -453,6 +456,13 @@ onMounted(() => {
 
 /// 阅读区宽度（阅读区宽度的百分比）：拖右上角小三角调整，漫画始终居中
 const readerWidth = ref<number>(100)
+
+/// 每页的加载状态：加载中显示占位，加载成功把高度交给图片，失败保留占位并给出提示
+const pageStates = ref<Record<number, 'loading' | 'ok' | 'failed'>>({})
+
+function setPageState(index: number, state: 'ok' | 'failed') {
+  pageStates.value[index] = state
+}
 /// 阅读区可视宽度（不含滚动条），把手定位和拖拽都按它算
 const viewportWidth = ref<number>(window.innerWidth)
 
@@ -481,7 +491,11 @@ function syncHandleLeft() {
 watch(readingMode, () => void nextTick(syncHandleLeft))
 watch(readerWidth, () => void nextTick(syncHandleLeft))
 // 章节切换后图片才渲染出来，宽度这时才量得准
-watch(pageUrls, () => void nextTick(syncHandleLeft))
+watch(pageUrls, () => {
+  pageStates.value = {}
+  void nextTick(syncHandleLeft)
+})
+// 换章后内容高度整个变了，target 要对齐新布局，不然会往旧位置跑
 
 function startWidthDrag(event: PointerEvent) {
   const handle = event.currentTarget as HTMLElement
@@ -512,7 +526,7 @@ onBeforeUnmount(() => {
 </script>
 
 <template>
-  <div v-if="showing" class="fixed inset-0 z-50 bg-[#111] flex flex-col select-none">
+  <div v-if="showing" class="fixed inset-0 z-50 bg-white flex flex-col select-none">
     <!-- 顶部工具栏（窗口被收到600宽，排成两行更稳） -->
     <div class="relative z-20 flex flex-col gap-1 px-2 py-1.5 bg-black/85 text-white text-sm shrink-0">
 
@@ -628,13 +642,13 @@ onBeforeUnmount(() => {
 
     <div
       ref="scrollContainer"
-      class="flex-1 overflow-auto bg-[#111] relative"
+      class="flex-1 overflow-auto bg-white relative"
       :class="readingMode === 'paged' ? 'flex items-center justify-center' : 'flex flex-col items-center'"
       @wheel="onWheel"
       @scroll="onScroll">
-      <div v-if="loadingChapter" class="flex flex-col items-center gap-5 py-20 text-white">
-        <loading-spinner :size="14" />
-        <span class="text-gray-400">
+      <div v-if="loadingChapter" class="flex flex-col items-center gap-5 py-20 text-gray-700">
+        <span class="text-orange"><loading-spinner :size="14" /></span>
+        <span class="text-gray-500">
         {{ preparing ? t('reader.preparing') : t('reader.openingShort') }}
       </span>
       </div>
@@ -659,20 +673,31 @@ onBeforeUnmount(() => {
       <!-- 上下滑动：全部页 + 原生懒加载 + content-visibility -->
       <template v-else>
         <!-- 上下滑动：按宽度自适应，左右不留白，纵向滚完整页 -->
+        <!-- 占位按常见比例撑开；图片加载成功后撤掉占位，高度由图片自身决定 -->
         <div
           v-for="(url, index) in pageUrls"
-          :key="url"
+          :key="index"
           :data-page-index="index"
           data-content-edge
-          class="mx-auto flex justify-center shrink-0"
-          :style="{ width: readerWidth + '%', contentVisibility: 'auto', containIntrinsicSize: 'auto 1000px' }">
+          class="mx-auto relative w-full shrink-0"
+          :class="pageStates[index] === 'ok' ? '' : 'aspect-square bg-white'"
+          :style="{ width: readerWidth + '%' }">
           <img
             :src="url"
             :fetchpriority="index === pageIndex ? 'high' : 'low'"
             class="block w-full h-auto"
             :draggable="false"
             loading="lazy"
-            decoding="async" />
+            decoding="async"
+            @load="setPageState(index, 'ok')"
+            @error="setPageState(index, 'failed')" />
+          <div
+            v-if="pageStates[index] !== 'ok'"
+            class="pointer-events-none absolute inset-0 flex flex-col items-center justify-center gap-2">
+            <img v-if="pageStates[index] !== 'failed'" :src="jmLoading" class="h-72 w-72 max-w-full object-contain" alt="" />
+            <span v-else class="text-sm text-gray-400">{{ t('reader.imageFailed') }}</span>
+            <span class="text-xs text-gray-400">{{ index + 1 }}</span>
+          </div>
         </div>
       </template>
     </div>
@@ -682,7 +707,7 @@ onBeforeUnmount(() => {
     <!-- 底部工具条：翻页模式下才有页码控制 -->
     <div
       v-if="readingMode === 'paged' && pageCount > 1"
-      class="flex items-center gap-2 px-3 py-1.5 bg-black/85 shrink-0">
+      class="flex items-center gap-2 px-3 py-1.5 bg-white border-t border-gray-200 shrink-0">
       <n-button size="small" @click="prevPage" :disabled="prevDisabled">
         <template #icon>
           <n-icon>

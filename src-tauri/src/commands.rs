@@ -37,7 +37,8 @@ use crate::responses::{
 use crate::storage::{self, StorageStats};
 use crate::types::{
     CategoryResp, ChapterInfo, Comic, ComicInFavorite, ComicInSearch, ComicInWeekly, FavoriteSort,
-    GetFavoriteResult, GetWeeklyResult, LogMetadata, NovelChapter, NovelDetail, NovelPage,
+    GetFavoriteResult, GetWeeklyResult, LogMetadata, NotificationPage, NovelChapter, NovelDetail,
+    NovelPage,
     SearchResult, SearchResultVariant, SearchSort, SignInResult, SignStatus, WatchHistoryPage,
 };
 use crate::{export, logger, utils};
@@ -474,6 +475,32 @@ pub async fn delete_watch_history(app: AppHandle, id: String) -> CommandResult<(
         .delete_watch_history(&id)
         .await
         .map_err(|err| CommandError::from("删除浏览记录失败", err))
+}
+
+/// 官方通知（官方 App 的信箱）：只读列表，已读状态由 mark_notification_read 改
+#[tauri::command]
+#[specta::specta]
+#[instrument(level = "error", skip_all)]
+pub async fn get_notifications(app: AppHandle) -> CommandResult<NotificationPage> {
+    let jm_client = app.get_jm_client();
+
+    jm_client
+        .get_notifications()
+        .await
+        .map_err(|err| CommandError::from("获取通知失败", err))
+}
+
+/// 标记一条通知为已读：官方 POST /notifications，成功后界面的红点随之消失
+#[tauri::command]
+#[specta::specta]
+#[instrument(level = "error", skip_all, fields(id = id))]
+pub async fn mark_notification_read(app: AppHandle, id: i64) -> CommandResult<()> {
+    let jm_client = app.get_jm_client();
+
+    jm_client
+        .mark_notification_read(id)
+        .await
+        .map_err(|err| CommandError::from("标记通知已读失败", err))
 }
 
 /// 小说列表：`o` 是排序（"mr" = 最近更新），`page` 从 1 开始

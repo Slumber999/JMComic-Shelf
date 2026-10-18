@@ -26,6 +26,7 @@ import SettingsDialog from './dialogs/SettingsDialog/SettingsDialog.vue'
 import { lastProgress, progressLabel } from './reader/progress.ts'
 import LoadingSpinner from './components/LoadingSpinner.vue'
 import { useI18n } from './i18n.ts'
+import { useNotifications } from './notifications/useNotifications.ts'
 
 const store = useStore()
 const { t, locale, setLocale } = useI18n()
@@ -116,6 +117,16 @@ async function continueReading() {
 
 const aboutDialogShowing = ref<boolean>(false)
 const settingsDialogShowing = ref<boolean>(false)
+
+const { hasUnreadNotification, refreshNotifications } = useNotifications()
+/// 登录 / 切换账号 / 退出后刷新一次通知；未登录时 refreshNotifications 会直接清空、不发请求
+watch(() => store.userProfile, () => void refreshNotifications(), { immediate: true })
+/// 打开配置页时再刷新一次（不做常驻轮询）
+watch(settingsDialogShowing, (showing) => {
+  if (showing) {
+    void refreshNotifications()
+  }
+})
 
 // 配置保存：合并短时间内的连续修改（输入框是边打字边改的），避免每个按键都写一次盘
 let saveTimer: number | undefined
@@ -268,14 +279,21 @@ onMounted(async () => {
         </template>
         {{ t('app.about') }}
       </n-button>
-      <n-button size="small" @click="settingsDialogShowing = true">
-        <template #icon>
-          <n-icon size="18">
-            <PhGearSix />
-          </n-icon>
-        </template>
-        {{ t('app.settings') }}
-      </n-button>
+      <!-- 红点用绝对定位贴在按钮右上角，不占位、不改按钮尺寸 -->
+      <span class="relative inline-flex">
+        <n-button size="small" @click="settingsDialogShowing = true">
+          <template #icon>
+            <n-icon size="18">
+              <PhGearSix />
+            </n-icon>
+          </template>
+          {{ t('app.settings') }}
+        </n-button>
+        <span
+          v-if="hasUnreadNotification"
+          class="pointer-events-none absolute right-0.5 top-0.5 h-2 w-2 rounded-full bg-red-500"
+          :title="t('account.notificationNew')" />
+      </span>
       <n-button
         v-if="lastRead !== undefined"
         size="small"

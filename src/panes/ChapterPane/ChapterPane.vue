@@ -113,6 +113,8 @@ async function showComicDownloadDirInFileManager() {
           <div class="flex items-center gap-2">
             <author-links class="text-red" :author="store.pickedComic.author" />
             <favorite-author-button :author="store.pickedComic.author" />
+            <!-- 禁漫号：靠右显示，便于复制到浏览器或反馈时引用 -->
+            <span class="ml-auto select-text text-xs text-gray-500">JM{{ store.pickedComic.id }}</span>
           </div>
           <span class="text-gray"><tag-links :tags="store.pickedComic.tags" /></span>
           <div class="flex items-center gap-2 mt-auto">

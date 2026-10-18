@@ -129,6 +129,7 @@ async function goToChapter(index: number) {
 
   await nextTick()
   scrollContainer.value?.scrollTo({ top: 0 })
+  // 换章后正文高度完全变了：target 必须对齐到回顶后的位置
   syncHandleLeft()
 }
 
@@ -235,6 +236,7 @@ function startWidthDrag(event: PointerEvent) {
 watch(readerWidth, () => void nextTick(syncHandleLeft))
 // 正文字体跟着宽度百分比走，字号和行距用固定默认值
 watch(paragraphs, () => void nextTick(syncHandleLeft))
+// 正文长度变化会重排，高度变了 target 要重新对齐
 
 onMounted(() => {
   window.addEventListener('keydown', onKeydown)

@@ -80,6 +80,8 @@ pub fn run() {
             save_config,
             login,
             logout,
+            get_notifications,
+            mark_notification_read,
             search,
             get_ranking,
             toggle_favorite,

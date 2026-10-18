@@ -114,6 +114,8 @@ fn code_for(err_title: &str) -> &'static str {
         "获取小说评论失败" => "novel-comment-fetch",
         "获取浏览记录失败" => "watch-history-fetch",
         "删除浏览记录失败" => "watch-history-delete",
+        "获取通知失败" => "notification-fetch",
+        "标记通知已读失败" => "notification-mark-read",
         "暂停下载任务失败" => "download-task-pause",
         "获取用户信息失败" => "user-info-fetch",
         "获取签到状态失败" => "sign-status",

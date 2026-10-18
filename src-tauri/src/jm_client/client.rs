@@ -602,6 +602,51 @@ impl JmClient {
         Ok(())
     }
 
+    /// 官方通知列表：GET /notifications（需要登录态）
+    /// - 官方可能返回裸数组，也可能返回 {total, list}，两种都接
+    #[instrument(level = "error", skip_all)]
+    pub async fn get_notifications(&self) -> eyre::Result<NotificationPage> {
+        let data = self
+            .request_decrypted_data_with(
+                reqwest::Method::GET,
+                ApiPath::Notifications,
+                None,
+                None,
+                "获取通知失败",
+                Some("获取通知失败，请先登录"),
+                // 未登录时官方回 {"code":200,"data":[],"errorMsg":"請登入!"}
+                Some("获取通知失败，请先登录"),
+            )
+            .await?;
+        if let Ok(page) = serde_json::from_str::<NotificationPage>(&data) {
+            return Ok(page);
+        }
+        let list = serde_json::from_str::<Vec<NotificationItem>>(&data)
+            .wrap_err(format!("将解密后的数据解析为通知列表失败: {data}"))?;
+        let total = i64::try_from(list.len()).unwrap_or(i64::MAX);
+        Ok(NotificationPage { total, list })
+    }
+
+    /// 标记一条通知为已读：POST /notifications，表单 `id` + `read=1`
+    /// - 成功时 data 解密出来是一句确认文案（"通知已读"），拿到 data 就算标记成功
+    #[instrument(level = "error", skip_all, fields(id = id))]
+    pub async fn mark_notification_read(&self, id: i64) -> eyre::Result<()> {
+        let form = json!({
+            "id": id,
+            "read": 1,
+        });
+        self.request_decrypted_data(
+            reqwest::Method::POST,
+            ApiPath::Notifications,
+            None,
+            Some(form),
+            "标记通知已读失败",
+            Some("标记通知已读失败，请先登录"),
+        )
+        .await?;
+        Ok(())
+    }
+
     /// 小说列表：`o` 是排序（"mr" = 最近更新），`page` 从 1 开始
     #[instrument(level = "error", skip_all, fields(order = o, page = page))]
     pub async fn get_novel_list(&self, o: &str, page: i64) -> eyre::Result<NovelPage> {
