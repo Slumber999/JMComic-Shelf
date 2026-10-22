@@ -26,19 +26,25 @@ export function useComments(options: { target: () => CommentTarget | null; page:
 
   const pageCount = computed(() => Math.max(1, Math.ceil(total.value / PAGE_SIZE)))
 
-  async function loadComments() {
-    if (loading.value) {
-      return
-    }
+  /// 请求序号：换页 / 换目标后以最后发起的请求为准，慢网下先发出的响应直接丢弃
+  let requestSeq = 0
 
+  async function loadComments() {
+    const seq = ++requestSeq
     const target = options.target()
+    const page = options.page.value
     loading.value = true
     const result =
       target === null
-        ? await commands.getComments(null, options.page.value)
+        ? await commands.getComments(null, page)
         : target.kind === 'novel'
-          ? await commands.getNovelComments(target.id, options.page.value)
-          : await commands.getComments(target.id, options.page.value)
+          ? await commands.getNovelComments(target.id, page)
+          : await commands.getComments(target.id, page)
+
+    // 期间又发起了新请求：这份响应已过期，不写任何状态
+    if (seq !== requestSeq) {
+      return
+    }
     loading.value = false
 
     if (result.status === 'error') {

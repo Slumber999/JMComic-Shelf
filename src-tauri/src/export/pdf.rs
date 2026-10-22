@@ -20,8 +20,8 @@ use crate::{
     config::ExportSkipMode,
     events::ExportPdfEvent,
     export::{
-        get_downloaded_chapters, get_downloaded_chapters_by_ids, get_image_paths,
-        ComicExportLockGuard, ExportFormat,
+        chapter_export_path, get_downloaded_chapters, get_downloaded_chapters_by_ids,
+        get_image_paths, ComicExportLockGuard, ExportFormat,
     },
     extensions::AppHandleExt,
     types::{ChapterInfo, Comic},
@@ -181,27 +181,9 @@ fn pdf_internal(
             );
             let _enter = span.enter();
 
-            // 创建pdf文件
-            let chapter_download_dir = chapter_info
-                .chapter_download_dir
-                .as_ref()
-                .ok_or_eyre("`chapter_download_dir`字段为`None`")?;
-            let chapter_download_dir_name = chapter_info
-                .get_chapter_download_dir_name()
-                .wrap_err("获取章节下载目录名失败")?;
-            let chapter_relative_dir = chapter_info
-                .get_chapter_relative_dir(comic)
-                .wrap_err("获取章节相对目录失败")?;
-            let chapter_export_dir = match chapter_relative_dir.parent() {
-                Some(parent) => pdf_export_dir.join(parent),
-                None => pdf_export_dir.clone(),
-            };
-            // 保证导出目录存在
-            std::fs::create_dir_all(&chapter_export_dir)
-                .wrap_err(format!("创建目录`{}`失败", chapter_export_dir.display()))?;
-
-            let pdf_path =
-                chapter_export_dir.join(format!("{chapter_download_dir_name}.{extension}"));
+            // 创建pdf文件（顺带建好目录）
+            let (chapter_download_dir, pdf_path) =
+                chapter_export_path(comic, &chapter_info, &pdf_export_dir, extension)?;
             // 跳过逻辑
             let should_skip = match skip_mode {
                 ExportSkipMode::SkipExported if chapter_info.is_pdf_exported => true,
@@ -226,7 +208,7 @@ fn pdf_internal(
                 return Ok(());
             }
 
-            let image_paths = get_image_paths(chapter_download_dir, true).wrap_err(format!(
+            let image_paths = get_image_paths(&chapter_download_dir, true).wrap_err(format!(
                 "获取`{}`中的图片失败",
                 chapter_download_dir.display()
             ))?;
@@ -399,8 +381,22 @@ fn create_pdf(image_paths: Vec<PathBuf>, pdf_path: &Path) -> eyre::Result<()> {
 
     doc.compress();
 
-    doc.save(pdf_path)
-        .wrap_err(format!("保存`{}`失败", pdf_path.display()))?;
+    // 先存 `*.tmp` 再改名：中途失败不会留下半个 pdf
+    let tmp_path = pdf_path.with_extension("pdf.tmp");
+    if let Err(err) = doc.save(&tmp_path) {
+        let _ = std::fs::remove_file(&tmp_path);
+        return Err(err).wrap_err(format!("保存`{}`失败", tmp_path.display()));
+    }
+    // Windows 上 rename 不覆盖已存在的目标
+    if pdf_path.exists() {
+        std::fs::remove_file(pdf_path)
+            .wrap_err(format!("删除旧的pdf`{}`失败", pdf_path.display()))?;
+    }
+    std::fs::rename(&tmp_path, pdf_path).wrap_err(format!(
+        "将`{}`重命名为`{}`失败",
+        tmp_path.display(),
+        pdf_path.display()
+    ))?;
 
     Ok(())
 }
@@ -494,7 +490,21 @@ fn merge_pdf_file(chapter_pdf_paths: Vec<PathBuf>, pdf_path: &Path) -> eyre::Res
 
     doc.compress();
 
-    doc.save(pdf_path)
-        .wrap_err(format!("保存`{}`失败", pdf_path.display()))?;
+    // 先存 `*.tmp` 再改名：合并过程中失败不会留下半个 pdf
+    let tmp_path = pdf_path.with_extension("pdf.tmp");
+    if let Err(err) = doc.save(&tmp_path) {
+        let _ = std::fs::remove_file(&tmp_path);
+        return Err(err).wrap_err(format!("保存`{}`失败", tmp_path.display()));
+    }
+    // Windows 上 rename 不覆盖已存在的目标
+    if pdf_path.exists() {
+        std::fs::remove_file(pdf_path)
+            .wrap_err(format!("删除旧的pdf`{}`失败", pdf_path.display()))?;
+    }
+    std::fs::rename(&tmp_path, pdf_path).wrap_err(format!(
+        "将`{}`重命名为`{}`失败",
+        tmp_path.display(),
+        pdf_path.display()
+    ))?;
     Ok(())
 }

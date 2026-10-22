@@ -26,9 +26,6 @@ importers:
       pinia:
         specifier: ^3.0.1
         version: 3.0.1(typescript@5.6.2)(vue@3.5.13(typescript@5.6.2))
-      virtua:
-        specifier: ^0.48.6
-        version: 0.48.8(vue@3.5.13(typescript@5.6.2))
       vue:
         specifier: ^3.5.13
         version: 3.5.13(typescript@5.6.2)
@@ -1972,26 +1969,6 @@ packages:
     resolution: {integrity: sha512-H9V1zGRLQZg9b+GdMk8MXDN2Lva0zx72MPahDKc30v+DtwKjfyOSXWRIX4t2mhDubM1H09gPhWeth/BJWPHGUw==}
     peerDependencies:
       vue: ^3.0.11
-
-  virtua@0.48.8:
-    resolution: {integrity: sha512-jpsxOw5V4B6hg44JePRLo9DL0TV7N1lBEVtPjKpAJebXyhI2s9lfiXJESaLapNtr3vtiSk/pWHiLf7B2a6UcgQ==}
-    peerDependencies:
-      react: '>=16.14.0'
-      react-dom: '>=16.14.0'
-      solid-js: '>=1.0'
-      svelte: '>=5.0'
-      vue: '>=3.2'
-    peerDependenciesMeta:
-      react:
-        optional: true
-      react-dom:
-        optional: true
-      solid-js:
-        optional: true
-      svelte:
-        optional: true
-      vue:
-        optional: true
 
   vite-hot-client@0.2.4:
     resolution: {integrity: sha512-a1nzURqO7DDmnXqabFOliz908FRmIppkBKsJthS8rbe8hBEXwEwe4C3Pp33Z1JoFCYfVL4kTOMLKk0ZZxREIeA==}
@@ -4054,10 +4031,6 @@ snapshots:
   vdirs@0.1.8(vue@3.5.13(typescript@5.6.2)):
     dependencies:
       evtd: 0.2.4
-      vue: 3.5.13(typescript@5.6.2)
-
-  virtua@0.48.8(vue@3.5.13(typescript@5.6.2)):
-    optionalDependencies:
       vue: 3.5.13(typescript@5.6.2)
 
   vite-hot-client@0.2.4(vite@5.4.8):

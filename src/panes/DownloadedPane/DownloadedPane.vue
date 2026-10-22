@@ -1,5 +1,5 @@
 <script setup lang="tsx">
-import { Comic, commands } from '../../bindings.ts'
+import { CommandError, Comic, Result, commands } from '../../bindings.ts'
 import { computed, nextTick, ref, watch, watchEffect } from 'vue'
 import DownloadedComicCard from './components/DownloadedComicCard.vue'
 import { PhFolderOpen } from '@phosphor-icons/vue'
@@ -264,7 +264,8 @@ function handleCheckboxClick(comic: Comic) {
   }
 }
 
-async function exportCbz() {
+/// 导出勾选的漫画：cbz / pdf 只差调哪个命令，其余（切进度页、逐本导出、报错即停）一样
+async function exportChecked(exportComic: (comic: Comic) => Promise<Result<null, CommandError>>) {
   if (checkedIds.value.size === 0) {
     return
   }
@@ -272,7 +273,7 @@ async function exportCbz() {
   store.showProgressesTab('uncompleted')
   const comics = currentPageComics.value.filter((comic) => checkedIds.value.has(comic.id))
   for (const comic of comics) {
-    const result = await commands.exportCbz(comic)
+    const result = await exportComic(comic)
     if (result.status === 'error') {
       console.error(result.error)
       return
@@ -280,20 +281,12 @@ async function exportCbz() {
   }
 }
 
-async function exportPdf() {
-  if (checkedIds.value.size === 0) {
-    return
-  }
+function exportCbz() {
+  void exportChecked(commands.exportCbz)
+}
 
-  store.showProgressesTab('uncompleted')
-  const comics = currentPageComics.value.filter((comic) => checkedIds.value.has(comic.id))
-  for (const comic of comics) {
-    const result = await commands.exportPdf(comic)
-    if (result.status === 'error') {
-      console.error(result.error)
-      return
-    }
-  }
+function exportPdf() {
+  void exportChecked(commands.exportPdf)
 }
 
 function useDropdown() {

@@ -776,9 +776,6 @@ watch(listMode, async (entering) => {
 
 onBeforeUnmount(stopWatchingListScroll)
 
-/// 列表模式一批 40 条 = 服务端两页（每页约 20 条），两页并发、按页序接上
-const PAGES_PER_BATCH = 2
-
 /// 取第 page 页，并记下总条数与总页数（越界页会返回最后一页，所以只请求有效页）
 async function fetchFavoritePage(page: number): Promise<ComicInFavorite[] | undefined> {
   const result = await commands.getFavoriteFolder(folderIdSelected.value, page, sortSelected.value)
@@ -820,7 +817,7 @@ async function loadNextBatch(): Promise<boolean> {
 
     // 首批的第 1 页已经在上面取过，这里补齐到当前批次末页，保证每批 40 条；只请求到最后一页为止
     const firstPage = listPage.value + 1
-    const batchEnd = (Math.floor(listPage.value / PAGES_PER_BATCH) + 1) * PAGES_PER_BATCH
+    const batchEnd = (Math.floor(listPage.value / SERVER_PAGES_PER_PAGE) + 1) * SERVER_PAGES_PER_PAGE
     const lastPage = Math.min(batchEnd, listPageCount.value)
     const pageIndexes = Array.from({ length: Math.max(0, lastPage - firstPage + 1) }, (_, index) => index)
     const pages: (ComicInFavorite[] | undefined)[] = new Array(pageIndexes.length)

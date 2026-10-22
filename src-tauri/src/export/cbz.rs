@@ -15,30 +15,14 @@ use crate::{
     config::ExportSkipMode,
     events::ExportCbzEvent,
     export::{
-        get_downloaded_chapters, get_downloaded_chapters_by_ids, get_image_paths,
+        chapter_export_path, get_downloaded_chapters, get_downloaded_chapters_by_ids,
+        get_image_paths,
         manager::{ExportTask, ExportTaskState},
-        ComicExportLockGuard, ExportFormat,
+        CbzErrorEventGuard, ComicExportLockGuard, ExportFormat,
     },
     extensions::{AppHandleExt, EyreReportToMessage},
     types::{ChapterInfo, Comic, ComicInfo},
 };
-
-struct CbzErrorEventGuard {
-    uuid: String,
-    app: AppHandle,
-    success: bool,
-}
-
-impl Drop for CbzErrorEventGuard {
-    fn drop(&mut self) {
-        if self.success {
-            return;
-        }
-
-        let uuid = self.uuid.clone();
-        let _ = ExportCbzEvent::Error { uuid }.emit(&self.app);
-    }
-}
 
 #[allow(clippy::cast_possible_wrap)]
 #[allow(clippy::cast_possible_truncation)]
@@ -170,27 +154,9 @@ fn cbz_internal(
         );
         let _enter = span.enter();
 
-        // 获取导出路径
-        let chapter_download_dir = chapter_info
-            .chapter_download_dir
-            .as_ref()
-            .ok_or_eyre("`chapter_download_dir`字段为`None`")?;
-        let chapter_download_dir_name = chapter_info
-            .get_chapter_download_dir_name()
-            .wrap_err("获取章节下载目录名失败")?;
-        let chapter_relative_dir = chapter_info
-            .get_chapter_relative_dir(comic)
-            .wrap_err("获取章节相对目录失败")?;
-        let chapter_export_dir = match chapter_relative_dir.parent() {
-            Some(parent) => cbz_export_dir.join(parent),
-            None => cbz_export_dir.clone(),
-        };
-
-        // 保证导出目录存在
-        std::fs::create_dir_all(&chapter_export_dir)
-            .wrap_err(format!("创建目录`{}`失败", chapter_export_dir.display()))?;
-
-        let zip_path = chapter_export_dir.join(format!("{chapter_download_dir_name}.{extension}"));
+        // 获取导出路径（顺带建好目录）
+        let (chapter_download_dir, zip_path) =
+            chapter_export_path(comic, &chapter_info, &cbz_export_dir, extension)?;
 
         // 跳过逻辑
         let should_skip = match skip_mode {
@@ -220,52 +186,74 @@ fn cbz_internal(
         let comic_info_xml = yaserde::ser::to_string_with_config(&comic_info, &cfg)
             .map_err(|err_msg| eyre!("序列化`ComicInfo.xml`失败: {err_msg}"))?;
 
-        // 创建cbz文件
-        let zip_file = std::fs::File::create(&zip_path)
-            .wrap_err(format!("创建文件`{}`失败", zip_path.display()))?;
-        let mut zip_writer = ZipWriter::new(zip_file);
-        // 把ComicInfo.xml写入cbz
-        zip_writer
-            .start_file(
-                "ComicInfo.xml",
-                SimpleFileOptions::default()
-                    .compression_method(zip::CompressionMethod::Stored),
-            )
-            .wrap_err(format!("在`{}`创建`ComicInfo.xml`失败", zip_path.display()))?;
-        zip_writer
-            .write_all(comic_info_xml.as_bytes())
-            .wrap_err("写入`ComicInfo.xml`失败")?;
-
-        let image_paths = get_image_paths(chapter_download_dir, false).wrap_err(format!(
-            "获取`{}`中的图片失败",
-            chapter_download_dir.display()
-        ))?;
-
-        for image_path in image_paths {
-            let filename = image_path
-                .file_name()
-                .and_then(|name| name.to_str())
-                .ok_or_eyre(format!("获取`{}`的文件名失败", image_path.display()))?;
-            // 将文件写入cbz
+        // 先写 `*.tmp`，全部写完并关闭成功后再改名：中途失败不会留下半个 cbz
+        let tmp_path = zip_path.with_extension("cbz.tmp");
+        let write_result = (|| -> eyre::Result<()> {
+            let zip_file = std::fs::File::create(&tmp_path)
+                .wrap_err(format!("创建文件`{}`失败", tmp_path.display()))?;
+            let mut zip_writer = ZipWriter::new(zip_file);
+            // 把ComicInfo.xml写入cbz
             zip_writer
                 .start_file(
-                    filename,
+                    "ComicInfo.xml",
                     SimpleFileOptions::default()
                         .compression_method(zip::CompressionMethod::Stored),
                 )
-                .wrap_err(format!("在`{}`创建`{filename}`失败", zip_path.display()))?;
-            let mut file = std::fs::File::open(&image_path)
-                .wrap_err(format!("打开`{}`失败", image_path.display()))?;
-            std::io::copy(&mut file, &mut zip_writer).wrap_err(format!(
-                "将`{}`写入`{}`失败",
-                image_path.display(),
+                .wrap_err(format!("在`{}`创建`ComicInfo.xml`失败", tmp_path.display()))?;
+            zip_writer
+                .write_all(comic_info_xml.as_bytes())
+                .wrap_err("写入`ComicInfo.xml`失败")?;
+
+            let image_paths = get_image_paths(&chapter_download_dir, false).wrap_err(format!(
+                "获取`{}`中的图片失败",
+                chapter_download_dir.display()
+            ))?;
+
+            for image_path in image_paths {
+                let filename = image_path
+                    .file_name()
+                    .and_then(|name| name.to_str())
+                    .ok_or_eyre(format!("获取`{}`的文件名失败", image_path.display()))?;
+                // 将文件写入cbz
+                zip_writer
+                    .start_file(
+                        filename,
+                        SimpleFileOptions::default()
+                            .compression_method(zip::CompressionMethod::Stored),
+                    )
+                    .wrap_err(format!("在`{}`创建`{filename}`失败", tmp_path.display()))?;
+                let mut file = std::fs::File::open(&image_path)
+                    .wrap_err(format!("打开`{}`失败", image_path.display()))?;
+                std::io::copy(&mut file, &mut zip_writer).wrap_err(format!(
+                    "将`{}`写入`{}`失败",
+                    image_path.display(),
+                    tmp_path.display()
+                ))?;
+            }
+
+            zip_writer
+                .finish()
+                .wrap_err(format!("关闭`{}`失败", tmp_path.display()))?;
+
+            // Windows 上 rename 不覆盖已存在的目标
+            if zip_path.exists() {
+                std::fs::remove_file(&zip_path).wrap_err(format!(
+                    "删除旧的cbz`{}`失败",
+                    zip_path.display()
+                ))?;
+            }
+            std::fs::rename(&tmp_path, &zip_path).wrap_err(format!(
+                "将`{}`重命名为`{}`失败",
+                tmp_path.display(),
                 zip_path.display()
             ))?;
+            Ok(())
+        })();
+        // 失败时清掉临时文件，别把垃圾留在导出目录里
+        if write_result.is_err() {
+            let _ = std::fs::remove_file(&tmp_path);
         }
-
-        zip_writer
-            .finish()
-            .wrap_err(format!("关闭`{}`失败", zip_path.display()))?;
+        write_result?;
 
         // 更新章节导出状态
         chapter_info.is_cbz_exported = true;

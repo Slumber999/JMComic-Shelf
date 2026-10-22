@@ -38,6 +38,45 @@ export function startExportProgressListeners(): () => void {
     }
   }
 
+  /// 第一次见到这个导出任务：开一行「导出中」，进度细节随后由各事件补
+  function startExportRow(
+    uuid: string,
+    exportType: 'cbz' | 'pdf',
+    comicTitle: string,
+    total: number,
+    indicator: string,
+  ) {
+    progresses.set(uuid, {
+      uuid,
+      exportType,
+      state: 'Processing',
+      comicTitle,
+      current: 0,
+      total,
+      percentage: 0,
+      indicator,
+    })
+  }
+
+  /// 收尾一行导出进度：进度条拉满，记下导出目录和漫画 id
+  function finishExportRow(
+    uuid: string,
+    comicId: number,
+    chapterExportDir: string | undefined,
+    indicator: string,
+  ) {
+    const progressData = progresses.get(uuid)
+    if (progressData === undefined) {
+      return
+    }
+    progressData.state = 'End'
+    progressData.current = progressData.total
+    progressData.percentage = 100
+    progressData.chapterExportDir = chapterExportDir
+    progressData.comicId = comicId
+    progressData.indicator = indicator
+  }
+
   let unListenExportTaskEvent: (() => void) | undefined
   let unListenExportCbzEvent: (() => void) | undefined
   let unListenExportPdfEvent: (() => void) | undefined
@@ -104,16 +143,7 @@ export function startExportProgressListeners(): () => void {
     .listen(async ({ payload: exportEvent }) => {
       if (exportEvent.event === 'Start') {
         const { uuid, comicTitle, total } = exportEvent.data
-        progresses.set(uuid, {
-          uuid,
-          exportType: 'cbz',
-          state: 'Processing',
-          comicTitle,
-          current: 0,
-          total,
-          percentage: 0,
-          indicator: t('exportProgress.cbzCreating'),
-        })
+        startExportRow(uuid, 'cbz', comicTitle, total, t('exportProgress.cbzCreating'))
       } else if (exportEvent.event === 'Progress') {
         const { uuid, current, imgCurrent, imgTotal, chapterTitle } = exportEvent.data
         const progressData = progresses.get(uuid)
@@ -151,15 +181,7 @@ export function startExportProgressListeners(): () => void {
         }
       } else if (exportEvent.event === 'End') {
         const { uuid, comicId, chapterExportDir } = exportEvent.data
-        const progressData = progresses.get(uuid)
-        if (progressData !== undefined) {
-          progressData.state = 'End'
-          progressData.current = progressData.total
-          progressData.percentage = 100
-          progressData.chapterExportDir = chapterExportDir
-          progressData.comicId = comicId
-          progressData.indicator = t('exportProgress.cbzCreateCompleted')
-        }
+        finishExportRow(uuid, comicId, chapterExportDir, t('exportProgress.cbzCreateCompleted'))
         await syncPickedAndDownloadedComic(comicId)
       }
     })
@@ -172,16 +194,7 @@ export function startExportProgressListeners(): () => void {
     .listen(async ({ payload: exportEvent }) => {
       if (exportEvent.event === 'CreateStart') {
         const { uuid, comicTitle, total } = exportEvent.data
-        progresses.set(uuid, {
-          uuid,
-          exportType: 'pdf',
-          state: 'Processing',
-          comicTitle,
-          current: 0,
-          total,
-          percentage: 0,
-          indicator: t('exportProgress.pdfCreating'),
-        })
+        startExportRow(uuid, 'pdf', comicTitle, total, t('exportProgress.pdfCreating'))
       } else if (exportEvent.event === 'CreateProgress') {
         const { uuid, current } = exportEvent.data
         const progressData = progresses.get(uuid)
@@ -200,28 +213,11 @@ export function startExportProgressListeners(): () => void {
         }
       } else if (exportEvent.event === 'CreateEnd') {
         const { uuid, comicId, chapterExportDir } = exportEvent.data
-        const progressData = progresses.get(uuid)
-        if (progressData !== undefined) {
-          progressData.state = 'End'
-          progressData.current = progressData.total
-          progressData.percentage = 100
-          progressData.chapterExportDir = chapterExportDir
-          progressData.comicId = comicId
-          progressData.indicator = t('exportProgress.pdfCreateCompleted')
-        }
+        finishExportRow(uuid, comicId, chapterExportDir, t('exportProgress.pdfCreateCompleted'))
         await syncPickedAndDownloadedComic(comicId)
       } else if (exportEvent.event === 'MergeStart') {
         const { uuid, comicTitle, total } = exportEvent.data
-        progresses.set(uuid, {
-          uuid,
-          exportType: 'pdf',
-          state: 'Processing',
-          comicTitle,
-          current: 0,
-          total,
-          percentage: 0,
-          indicator: t('exportProgress.pdfMerging'),
-        })
+        startExportRow(uuid, 'pdf', comicTitle, total, t('exportProgress.pdfMerging'))
       } else if (exportEvent.event === 'MergeProgress') {
         const { uuid, current } = exportEvent.data
         const progressData = progresses.get(uuid)
@@ -240,15 +236,7 @@ export function startExportProgressListeners(): () => void {
         }
       } else if (exportEvent.event === 'MergeEnd') {
         const { uuid, comicId, chapterExportDir } = exportEvent.data
-        const progressData = progresses.get(uuid)
-        if (progressData !== undefined) {
-          progressData.state = 'End'
-          progressData.current = progressData.total
-          progressData.percentage = 100
-          progressData.chapterExportDir = chapterExportDir
-          progressData.comicId = comicId
-          progressData.indicator = t('exportProgress.pdfMergeCompleted')
-        }
+        finishExportRow(uuid, comicId, chapterExportDir, t('exportProgress.pdfMergeCompleted'))
       }
     })
     .then((unListenFn) => {

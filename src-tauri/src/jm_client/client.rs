@@ -302,6 +302,12 @@ impl JmClient {
         }
 
         let _guard = self.relogin_lock.lock().await;
+        // 等锁期间别人可能刚登录失败过；拿到锁后再复查一次冷却，别接着再打一次登录接口
+        if let Some(at) = *self.last_relogin_failure.read() {
+            if at.elapsed() < RELOGIN_COOLDOWN {
+                return false;
+            }
+        }
         if self.session_generation.load(Ordering::Relaxed) != generation {
             return true;
         }
@@ -961,16 +967,7 @@ impl JmClient {
         url: &str,
     ) -> eyre::Result<(Bytes, ImageFormat)> {
         let request = self.img_client.read().get(url).header("user-agent", USER_AGENT);
-        let http_resp = request.send().await?;
-
-        let status = http_resp.status();
-        if status != StatusCode::OK {
-            let text = http_resp.text().await?;
-            let err = eyre!("下载图片失败，预料之外的状态码({status}): {text}");
-            return Err(err);
-        }
-
-        let mut image_data = http_resp.bytes().await?;
+        let mut image_data = read_image_body(request.send().await?).await?;
 
         if image_data.is_empty() {
             // 如果图片为空，说明jm那边缓存失效了，带上时间戳再次请求，以避免缓存
@@ -978,15 +975,7 @@ impl JmClient {
             let query = json!({"ts": ts});
             let request = self.img_client.read().get(url).query(&query);
 
-            let http_resp = request.send().await?;
-            let status = http_resp.status();
-            if status != StatusCode::OK {
-                let text = http_resp.text().await?;
-                let err = eyre!("下载图片失败，预料之外的状态码({status}): {text}");
-                return Err(err);
-            }
-
-            image_data = http_resp.bytes().await?;
+            image_data = read_image_body(request.send().await?).await?;
         }
 
         let format = image::guess_format(&image_data)
@@ -994,4 +983,14 @@ impl JmClient {
 
         Ok((image_data, format))
     }
+}
+
+/// 图片响应转字节：非 200 连正文一起报错（正文通常是 CDN 的错误页）
+async fn read_image_body(http_resp: reqwest::Response) -> eyre::Result<Bytes> {
+    let status = http_resp.status();
+    if status != StatusCode::OK {
+        let text = http_resp.text().await?;
+        return Err(eyre!("下载图片失败，预料之外的状态码({status}): {text}"));
+    }
+    Ok(http_resp.bytes().await?)
 }

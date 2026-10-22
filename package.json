@@ -1,7 +1,7 @@
 {
   "name": "jmcomic-shelf",
   "private": true,
-  "version": "1.1.8",
+  "version": "1.1.9",
   "type": "module",
   "scripts": {
     "dev": "vite",
@@ -16,7 +16,6 @@
     "@viselect/vue": "^3.9.0",
     "naive-ui": "^2.40.1",
     "pinia": "^3.0.1",
-    "virtua": "^0.48.6",
     "vue": "^3.5.13"
   },
   "devDependencies": {

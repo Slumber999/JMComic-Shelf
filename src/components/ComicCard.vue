@@ -126,6 +126,7 @@ function onCoverPointerEnter(event: PointerEvent) {
               'font-bold line-clamp-2 cursor-pointer transition-colors duration-200 hover:text-blue-5',
               layout === 'list' ? 'text-base' : 'text-sm mt-1',
             ]"
+            :title="comicTitle"
             @click="pickComic">
             {{ comicTitle }}
           </span>

@@ -19,6 +19,7 @@ use tokio::sync::Semaphore;
 use tokio::task::JoinSet;
 
 use crate::extensions::AppHandleExt;
+use crate::utils;
 use crate::jm_client::JmClient;
 use crate::responses::{ComicInFavoriteRespData, FavoriteFolderRespData};
 use crate::types::FavoriteSort;
@@ -69,6 +70,10 @@ pub struct UpdateFavoritesIndexResult {
 /// 当前账号 uid：进程内缓存，省掉每次读写索引都请求一次收藏夹列表
 static ACCOUNT_UID: LazyLock<RwLock<Option<String>>> = LazyLock::new(|| RwLock::new(None));
 
+/// 索引是「读文件-改内存-写文件」，并发改会丢更新，这里把整段串行化
+static INDEX_WRITE_LOCK: LazyLock<tokio::sync::Mutex<()>> =
+    LazyLock::new(|| tokio::sync::Mutex::new(()));
+
 /// 登出时清掉：换账号后索引文件不是同一份
 pub fn reset_account_uid() {
     *ACCOUNT_UID.write() = None;
@@ -116,7 +121,7 @@ pub async fn build(
         .total
         .parse::<i64>()
         .wrap_err("将total解析为i64失败")?;
-    let page_count = if count > 0 { (total + count - 1) / count } else { 1 };
+    let page_count = utils::page_count(total, count);
 
     let mut comic_resp_datas = first_page.list;
     comic_resp_datas.extend(fetch_pages(&jm_client, folder_id, 2, page_count).await?);
@@ -125,6 +130,9 @@ pub async fn build(
         .into_iter()
         .filter_map(index_comic)
         .collect();
+
+    // 锁住整个「读-改-写」，拿不到别的写者就不会覆盖掉它刚写进去的内容
+    let _guard = INDEX_WRITE_LOCK.lock().await;
 
     let mut index_file = load_index_file(app, &uid);
     let key = folder_id.to_string();
@@ -173,7 +181,10 @@ pub async fn update(
         .total
         .parse::<i64>()
         .wrap_err("将total解析为i64失败")?;
-    let page_count = if count > 0 { (total + count - 1) / count } else { 1 };
+    let page_count = utils::page_count(total, count);
+
+    // 锁住整个「读-改-写」；翻页请求连同在内，宁可锁粗一点也不丢更新
+    let _guard = INDEX_WRITE_LOCK.lock().await;
 
     let mut index_file = load_index_file(app, &uid);
     let key = folder_id.to_string();
@@ -260,6 +271,9 @@ pub async fn update(
 /// 从该账号所有收藏夹层里删掉这本漫画（本地取消收藏后调用）
 pub async fn remove_comic(app: &AppHandle, comic_id: i64) -> eyre::Result<()> {
     let uid = account_uid(app).await?;
+    // 与 build / update 用同一把锁，避免和它们的「读-改-写」互相覆盖
+    let _guard = INDEX_WRITE_LOCK.lock().await;
+
     let mut index_file = load_index_file(app, &uid);
 
     let mut changed = false;

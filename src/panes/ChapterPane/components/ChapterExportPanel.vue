@@ -65,14 +65,19 @@ const {
   onComicChanged: () => exportingChapterIds.value.clear(),
 })
 
+/// 勾选且当前可选的章节：正在下载 / 正在导出的不算
+function checkedSelectableChapters(): ChapterInfo[] {
+  return chapterInfos.value.filter(
+    (chapter) => isChapterSelectable(chapter) && checkedIds.value.has(chapter.chapterId),
+  )
+}
+
 async function exportPdf() {
   if (store.pickedComic === undefined) {
     return
   }
 
-  const checked = chapterInfos.value.filter(
-    (chapter) => isChapterSelectable(chapter) && checkedIds.value.has(chapter.chapterId),
-  )
+  const checked = checkedSelectableChapters()
   // pdf 只能从本地图片生成，没下载的章节跳过
   const downloaded = checked.filter(isDownloadedChapter)
   const skipped = checked.length - downloaded.length
@@ -108,9 +113,7 @@ async function exportCbz() {
     return
   }
 
-  const checked = chapterInfos.value.filter(
-    (chapter) => isChapterSelectable(chapter) && checkedIds.value.has(chapter.chapterId),
-  )
+  const checked = checkedSelectableChapters()
   if (checked.length === 0) {
     return
   }

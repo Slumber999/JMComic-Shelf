@@ -9,6 +9,7 @@ import { useI18n } from '../i18n.ts'
 import type { NovelReaderTarget } from '../types.ts'
 import { novelParagraphs } from './novelText.ts'
 import { saveNovelProgress } from './novelProgress.ts'
+import { useReaderWidthRuler } from './readerWidth.ts'
 
 /// 正文接口的 lang：官方用 "0" 表示原文（实测 0/1 返回同一份正文）
 const CHAPTER_LANG = '0'
@@ -52,6 +53,8 @@ const nextChapterTitle = computed(() => {
 })
 
 let closed = true
+/// 正文请求序号：只有最后一次请求的响应能写状态
+let requestSeq = 0
 
 const scrollContainer = ref<HTMLElement>()
 
@@ -97,6 +100,7 @@ async function goToChapter(index: number) {
     return
   }
 
+  const seq = ++requestSeq
   chapterIndex.value = index
   // 换章先清空，加载过程中不要把上一章的正文留在屏幕上
   content.value = ''
@@ -105,11 +109,11 @@ async function goToChapter(index: number) {
   failed.value = false
 
   const result = await commands.getNovelChapter(chapter.ncid, CHAPTER_LANG)
-  opening.value = false
-  // 加载期间用户可能已经关掉阅读器
-  if (closed) {
+  // 又换了章或已经关掉阅读器：这份响应作废，不写任何状态
+  if (seq !== requestSeq || closed) {
     return
   }
+  opening.value = false
 
   if (result.status === 'error') {
     console.error(result.error)
@@ -129,7 +133,7 @@ async function goToChapter(index: number) {
 
   await nextTick()
   scrollContainer.value?.scrollTo({ top: 0 })
-  // 换章后正文高度完全变了：target 必须对齐到回顶后的位置
+  // 换章后正文高度变了，内容右边界要重新量一次
   syncHandleLeft()
 }
 
@@ -187,53 +191,53 @@ function onKeydown(event: KeyboardEvent) {
   event.preventDefault()
 }
 
-// ---------- 宽度刻度尺：和漫画阅读器同一个把手 ----------
+// ---------- 宽度刻度尺：和漫画阅读器共用同一套 ----------
 
-/// 阅读区宽度（阅读区宽度的百分比）：默认 90%（左右各留 5%，文字不顶边），
-/// 拖刻度尺两端可以再调，仍能拖到 100
-const readerWidth = ref<number>(90)
-/// 阅读区可视宽度（不含滚动条），把手定位和拖拽都按它算
-const viewportWidth = ref<number>(window.innerWidth)
-/// 正文右边界在阅读区里的横向位置，把手中线压在这条线上
-const handleLeft = ref<number>(0)
-/// 标尺左右端：内容居中，左端 = 可视宽度 - 右端
-const rulerLeft = computed(() => viewportWidth.value - handleLeft.value)
-const rulerRight = computed(() => handleLeft.value)
+/// 默认 90%（左右各留 5%，文字不顶边），拖刻度尺两端可以再调，仍能拖到 100
+const { readerWidth, rulerLeft, rulerRight, syncHandleLeft, startWidthDrag } = useReaderWidthRuler(
+  scrollContainer,
+  90,
+)
 
-function syncHandleLeft() {
+// 正文是百分比宽度 + 固定字号，没有分页元素：宽度变了行数重排，高度跟着变，
+// scrollTop 数值不变但对应的内容换了位置。只保 scrollTop / scrollHeight 的比例，
+// 让屏幕顶端落在正文的同一处。
+interface ScrollAnchor {
+  scrollTop: number
+  scrollHeight: number
+}
+
+function captureScrollAnchor(): ScrollAnchor | undefined {
+  const container = scrollContainer.value
+  if (container === undefined) {
+    return undefined
+  }
+  return { scrollTop: container.scrollTop, scrollHeight: container.scrollHeight }
+}
+
+async function keepScrollAnchor(before: ScrollAnchor | undefined) {
+  if (before === undefined) {
+    return
+  }
+
+  await nextTick()
+
   const container = scrollContainer.value
   if (container === undefined) {
     return
   }
-  viewportWidth.value = container.clientWidth
-  const contentElement = container.querySelector<HTMLElement>('[data-content-edge]')
-  handleLeft.value =
-    contentElement === null
-      ? container.clientWidth
-      : contentElement.getBoundingClientRect().right - container.getBoundingClientRect().left
+
+  container.scrollTop =
+    before.scrollHeight === 0
+      ? before.scrollTop
+      : (before.scrollTop / before.scrollHeight) * container.scrollHeight
 }
 
-function startWidthDrag(event: PointerEvent) {
-  const handle = event.currentTarget as HTMLElement
-  handle.setPointerCapture(event.pointerId)
+// 拖刻度尺改宽度：watch 默认 pre flush，此时 DOM 还是旧宽度，拍到的正是变化前的值
+watch(readerWidth, () => {
+  void keepScrollAnchor(captureScrollAnchor())
+})
 
-  function onMove(moveEvent: PointerEvent) {
-    // 以阅读区中心为轴：拖到哪，宽度就是中心到指针距离的两倍
-    const half = Math.abs(moveEvent.clientX - viewportWidth.value / 2)
-    const percent = Math.round((half * 2 * 100) / viewportWidth.value)
-    readerWidth.value = Math.min(100, Math.max(30, percent))
-  }
-
-  function onUp() {
-    handle.removeEventListener('pointermove', onMove)
-    handle.removeEventListener('pointerup', onUp)
-  }
-
-  handle.addEventListener('pointermove', onMove)
-  handle.addEventListener('pointerup', onUp)
-}
-
-watch(readerWidth, () => void nextTick(syncHandleLeft))
 // 正文字体跟着宽度百分比走，字号和行距用固定默认值
 watch(paragraphs, () => void nextTick(syncHandleLeft))
 // 正文长度变化会重排，高度变了 target 要重新对齐

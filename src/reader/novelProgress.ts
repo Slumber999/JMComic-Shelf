@@ -65,3 +65,5 @@ export function saveNovelProgress(nid: number, progress: Omit<NovelProgress, 'up
 }
 
 loadAllProgress()
+// 独立阅读窗口写入进度后，主窗口靠 storage 事件重读
+window.addEventListener('storage', loadAllProgress)

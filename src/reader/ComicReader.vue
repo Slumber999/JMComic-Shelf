@@ -13,6 +13,7 @@ import {
 } from '@phosphor-icons/vue'
 import { getProgress, saveProgress as saveReaderProgress } from './progress.ts'
 import { readerPageUrl } from './protocol.ts'
+import { useReaderWidthRuler } from './readerWidth.ts'
 import { useI18n } from '../i18n.ts'
 import FavoriteButton from '../components/FavoriteButton.vue'
 import LoadingSpinner from '../components/LoadingSpinner.vue'
@@ -264,6 +265,10 @@ async function goToChapter(index: number) {
   pageIndex.value = 0
 
   await ensureChapterReady(chapterIndex.value)
+  // 加载期间用户可能已经关掉阅读器：此时 chapters 已清空，写进度会把这本书的进度删掉
+  if (closed) {
+    return
+  }
 
   saveProgress()
   preloadAround()
@@ -298,14 +303,63 @@ function scrollToCurrentPage() {
   if (readingMode.value === 'paged') {
     container.scrollTop = 0
     container.scrollLeft = 0
-    // 跳转后 target 必须跟着走，否则会被未完成的动画拽回原处
     return
   }
 
-  const target = container.querySelector<HTMLElement>(`[data-page-index="${pageIndex.value}"]`)
+  const target = currentPageElement()
   if (target !== null) {
     container.scrollTop = target.offsetTop
   }
+}
+
+/// 当前正在看的那一页：和 scrollToCurrentPage 用同一个 data-page-index 取值
+function currentPageElement(): HTMLElement | null {
+  const container = scrollContainer.value
+  if (container === undefined) {
+    return null
+  }
+  return container.querySelector<HTMLElement>(`[data-page-index="${pageIndex.value}"]`)
+}
+
+/// 宽度变化前的滚动锚点：记下当前页在容器里的位置和页内偏移
+interface ScrollAnchor {
+  pageTop: number
+  pageHeight: number
+  scrollTop: number
+}
+
+function captureScrollAnchor(): ScrollAnchor | undefined {
+  const container = scrollContainer.value
+  if (container === undefined) {
+    return undefined
+  }
+  const page = currentPageElement()
+  if (page === null) {
+    return undefined
+  }
+  return { pageTop: page.offsetTop, pageHeight: page.offsetHeight, scrollTop: container.scrollTop }
+}
+
+/// 宽度变化后（nextTick 等布局完成）按比例还原滚动位置，让同一条缝停在屏幕原位：
+/// newScrollTop = newPageTop + (oldScrollTop - oldPageTop) / oldPageHeight * newPageHeight
+async function keepScrollAnchor(before: ScrollAnchor | undefined) {
+  if (before === undefined) {
+    return
+  }
+
+  await nextTick()
+
+  const container = scrollContainer.value
+  const page = currentPageElement()
+  if (container === undefined || page === null) {
+    return
+  }
+
+  container.scrollTop =
+    before.pageHeight === 0
+      ? page.offsetTop
+      : page.offsetTop +
+        ((before.scrollTop - before.pageTop) / before.pageHeight) * page.offsetHeight
 }
 
 // ---------- 预加载：只解码相邻几页，保证翻页即时 ----------
@@ -448,14 +502,18 @@ function setReadingMode(mode: ReadingMode) {
   nextTick(scrollToCurrentPage)
 }
 
-onMounted(() => {
-  window.addEventListener('keydown', onKeydown)
-  window.addEventListener('resize', syncHandleLeft)
-  syncHandleLeft()
-})
+/// 阅读区宽度（百分比）：拖刻度尺两端调整，漫画始终居中
+const { readerWidth, rulerLeft, rulerRight, syncHandleLeft, startWidthDrag } = useReaderWidthRuler(
+  scrollContainer,
+  100,
+)
 
-/// 阅读区宽度（阅读区宽度的百分比）：拖右上角小三角调整，漫画始终居中
-const readerWidth = ref<number>(100)
+// 拖刻度尺改宽度：每页跟着变矮，总高度变短，scrollTop 不动内容却换了位置。
+// 在重排前拍下锚点，nextTick 后按比例还原，用户正在看的那一处就不会上下跳。
+// watch 默认 pre flush：回调执行时 DOM 还是旧宽度，量的正是变化前的值
+watch(readerWidth, () => {
+  void keepScrollAnchor(captureScrollAnchor())
+})
 
 /// 每页的加载状态：加载中显示占位，加载成功把高度交给图片，失败保留占位并给出提示
 const pageStates = ref<Record<number, 'loading' | 'ok' | 'failed'>>({})
@@ -463,59 +521,20 @@ const pageStates = ref<Record<number, 'loading' | 'ok' | 'failed'>>({})
 function setPageState(index: number, state: 'ok' | 'failed') {
   pageStates.value[index] = state
 }
-/// 阅读区可视宽度（不含滚动条），把手定位和拖拽都按它算
-const viewportWidth = ref<number>(window.innerWidth)
 
-
-/// 内容右边界在阅读区里的横向位置，把手中线压在这条线上
-const handleLeft = ref<number>(0)
-
-/// 标尺左右端：内容边界在阅读区里的位置（内容居中，左端 = 可视宽度 - 右端）
-const rulerLeft = computed(() => viewportWidth.value - handleLeft.value)
-const rulerRight = computed(() => handleLeft.value)
-
-function syncHandleLeft() {
-  const container = scrollContainer.value
-  if (container === undefined) {
-    return
-  }
-  viewportWidth.value = container.clientWidth
-  const content = container.querySelector<HTMLElement>('[data-content-edge]')
-  handleLeft.value =
-    content === null
-      ? container.clientWidth
-      : content.getBoundingClientRect().right - container.getBoundingClientRect().left
-}
-
-// 切换阅读方式或拖动宽度后，内容宽度变了，重新量一次
+// 调整宽度后的重新测量由 useReaderWidthRuler 自己管，这里只管另外两种
 watch(readingMode, () => void nextTick(syncHandleLeft))
-watch(readerWidth, () => void nextTick(syncHandleLeft))
 // 章节切换后图片才渲染出来，宽度这时才量得准
 watch(pageUrls, () => {
   pageStates.value = {}
   void nextTick(syncHandleLeft)
 })
-// 换章后内容高度整个变了，target 要对齐新布局，不然会往旧位置跑
 
-function startWidthDrag(event: PointerEvent) {
-  const handle = event.currentTarget as HTMLElement
-  handle.setPointerCapture(event.pointerId)
-
-  function onMove(moveEvent: PointerEvent) {
-    // 以阅读区中心为轴：拖到哪，宽度就是中心到指针距离的两倍
-    const half = Math.abs(moveEvent.clientX - viewportWidth.value / 2)
-    const percent = Math.round((half * 2 * 100) / viewportWidth.value)
-    readerWidth.value = Math.min(100, Math.max(30, percent))
-  }
-
-  function onUp() {
-    handle.removeEventListener('pointermove', onMove)
-    handle.removeEventListener('pointerup', onUp)
-  }
-
-  handle.addEventListener('pointermove', onMove)
-  handle.addEventListener('pointerup', onUp)
-}
+onMounted(() => {
+  window.addEventListener('keydown', onKeydown)
+  window.addEventListener('resize', syncHandleLeft)
+  syncHandleLeft()
+})
 
 onBeforeUnmount(() => {
   window.removeEventListener('keydown', onKeydown)
@@ -670,7 +689,7 @@ onBeforeUnmount(() => {
         <div class="absolute inset-y-0 right-0 w-1/4 cursor-e-resize" @click="nextPage" />
       </template>
 
-      <!-- 上下滑动：全部页 + 原生懒加载 + content-visibility -->
+      <!-- 上下滑动：全部页 + 原生懒加载 -->
       <template v-else>
         <!-- 上下滑动：按宽度自适应，左右不留白，纵向滚完整页 -->
         <!-- 占位按常见比例撑开；图片加载成功后撤掉占位，高度由图片自身决定 -->

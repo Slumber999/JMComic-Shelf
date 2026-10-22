@@ -276,6 +276,37 @@ pub(crate) fn read_cbz_pages(path: &Path) -> eyre::Result<Vec<String>> {
     Ok(pages)
 }
 
+/// 目录下的子目录（跳过 `.下载中-` 临时目录），按文件名自然序
+/// - 快速阅读器扫描复用这一份，两边不再各写一遍「跳过临时目录 + 自然排序」
+pub(crate) fn list_subdirs(dir: &Path) -> eyre::Result<Vec<PathBuf>> {
+    let mut dirs: Vec<PathBuf> = std::fs::read_dir(dir)
+        .wrap_err(format!("读取目录`{}`失败", dir.display()))?
+        .filter_map(Result::ok)
+        .map(|entry| entry.path())
+        .filter(|path| path.is_dir())
+        .filter(|path| !file_name_string(path).starts_with(".下载中-"))
+        .collect();
+    dirs.sort_by(|a, b| natural_cmp(&file_name_string(a), &file_name_string(b)));
+    Ok(dirs)
+}
+
+/// `cbz/` 目录下的 cbz 文件，按文件名自然序
+pub(crate) fn list_cbz_files(cbz_dir: &Path) -> eyre::Result<Vec<PathBuf>> {
+    let mut files: Vec<PathBuf> = std::fs::read_dir(cbz_dir)
+        .wrap_err(format!("读取目录`{}`失败", cbz_dir.display()))?
+        .filter_map(Result::ok)
+        .map(|entry| entry.path())
+        .filter(|path| {
+            path.is_file()
+                && path
+                    .extension()
+                    .is_some_and(|ext| ext.eq_ignore_ascii_case("cbz"))
+        })
+        .collect();
+    files.sort_by(|a, b| natural_cmp(&file_name_string(a), &file_name_string(b)));
+    Ok(files)
+}
+
 /// 收集这部漫画的章节
 /// - 导出目录：`cbz/` 下每个 cbz 是一话
 /// - 下载目录：每个直接子目录是一话
@@ -284,20 +315,7 @@ fn collect_chapters(comic_dir: &Path) -> eyre::Result<Vec<(String, ChapterSource
     // 1) cbz
     let cbz_dir = comic_dir.join("cbz");
     if cbz_dir.is_dir() {
-        let mut cbz_files: Vec<PathBuf> = std::fs::read_dir(&cbz_dir)
-            .wrap_err(format!("读取目录`{}`失败", cbz_dir.display()))?
-            .filter_map(Result::ok)
-            .map(|entry| entry.path())
-            .filter(|path| {
-                path.is_file()
-                    && path
-                        .extension()
-                        .is_some_and(|ext| ext.eq_ignore_ascii_case("cbz"))
-            })
-            .collect();
-        cbz_files.sort_by(|a, b| natural_cmp(&file_name_string(a), &file_name_string(b)));
-
-        let chapters: Vec<(String, ChapterSource)> = cbz_files
+        let chapters: Vec<(String, ChapterSource)> = list_cbz_files(&cbz_dir)?
             .into_iter()
             .filter_map(|path| match read_cbz_pages(&path) {
                 Ok(pages) if !pages.is_empty() => {
@@ -317,17 +335,8 @@ fn collect_chapters(comic_dir: &Path) -> eyre::Result<Vec<(String, ChapterSource
     }
 
     // 2) 子目录 = 话
-    let mut chapter_dirs: Vec<PathBuf> = std::fs::read_dir(comic_dir)
-        .wrap_err(format!("读取目录`{}`失败", comic_dir.display()))?
-        .filter_map(Result::ok)
-        .map(|entry| entry.path())
-        .filter(|path| path.is_dir())
-        .filter(|path| !file_name_string(path).starts_with(".下载中-"))
-        .collect();
-    chapter_dirs.sort_by(|a, b| natural_cmp(&file_name_string(a), &file_name_string(b)));
-
     let mut chapters: Vec<(String, ChapterSource)> = Vec::new();
-    for dir in chapter_dirs {
+    for dir in list_subdirs(comic_dir)? {
         let pages = list_images(&dir);
         if !pages.is_empty() {
             chapters.push((file_name_string(&dir), ChapterSource::Dir { pages }));

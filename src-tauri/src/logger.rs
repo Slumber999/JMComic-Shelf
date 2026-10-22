@@ -112,9 +112,10 @@ pub fn init(app: &AppHandle) -> eyre::Result<()> {
         .with_file(true)
         .with_line_number(true)
         .json()
-        // 过滤掉来自这个文件的日志，避免无限递归
+        // 过滤掉来自这个文件的日志（避免无限递归），并且只把 WARN 及以上发给前端：
+        // 前端只对 ERROR 弹通知，级别低的一路发过去只会白刷事件；文件和控制台仍是全量
         .with_filter(target_filter.clone().and(filter_fn(|metadata| {
-            metadata.module_path() != Some(lib_module_path)
+            metadata.module_path() != Some(lib_module_path) && *metadata.level() <= Level::WARN
         })));
 
     Registry::default()

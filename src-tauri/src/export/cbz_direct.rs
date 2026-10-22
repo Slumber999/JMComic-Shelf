@@ -22,7 +22,10 @@ use crate::{
         calculate_block_num, decode_and_encode_img, fetch_img_with_retry,
     },
     events::ExportCbzEvent,
-    export::manager::{ExportTask, ExportTaskKind, ExportTaskState},
+    export::{
+        manager::{ExportTask, ExportTaskKind, ExportTaskState},
+        CbzErrorEventGuard, ComicExportLockGuard,
+    },
     extensions::{AppHandleExt, EyreReportToMessage},
     jm_client::IMAGE_DOMAIN,
     types::{ChapterInfo, Comic, ComicInfo, DownloadFormat},
@@ -34,23 +37,6 @@ const IMG_RETRY_TIMES: u32 = 3;
 
 /// 单张图片重试的退避间隔：第 n 次重试前等 `n * 这个值`
 const IMG_RETRY_INTERVAL: Duration = Duration::from_millis(500);
-
-/// 导出失败的兜底事件
-struct CbzErrorEventGuard {
-    uuid: String,
-    app: AppHandle,
-    success: bool,
-}
-
-impl Drop for CbzErrorEventGuard {
-    fn drop(&mut self) {
-        if self.success {
-            return;
-        }
-        let uuid = self.uuid.clone();
-        let _ = ExportCbzEvent::Error { uuid }.emit(&self.app);
-    }
-}
 
 /// 上报导出进度：已完成的章节数 + 当前章节的图片数
 fn emit_progress(
@@ -100,6 +86,19 @@ pub async fn export_cbz_without_download(
             }
         };
 
+        // 和别的导出共用同一把锁：同一本漫画不能同时有两个导出写同一个目录
+        let export_lock = app.get_export_lock().inner().clone();
+        if !export_lock.try_acquire(comic.id) {
+            let err_title = format!("漫画`{}`正在导出，已跳过", comic.name);
+            tracing::error!(err_title, "已有导出在进行");
+            sleep(Duration::from_secs(interval_sec)).await;
+            continue;
+        }
+        let _guard = ComicExportLockGuard {
+            lock: export_lock.clone(),
+            comic_id: comic.id,
+        };
+
         // 每本漫画一个导出任务：暂停 / 继续 / 删除都是按这本漫画来的
         let (export_dir, skip_mode) = {
             let config = app.get_config();
@@ -123,6 +122,8 @@ pub async fn export_cbz_without_download(
             task.set_state(ExportTaskState::Failed);
         }
 
+        // 这本已经导完，间歇的等待不算在锁里，免得这段时间挡住「继续导出」
+        drop(_guard);
         sleep(Duration::from_secs(interval_sec)).await;
     }
 
@@ -133,6 +134,16 @@ pub async fn export_cbz_without_download(
 /// - 用 SkipExisting 跑一遍，已存在的 cbz 会自动跳过，所以只会真的导新章节
 /// - 返回是否补导了内容（没有缺的章节就什么都不做）
 pub async fn export_missing_chapters(app: &AppHandle, comic: &Comic) -> eyre::Result<bool> {
+    // 与其它导出互斥：同一本漫画不能同时有两个导出写同一个目录
+    let export_lock = app.get_export_lock().inner().clone();
+    if !export_lock.try_acquire(comic.id) {
+        return Err(eyre!("漫画`{}`正在导出，请稍后再试", comic.name));
+    }
+    let _guard = ComicExportLockGuard {
+        lock: export_lock.clone(),
+        comic_id: comic.id,
+    };
+
     if !has_missing_chapter(app, comic) {
         return Ok(false);
     }
@@ -175,6 +186,16 @@ pub async fn resume_comic_cbz(
     comic: &Comic,
     task: &Arc<ExportTask>,
 ) -> eyre::Result<()> {
+    // 与其它导出互斥：同一本漫画不能同时有两个导出写同一个目录
+    let export_lock = app.get_export_lock().inner().clone();
+    if !export_lock.try_acquire(comic.id) {
+        return Err(eyre!("漫画`{}`正在导出，请稍后再试", comic.name));
+    }
+    let _guard = ComicExportLockGuard {
+        lock: export_lock.clone(),
+        comic_id: comic.id,
+    };
+
     let img_concurrency = app.get_config().read().img_concurrency;
     export_comic_cbz(app, comic, img_concurrency, task, ExportSkipMode::SkipExisting, None).await
 }
@@ -192,6 +213,16 @@ pub async fn export_cbz_chapters_without_download(
     comic: Comic,
     chapter_ids: Vec<i64>,
 ) -> eyre::Result<()> {
+    // 与其它导出互斥：同一本漫画不能同时有两个导出写同一个目录
+    let export_lock = app.get_export_lock().inner().clone();
+    if !export_lock.try_acquire(comic.id) {
+        return Err(eyre!("漫画`{}`正在导出，请稍后再试", comic.name));
+    }
+    let _guard = ComicExportLockGuard {
+        lock: export_lock.clone(),
+        comic_id: comic.id,
+    };
+
     let (img_concurrency, export_dir, skip_mode) = {
         let config = app.get_config();
         let config = config.read();

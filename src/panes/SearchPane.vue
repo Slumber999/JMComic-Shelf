@@ -335,8 +335,7 @@ async function search(keyword: string, page: number, sort: SearchSort) {
 
   // 关键词为空：回到「未搜索」状态（首页默认视图），两块标签都自动展开
   if (trimmed === '') {
-    officialTagsExpanded.value = true
-    collapseLocalTags()
+    setTagsExpanded(true)
     store.searchResult = undefined
     multiState.value = undefined
     searchPage.value = 1
@@ -609,16 +608,14 @@ function loadPage(page: number) {
 }
 
 /// 当前搜索词里的所有词（空格分隔），用来高亮已经加进搜索词的标签
-const keywordTokens = computed(
-  () => new Set(searchInput.value.trim().split(/\s+/).filter((token) => token !== '')),
-)
+const keywordTokens = computed(() => new Set(splitKeywords(searchInput.value)))
 
 /// 点击标签：累加到当前搜索词后面（空格分隔，禁漫支持多标签搜索）
 /// - 再点一次同一个标签 = 从搜索词里去掉
 /// - 这里不触发搜索、也不收起标签区，方便连着点好几个标签
 /// - 收起标签区的时机改成"真正触发搜索时"（见 search()）
 function onTagClick(tag: string) {
-  const tokens = searchInput.value.trim().split(/\s+/).filter((token) => token !== '')
+  const tokens = splitKeywords(searchInput.value)
   const next = tokens.includes(tag)
     ? tokens.filter((token) => token !== tag)
     : [...tokens, tag]

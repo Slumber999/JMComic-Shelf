@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { Comic, commands } from '../../../bindings.ts'
+import { CommandError, Comic, Result, commands } from '../../../bindings.ts'
 import { showError } from '../../../errors.ts'
 import { useStore } from '../../../store.ts'
 import { PhBookOpen, PhBookmarkSimple, PhFilePdf, PhFileZip, PhFolderOpen } from '@phosphor-icons/vue'
@@ -41,24 +41,17 @@ function pickComic() {
 }
 
 function exportCbz() {
-  void confirmWholeComic(props.comic, t('comic.export'), startExportCbz)
+  void confirmWholeComic(props.comic, t('comic.export'), () => startExport(commands.exportCbz))
 }
 
 function exportPdf() {
-  void confirmWholeComic(props.comic, t('comic.export'), startExportPdf)
+  void confirmWholeComic(props.comic, t('comic.export'), () => startExport(commands.exportPdf))
 }
 
-async function startExportCbz() {
+/// 导出这一本：cbz / pdf 只差调哪个命令，切进度页和报错处理都一样
+async function startExport(exportComic: (comic: Comic) => Promise<Result<null, CommandError>>) {
   store.showProgressesTab('uncompleted')
-  const result = await commands.exportCbz(props.comic)
-  if (result.status === 'error') {
-    showError(result.error)
-  }
-}
-
-async function startExportPdf() {
-  store.showProgressesTab('uncompleted')
-  const result = await commands.exportPdf(props.comic)
+  const result = await exportComic(props.comic)
   if (result.status === 'error') {
     showError(result.error)
   }

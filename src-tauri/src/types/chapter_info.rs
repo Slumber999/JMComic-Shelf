@@ -43,16 +43,7 @@ impl ChapterInfo {
             .as_ref()
             .ok_or_eyre("`chapter_download_dir`字段为`None`")?;
 
-        let chapter_download_dir_name = chapter_download_dir
-            .file_name()
-            .ok_or_eyre(format!(
-                "获取`{}`的目录名失败",
-                chapter_download_dir.display()
-            ))?
-            .to_string_lossy()
-            .to_string();
-
-        Ok(chapter_download_dir_name)
+        utils::path_dir_name(chapter_download_dir)
     }
 
     #[instrument(

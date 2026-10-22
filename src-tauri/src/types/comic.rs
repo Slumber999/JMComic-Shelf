@@ -164,16 +164,7 @@ impl Comic {
             .as_ref()
             .ok_or_eyre("`comic_download_dir`字段为`None`")?;
 
-        let comic_download_dir_name = comic_download_dir
-            .file_name()
-            .ok_or_eyre(format!(
-                "获取`{}`的目录名失败",
-                comic_download_dir.display()
-            ))?
-            .to_string_lossy()
-            .to_string();
-
-        Ok(comic_download_dir_name)
+        utils::path_dir_name(comic_download_dir)
     }
 
     #[instrument(level = "error", skip_all, fields(comic_id = self.id, comic_title = self.name))]

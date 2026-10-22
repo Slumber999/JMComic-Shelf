@@ -96,38 +96,34 @@ function handleCleanResult(result: CleanResult, what: string) {
   void refresh()
 }
 
-async function cleanLeftovers() {
-  cleaning.value = 'leftovers'
+/// 清理类操作共用一套：标记正在清理哪一项（按钮转圈、顺便防连点），结果交给 handleCleanResult
+async function runClean(key: string, clean: () => Promise<CleanResult>, what: string) {
+  cleaning.value = key
   try {
-    handleCleanResult(await commands.cleanStorageLeftovers(), t('settings.storage.leftovers'))
+    handleCleanResult(await clean(), what)
   } finally {
     cleaning.value = undefined
   }
 }
 
-async function cleanQuickReaders() {
+function cleanLeftovers() {
+  void runClean('leftovers', () => commands.cleanStorageLeftovers(), t('settings.storage.leftovers'))
+}
+
+function cleanQuickReaders() {
   if (selectedQuickReaders.value.length === 0) {
     message.warning(t('settings.storage.pickQuickReadersFirst'))
     return
   }
-  cleaning.value = 'quickReaders'
-  try {
-    handleCleanResult(
-      await commands.cleanStorageQuickReaders(selectedQuickReaders.value),
-      t('settings.storage.quickReaders'),
-    )
-  } finally {
-    cleaning.value = undefined
-  }
+  void runClean(
+    'quickReaders',
+    () => commands.cleanStorageQuickReaders(selectedQuickReaders.value),
+    t('settings.storage.quickReaders'),
+  )
 }
 
-async function cleanLogs() {
-  cleaning.value = 'logs'
-  try {
-    handleCleanResult(await commands.cleanStorageLogs(), t('settings.storage.oldLogs'))
-  } finally {
-    cleaning.value = undefined
-  }
+function cleanLogs() {
+  void runClean('logs', () => commands.cleanStorageLogs(), t('settings.storage.oldLogs'))
 }
 
 async function deleteComic(entry: StorageEntry) {
@@ -136,12 +132,11 @@ async function deleteComic(entry: StorageEntry) {
   if (comicId === null || source === null) {
     return
   }
-  cleaning.value = `comic-${comicId}-${source}`
-  try {
-    handleCleanResult(await commands.deleteLocalComic(comicId, source), t('settings.storage.comics'))
-  } finally {
-    cleaning.value = undefined
-  }
+  await runClean(
+    `comic-${comicId}-${source}`,
+    () => commands.deleteLocalComic(comicId, source),
+    t('settings.storage.comics'),
+  )
 }
 
 function toggleQuickReader(path: string) {

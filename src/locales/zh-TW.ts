@@ -1,6 +1,9 @@
 export default {
   common: {
     cancel: '取消',
+    copied: '已複製',
+    copyFailed: '複製失敗，請手動選中複製',
+    clickToCopy: '點選複製',
     expand: '展開',
     collapse: '收起',
     expandMoreRemaining: '展開更多（還有 {count} 個）',

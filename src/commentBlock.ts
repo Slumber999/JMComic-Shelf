@@ -3,7 +3,7 @@ import type { Ref } from 'vue'
 import type { Comment } from './bindings.ts'
 import { normalizeAuthorName } from './authorNames.ts'
 
-/// 评论关键词屏蔽：纯逻辑，全站评论页和测试共用；关键词存 localStorage，不进 config.json
+/// 评论关键词屏蔽：纯逻辑，全站评论页和阅读器评论抽屉共用；关键词存 localStorage，不进 config.json
 const STORAGE_KEY = 'commentBlockKeywords'
 
 /// 与作者名同一套归一化（NFKC、压空白），再转小写

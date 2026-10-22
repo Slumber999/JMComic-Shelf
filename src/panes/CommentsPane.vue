@@ -9,7 +9,7 @@ import { useStore } from '../store.ts'
 import { useI18n } from '../i18n.ts'
 import CommentList from '../comments/CommentList.vue'
 import { PAGE_SIZE } from '../comments/useComments.ts'
-import { filterComments, useCommentKeywords } from '../commentBlock.ts'
+import { filterComments, isBlocked, useCommentKeywords } from '../commentBlock.ts'
 
 const store = useStore()
 const { t } = useI18n()
@@ -27,11 +27,13 @@ const seenIds = new Set<string>()
 const scannedComments = ref<Comment[]>([])
 /// 已经取出来显示的原始评论：关键词变化时按新关键词即时重算，已显示的不再请求
 const displayedRaw = ref<Comment[]>([])
-/// 过滤后待显示的缓冲：每批从队首取 20 条，多出来的留给下一次；换关键词 / 刷新时清空
+/// 过滤后待显示的缓冲：每批从队首取 40 条，多出来的留给下一次；换关键词 / 刷新时清空
 const pending = ref<Comment[]>([])
+/// 关键词变化后要从第一页重建；正在补页时先记下，这批结束后再重建
+const rebuildPending = ref<boolean>(false)
 
-/// 每批正好显示 20 条；只有到末尾时才可能不足
-const BATCH_SIZE = 20
+/// 每批正好显示 40 条；只有到末尾时才可能不足
+const BATCH_SIZE = 40
 /// 一轮补页最多连续拉 10 个后端页（后端一页 30 条），关键词太狠或全是广告时不会无限请求
 const MAX_SCAN_PAGES = 10
 
@@ -41,9 +43,11 @@ const keywordInput = ref<string>('')
 
 const pageCount = computed(() => Math.max(1, Math.ceil(total.value / PAGE_SIZE)))
 const comments = computed(() => filterComments(displayedRaw.value, keywords.value).comments)
-const blockedCount = computed(() => filterComments(scannedComments.value, keywords.value).blocked)
+const blockedCount = computed(() =>
+  keywords.value.length === 0 ? 0 : scannedComments.value.filter((c) => isBlocked(c, keywords.value)).length,
+)
 
-/// 补页：缓冲不足 20 条就继续拉官方页、过滤后追加进缓冲；凑够 20 条从队首取走，多出来的留着
+/// 补页：缓冲不足 40 条就继续拉后端页、过滤后追加进缓冲；凑够 40 条从队首取走，多出来的留着
 async function loadBatch(): Promise<void> {
   // 官方页拉完了不代表缓冲空了：末尾那一批可能还剩几条没显示
   if (loading.value || (exhausted.value && pending.value.length === 0)) {
@@ -101,7 +105,7 @@ async function loadBatch(): Promise<void> {
       }
     }
 
-    // 只取走这一批的 20 条，剩下的留在缓冲里给下一次，不再多拿
+    // 只取走这一批的 40 条，剩下的留在缓冲里给下一次，不再多拿
     const take = pending.value.splice(0, BATCH_SIZE)
     displayedRaw.value.push(...take)
 
@@ -110,6 +114,10 @@ async function loadBatch(): Promise<void> {
     }
   } finally {
     loading.value = false
+    if (rebuildPending.value) {
+      rebuildPending.value = false
+      refresh()
+    }
   }
 }
 
@@ -139,10 +147,13 @@ function submitKeyword(): void {
   keywordInput.value = ''
 }
 
-/// 关键词变了：缓冲作废（旧关键词过滤出来的结果不再可信），已显示的按新关键词即时重算
+/// 关键词变化要按新关键词从第一页重建（等于点刷新），删词后那批评论才能回来
 watch(keywords, () => {
-  pending.value = []
-  scanNotice.value = undefined
+  if (loading.value) {
+    rebuildPending.value = true
+    return
+  }
+  refresh()
 })
 
 const jumping = ref<number>()

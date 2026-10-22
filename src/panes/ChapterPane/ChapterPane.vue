@@ -13,7 +13,7 @@ import type { CommentTarget } from '../../comments/useComments.ts'
 import ChapterDownloadPanel from './components/ChapterDownloadPanel.vue'
 import ChapterExportPanel from './components/ChapterExportPanel.vue'
 import FavoriteButton from '../../components/FavoriteButton.vue'
-import { NButton, NEmpty, NIcon } from 'naive-ui'
+import { NButton, NEmpty, NIcon, useMessage } from 'naive-ui'
 import { localCoverUrl } from '../../reader/protocol.ts'
 import { getProgress, progressLabel } from '../../reader/progress.ts'
 import { useI18n } from '../../i18n.ts'
@@ -22,6 +22,7 @@ export type ChapterPaneMode = 'download' | 'export'
 
 const store = useStore()
 const { t } = useI18n()
+const message = useMessage()
 
 const chapterPaneMode = ref<ChapterPaneMode>('download')
 
@@ -30,6 +31,20 @@ const commentsShowing = ref<boolean>(false)
 const commentTarget = computed<CommentTarget | undefined>(() =>
   store.pickedComic === undefined ? undefined : { kind: 'comic', id: store.pickedComic.id },
 )
+
+/// 点禁漫号复制，方便贴到浏览器或反馈里
+async function copyComicId() {
+  const id = store.pickedComic?.id
+  if (id === undefined) {
+    return
+  }
+  try {
+    await navigator.clipboard.writeText(String(id))
+    message.success(t('common.copied'))
+  } catch {
+    message.error(t('common.copyFailed'))
+  }
+}
 
 watch(
   () => store.pickedComic,
@@ -114,7 +129,12 @@ async function showComicDownloadDirInFileManager() {
             <author-links class="text-red" :author="store.pickedComic.author" />
             <favorite-author-button :author="store.pickedComic.author" />
             <!-- 禁漫号：靠右显示，便于复制到浏览器或反馈时引用 -->
-            <span class="ml-auto select-text text-xs text-gray-500">JM{{ store.pickedComic.id }}</span>
+            <span
+              class="ml-auto cursor-pointer text-xs text-gray-500 transition-colors hover:text-blue-5"
+              :title="t('common.clickToCopy')"
+              @click="copyComicId">
+              JM{{ store.pickedComic.id }}
+            </span>
           </div>
           <span class="text-gray"><tag-links :tags="store.pickedComic.tags" /></span>
           <div class="flex items-center gap-2 mt-auto">

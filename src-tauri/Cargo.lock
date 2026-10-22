@@ -2161,13 +2161,12 @@ dependencies = [
 
 [[package]]
 name = "jmcomic-shelf"
-version = "1.1.8"
+version = "1.1.9"
 dependencies = [
  "aes",
  "base64 0.22.1",
  "bytes",
  "eyre",
- "flate2",
  "image",
  "indexmap 2.10.0",
  "lopdf",

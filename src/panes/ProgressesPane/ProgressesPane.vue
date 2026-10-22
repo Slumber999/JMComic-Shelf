@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { onMounted, onUnmounted, ref } from 'vue'
-import { commands, events } from '../../bindings.ts'
+import { CommandError, Result, commands, events } from '../../bindings.ts'
 import { PhFolderOpen } from '@phosphor-icons/vue'
 import { useStore } from '../../store.ts'
 import ProgressList from './components/ProgressList.vue'
@@ -52,9 +52,9 @@ onMounted(async () => {
         if (state === 'Completed') {
           progressData.chapterInfo.isDownloaded = true
           await syncPickedComic()
-          await syncComicInSearch(progressData)
-          await syncComicInFavorite(progressData)
-          await syncComicInWeekly(progressData)
+          await syncComicInList(store.searchResult?.content, commands.getSyncedComicInSearch, progressData)
+          await syncComicInList(store.getFavoriteResult?.list, commands.getSyncedComicInFavorite, progressData)
+          await syncComicInList(store.getWeeklyResult?.list, commands.getSyncedComicInWeekly, progressData)
         }
 
         progressData.percentage = (downloadedImgCount / totalImgCount) * 100
@@ -104,47 +104,17 @@ async function syncPickedComic() {
   Object.assign(store.pickedComic, result.data)
 }
 
-async function syncComicInSearch(progressData: ProgressData) {
-  if (store.searchResult === undefined) {
-    return
-  }
-  const comic = store.searchResult.content.find((comic) => comic.id === progressData.comic.id)
+/// 下载完成后同步列表里同一本的状态：列表里没有就不发请求，拿到了就合回原对象
+async function syncComicInList<T extends { id: number }>(
+  list: T[] | undefined,
+  sync: (comic: T) => Promise<Result<T, CommandError>>,
+  progressData: ProgressData,
+) {
+  const comic = list?.find((item) => item.id === progressData.comic.id)
   if (comic === undefined) {
     return
   }
-  const result = await commands.getSyncedComicInSearch(comic)
-  if (result.status === 'error') {
-    console.error(result.error)
-    return
-  }
-  Object.assign(comic, result.data)
-}
-
-async function syncComicInFavorite(progressData: ProgressData) {
-  if (store.getFavoriteResult === undefined) {
-    return
-  }
-  const comic = store.getFavoriteResult.list.find((comic) => comic.id === progressData.comic.id)
-  if (comic === undefined) {
-    return
-  }
-  const result = await commands.getSyncedComicInFavorite(comic)
-  if (result.status === 'error') {
-    console.error(result.error)
-    return
-  }
-  Object.assign(comic, result.data)
-}
-
-async function syncComicInWeekly(progressData: ProgressData) {
-  if (store.getWeeklyResult === undefined) {
-    return
-  }
-  const comic = store.getWeeklyResult.list.find((comic) => comic.id === progressData.comic.id)
-  if (comic === undefined) {
-    return
-  }
-  const result = await commands.getSyncedComicInWeekly(comic)
+  const result = await sync(comic)
   if (result.status === 'error') {
     console.error(result.error)
     return

@@ -46,25 +46,11 @@ pub trait WalkDirEntryExt {
 }
 impl WalkDirEntryExt for walkdir::DirEntry {
     fn is_comic_metadata(&self) -> bool {
-        if !self.file_type().is_file() {
-            return false;
-        }
-        if self.file_name() != "元数据.json" {
-            return false;
-        }
-
-        true
+        self.file_type().is_file() && self.file_name() == "元数据.json"
     }
 
     fn is_chapter_metadata(&self) -> bool {
-        if !self.file_type().is_file() {
-            return false;
-        }
-        if self.file_name() != "章节元数据.json" {
-            return false;
-        }
-
-        true
+        self.file_type().is_file() && self.file_name() == "章节元数据.json"
     }
 }
 

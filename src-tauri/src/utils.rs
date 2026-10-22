@@ -1,5 +1,9 @@
-use std::{collections::HashMap, path::PathBuf};
+use std::{
+    collections::HashMap,
+    path::{Path, PathBuf},
+};
 
+use eyre::OptionExt;
 use tauri::AppHandle;
 use tracing::instrument;
 
@@ -32,6 +36,24 @@ pub fn filename_filter(s: &str) -> String {
 // 计算MD5哈希并返回十六进制字符串
 pub fn md5_hex(data: &str) -> String {
     format!("{:x}", md5::compute(data))
+}
+
+/// 接口分页的总页数：`per_page` 是每页条数（接口可能返回 0，这时按只有一页算）
+/// 收藏夹的三处翻页（全部收藏 / 收藏夹索引）共用这一份
+pub fn page_count(total: i64, per_page: i64) -> i64 {
+    if per_page > 0 {
+        (total + per_page - 1) / per_page
+    } else {
+        1
+    }
+}
+
+/// 路径的目录名（最后一段）；拿不到就是错误，文案对上层保持不变
+pub fn path_dir_name(path: &Path) -> eyre::Result<String> {
+    let name = path
+        .file_name()
+        .ok_or_eyre(format!("获取`{}`的目录名失败", path.display()))?;
+    Ok(name.to_string_lossy().to_string())
 }
 
 /// 漫画ID -> 漫画下载目录

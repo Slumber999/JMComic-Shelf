@@ -111,3 +111,5 @@ export function progressLabel(progress: ReaderProgress): string {
 }
 
 loadAllProgress()
+// 独立阅读窗口写入进度后，主窗口靠 storage 事件重读
+window.addEventListener('storage', loadAllProgress)

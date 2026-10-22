@@ -43,7 +43,10 @@ pub(super) fn safe_dir_name(name: &str) -> String {
 
 /// 目录 / cbz 的扫描与 reader.rs 是同一份实现，这里只沿用导出侧习惯的名字
 pub(super) use crate::{
-    reader::{file_name_string, list_images, read_cbz_pages as cbz_image_names, stem_string},
+    reader::{
+        file_name_string, list_cbz_files, list_images, list_subdirs,
+        read_cbz_pages as cbz_image_names, stem_string,
+    },
     storage::{is_quick_reader_dir, READER_GUIDE_FILE, READER_HTML_FILE},
 };
 
@@ -51,35 +54,13 @@ pub(super) fn cbz_image_count(path: &Path) -> Option<usize> {
     cbz_image_names(path).ok().map(|names| names.len())
 }
 
+/// 扫描侧把「目录读不出来」当空目录（阅读器那边是报错），所以这里吞掉错误
 pub(super) fn subdirs(dir: &Path) -> Vec<PathBuf> {
-    let Ok(read_dir) = fs::read_dir(dir) else {
-        return Vec::new();
-    };
-
-    let mut dirs: Vec<PathBuf> = read_dir
-        .filter_map(Result::ok)
-        .map(|entry| entry.path())
-        .filter(|path| path.is_dir())
-        .filter(|path| !file_name_string(path).starts_with(".下载中-"))
-        .collect();
-    dirs.sort_by(|a, b| natural_cmp(&file_name_string(a), &file_name_string(b)));
-    dirs
+    list_subdirs(dir).unwrap_or_default()
 }
 
 pub(super) fn cbz_files(cbz_dir: &Path) -> Vec<PathBuf> {
-    let Ok(read_dir) = fs::read_dir(cbz_dir) else {
-        return Vec::new();
-    };
-
-    let mut files: Vec<PathBuf> = read_dir
-        .filter_map(Result::ok)
-        .map(|entry| entry.path())
-        .filter(|path| {
-            path.is_file() && path.extension().is_some_and(|ext| ext.eq_ignore_ascii_case("cbz"))
-        })
-        .collect();
-    files.sort_by(|a, b| natural_cmp(&file_name_string(a), &file_name_string(b)));
-    files
+    list_cbz_files(cbz_dir).unwrap_or_default()
 }
 
 /// 扫描一部漫画目录，得到它的章节

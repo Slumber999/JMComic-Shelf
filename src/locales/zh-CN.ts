@@ -1,6 +1,9 @@
 export default {
   common: {
     cancel: '取消',
+    copied: '已复制',
+    copyFailed: '复制失败，请手动选中复制',
+    clickToCopy: '点击复制',
     expand: '展开',
     collapse: '收起',
     expandMoreRemaining: '展开更多（还有 {count} 个）',

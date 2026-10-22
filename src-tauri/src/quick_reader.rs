@@ -13,7 +13,6 @@ use crate::{
     config::LocalLibrarySource,
     events::ExportQuickReaderEvent,
     extensions::{AppHandleExt, EyreReportToMessage, PathIsImg},
-    reader::natural_cmp,
     utils,
 };
 

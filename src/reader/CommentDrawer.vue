@@ -70,10 +70,10 @@ watch(
 
       <template #footer>
         <div class="flex w-full items-center justify-center gap-2">
-          <n-button size="small" :disabled="page <= 1" @click="goToPage(page - 1)">
+          <n-button size="small" :disabled="loading || page <= 1" @click="goToPage(page - 1)">
           {{ t('commentDrawer.prev') }}
         </n-button>
-          <n-button size="small" type="primary" :disabled="page >= pageCount" @click="goToPage(page + 1)">
+          <n-button size="small" type="primary" :disabled="loading || page >= pageCount" @click="goToPage(page + 1)">
             {{ t('commentDrawer.next') }}
           </n-button>
         </div>
