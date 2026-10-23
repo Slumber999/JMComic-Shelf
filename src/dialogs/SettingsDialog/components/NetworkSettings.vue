@@ -177,6 +177,7 @@ onMounted(loadActiveImageDomain)
       <n-radio-button value="Domain3">{{ t('settings.network.line', { index: 3 }) }}</n-radio-button>
       <n-radio-button value="Domain4">{{ t('settings.network.line', { index: 4 }) }}</n-radio-button>
       <n-radio-button value="Domain5">{{ t('settings.network.line', { index: 5 }) }}</n-radio-button>
+      <n-radio-button value="Domain6">{{ t('settings.network.line', { index: 6 }) }}</n-radio-button>
       <n-radio-button value="Custom">{{ t('settings.network.custom') }}</n-radio-button>
     </n-radio-group>
     <n-input-group v-if="store.config.apiDomainMode === 'Custom'" class="mt-1">

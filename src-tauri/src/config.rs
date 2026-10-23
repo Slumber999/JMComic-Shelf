@@ -9,22 +9,25 @@ use serde::{Deserialize, Serialize};
 use specta::Type;
 use tauri::{AppHandle, Manager};
 
-/// 官方 API 线路：顺序与设置页的「线路1..线路5」一致
-pub fn api_line_domains() -> [(ApiDomainMode, &'static str); 5] {
+/// 官方 API 线路：顺序与设置页的「线路1..线路6」一致
+pub fn api_line_domains() -> [(ApiDomainMode, &'static str); 6] {
     [
         (ApiDomainMode::Domain1, API_DOMAIN_1),
         (ApiDomainMode::Domain2, API_DOMAIN_2),
         (ApiDomainMode::Domain3, API_DOMAIN_3),
         (ApiDomainMode::Domain4, API_DOMAIN_4),
         (ApiDomainMode::Domain5, API_DOMAIN_5),
+        (ApiDomainMode::Domain6, API_DOMAIN_6),
     ]
 }
 
-const API_DOMAIN_1: &str = "www.cdnzack.cc";
-const API_DOMAIN_2: &str = "www.cdnhth.cc";
-const API_DOMAIN_3: &str = "www.cdnhth.net";
-const API_DOMAIN_4: &str = "www.cdnbea.net";
-const API_DOMAIN_5: &str = "www.cdn-mspjmapiproxy.xyz";
+/// 2025 年官方在用的 6 条 API 线路，顺序即设置页的线路 1..6
+const API_DOMAIN_1: &str = "www.cdnbea.net";
+const API_DOMAIN_2: &str = "www.cdnhth.net";
+const API_DOMAIN_3: &str = "www.cdnhjk.net";
+const API_DOMAIN_4: &str = "www.cdnutc.cc";
+const API_DOMAIN_5: &str = "www.cdngwc.net";
+const API_DOMAIN_6: &str = "www.cdngwc.club";
 
 #[derive(Debug, Clone, Serialize, Deserialize, Type)]
 #[serde(rename_all = "camelCase")]
@@ -141,7 +144,16 @@ impl Config {
             ApiDomainMode::Domain3 => API_DOMAIN_3.to_string(),
             ApiDomainMode::Domain4 => API_DOMAIN_4.to_string(),
             ApiDomainMode::Domain5 => API_DOMAIN_5.to_string(),
-            ApiDomainMode::Custom => self.custom_api_domain.clone(),
+            ApiDomainMode::Domain6 => API_DOMAIN_6.to_string(),
+            // 自定义线路留空时退回第一条，避免拿空域名去拼 URL
+            ApiDomainMode::Custom => {
+                let custom = self.custom_api_domain.trim();
+                if custom.is_empty() {
+                    API_DOMAIN_1.to_string()
+                } else {
+                    custom.to_string()
+                }
+            }
         }
     }
 
@@ -184,8 +196,8 @@ impl Config {
             img_download_interval_sec: 0,
             download_all_favorites_interval_sec: 0,
             update_downloaded_comics_interval_sec: 0,
-            api_domain_mode: ApiDomainMode::Domain2,
-            custom_api_domain: API_DOMAIN_2.to_string(),
+            api_domain_mode: ApiDomainMode::Domain1,
+            custom_api_domain: API_DOMAIN_1.to_string(),
             should_download_cover: true,
             split_reader: false,
             window_width: 600,
@@ -232,15 +244,50 @@ pub enum Language {
     ZhTw,
 }
 
-#[derive(Default, Debug, Clone, PartialEq, Serialize, Deserialize, Type)]
+#[derive(Default, Debug, Clone, PartialEq, Serialize, Type)]
 pub enum ApiDomainMode {
-    Domain1,
     #[default]
+    Domain1,
     Domain2,
     Domain3,
     Domain4,
     Domain5,
+    Domain6,
     Custom,
+}
+
+impl<'de> Deserialize<'de> for ApiDomainMode {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        let raw = String::deserialize(deserializer)?;
+        Ok(Self::from_stored_value(&raw))
+    }
+}
+
+impl ApiDomainMode {
+    /// 老配置可能存的是域名而不是 DomainN：能对上当前线路就映射过去，
+    /// 认不出来的一律落回第一条线路，不要因为一个旧值把整份配置判成坏文件
+    fn from_stored_value(raw: &str) -> Self {
+        let raw = raw.trim();
+        match raw {
+            "Domain1" => Self::Domain1,
+            "Domain2" => Self::Domain2,
+            "Domain3" => Self::Domain3,
+            "Domain4" => Self::Domain4,
+            "Domain5" => Self::Domain5,
+            "Domain6" => Self::Domain6,
+            "Custom" => Self::Custom,
+            _ if raw.eq_ignore_ascii_case(API_DOMAIN_1) => Self::Domain1,
+            _ if raw.eq_ignore_ascii_case(API_DOMAIN_2) => Self::Domain2,
+            _ if raw.eq_ignore_ascii_case(API_DOMAIN_3) => Self::Domain3,
+            _ if raw.eq_ignore_ascii_case(API_DOMAIN_4) => Self::Domain4,
+            _ if raw.eq_ignore_ascii_case(API_DOMAIN_5) => Self::Domain5,
+            _ if raw.eq_ignore_ascii_case(API_DOMAIN_6) => Self::Domain6,
+            _ => Self::Domain1,
+        }
+    }
 }
 
 /// 本地库存读取的目录
@@ -319,6 +366,39 @@ mod tests {
         assert!(Config::try_merge_config("not json", &app_data_dir).is_none());
         assert!(Config::try_merge_config("[1,2,3]", &app_data_dir).is_none());
 
+        let _ = std::fs::remove_dir_all(&app_data_dir);
+    }
+
+    #[test]
+    fn api_domain_mode_should_fall_back_to_first_line_for_old_values() {
+        // 当前线路名照常解析
+        assert_eq!(
+            serde_json::from_str::<ApiDomainMode>("\"Domain6\"").unwrap(),
+            ApiDomainMode::Domain6
+        );
+        // 老配置里存的是域名时，认得出来就映射到对应线路
+        assert_eq!(
+            serde_json::from_str::<ApiDomainMode>("\"www.cdnhth.net\"").unwrap(),
+            ApiDomainMode::Domain2
+        );
+        // 已下线的旧域名 / 完全不认识的值都落回第一条，且不报错
+        assert_eq!(
+            serde_json::from_str::<ApiDomainMode>("\"www.cdnzack.cc\"").unwrap(),
+            ApiDomainMode::Domain1
+        );
+        assert_eq!(
+            serde_json::from_str::<ApiDomainMode>("\"whatever\"").unwrap(),
+            ApiDomainMode::Domain1
+        );
+    }
+
+    #[test]
+    fn empty_custom_api_domain_should_fall_back_to_first_line() {
+        let app_data_dir = temp_dir();
+        let mut config = Config::default(&app_data_dir);
+        config.api_domain_mode = ApiDomainMode::Custom;
+        config.custom_api_domain = String::new();
+        assert_eq!(config.get_api_domain(), API_DOMAIN_1);
         let _ = std::fs::remove_dir_all(&app_data_dir);
     }
 }

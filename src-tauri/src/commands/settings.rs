@@ -46,6 +46,12 @@ pub fn save_config(app: AppHandle, config: Config) -> CommandResult<()> {
             || config_state.proxy_port != config.proxy_port
     };
 
+    let api_domain_changed = {
+        let config_state = config_state.read();
+        config_state.api_domain_mode != config.api_domain_mode
+            || config_state.custom_api_domain != config.custom_api_domain
+    };
+
     let enable_file_logger = config.enable_file_logger;
     let file_logger_changed = config_state.read().enable_file_logger != enable_file_logger;
 
@@ -56,6 +62,11 @@ pub fn save_config(app: AppHandle, config: Config) -> CommandResult<()> {
             .save(&app)
             .map_err(|err| CommandError::from("保存配置失败", err))?;
         tracing::debug!("保存配置成功");
+    }
+
+    // 设置里换了线路：清掉运行时换线结果，下一次请求从用户选的那条开始
+    if api_domain_changed {
+        lines::reset_api_line();
     }
 
     if proxy_changed {

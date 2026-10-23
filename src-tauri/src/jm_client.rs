@@ -1,3 +1,4 @@
+use std::collections::HashMap;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
@@ -61,31 +62,55 @@ const RELOGIN_COOLDOWN: Duration = Duration::from_secs(60);
 /// - 禁漫对任何未登录请求都会下发一个游客 AVS，名字、域、路径跟登录态完全一样，
 ///   jar 正是按这几项存取，谁后到谁覆盖。所以登录成功后把 AVS 记在这里，
 ///   取 cookie 时直接盖掉 jar 里的那份，游客 AVS 就顶不掉了
+/// - 登录态按域名隔离：每个域名存自己那份 AVS，换线后不会把旧域名的 AVS 发过去
 #[derive(Default)]
 struct SessionCookieStore {
     jar: Jar,
-    /// 登录态 AVS，None 表示还没登录
-    session: RwLock<Option<String>>,
+    /// 域名 -> 登录态 AVS；没有记录表示该域名还没登录
+    sessions: RwLock<HashMap<String, String>>,
+}
+
+/// 登录态按域名隔离：key 统一成小写 host，避免端口/大小写差异对不上
+fn session_domain_key(domain: &str) -> String {
+    domain
+        .trim()
+        .trim_start_matches("https://")
+        .trim_start_matches("http://")
+        .split(['/', ':'])
+        .next()
+        .unwrap_or_default()
+        .to_ascii_lowercase()
 }
 
 impl SessionCookieStore {
-    fn set_session(&self, avs: String) {
-        *self.session.write() = Some(avs);
+    fn set_session(&self, domain: &str, avs: String) {
+        self.sessions
+            .write()
+            .insert(session_domain_key(domain), avs);
     }
 
-    /// 退出登录：丢掉登录态 AVS，之后的请求退回游客身份
+    /// 退出登录：丢掉所有域名的登录态 AVS，之后的请求退回游客身份
     fn clear_session(&self) {
-        *self.session.write() = None;
+        self.sessions.write().clear();
     }
 
-    /// 拼请求要带的 cookie：jar 里的原样保留，只把 AVS 换成登录态的那份
+    /// 这个域名上有没有登录态
+    fn has_session(&self, domain: &str) -> bool {
+        self.sessions
+            .read()
+            .contains_key(&session_domain_key(domain))
+    }
+
+    /// 拼请求要带的 cookie：jar 里的原样保留，只把当前域名登录态的 AVS 换上去
     fn cookies_text(&self, url: &Url) -> Option<String> {
         let jar_cookies = self
             .jar
             .cookies(url)
             .and_then(|value| value.to_str().ok().map(str::to_string));
-        let session = self.session.read();
-        let Some(avs) = session.as_ref() else {
+        let session_avs = url
+            .host_str()
+            .and_then(|host| self.sessions.read().get(&session_domain_key(host)).cloned());
+        let Some(avs) = session_avs else {
             return jar_cookies;
         };
 
@@ -508,6 +533,18 @@ mod tests {
         assert_eq!(url_host("https://cdn-msp2.jmapiproxy2.cc"), Some("cdn-msp2.jmapiproxy2.cc"));
         assert_eq!(url_host("https://cdn-msp2.jmapiproxy2.cc?x=1"), Some("cdn-msp2.jmapiproxy2.cc"));
         assert_eq!(url_host("/media/photos/1/2.webp"), None);
+    }
+
+    #[test]
+    fn session_domain_key_should_strip_scheme_and_port() {
+        assert_eq!(
+            session_domain_key("https://WWW.CDNBEA.NET:443"),
+            "www.cdnbea.net"
+        );
+        assert_eq!(
+            session_domain_key(" www.cdnhjk.net "),
+            "www.cdnhjk.net"
+        );
     }
 
     #[test]

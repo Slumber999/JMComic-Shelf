@@ -778,7 +778,7 @@ updateDownloadedComicsEvent: "update-downloaded-comics-event"
 
 /** user-defined types **/
 
-export type ApiDomainMode = "Domain1" | "Domain2" | "Domain3" | "Domain4" | "Domain5" | "Custom"
+export type ApiDomainMode = "Domain1" | "Domain2" | "Domain3" | "Domain4" | "Domain5" | "Domain6" | "Custom"
 /**
  * API 线路测速结果
  */

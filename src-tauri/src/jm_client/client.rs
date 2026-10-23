@@ -70,7 +70,14 @@ impl JmClient {
         Ok(())
     }
 
-    /// 发请求；需要登录的接口回 401 就用保存的账号重新登录一次，然后重试
+    /// 当前该用的 API 域名：运行时换过线就用换过的，否则用配置里选的
+    fn api_domain(&self) -> String {
+        let configured = self.app.get_config().read().get_api_domain();
+        lines::active_api_domain(&configured)
+    }
+
+    /// 发请求；连接失败 / TLS 失败 / 超时 / 5xx 时按候选顺序自动换线（最多 3 条），
+    /// 全部失败才报错。登录态按域名隔离，换到新线路后没登录态就用保存的账号重登
     async fn jm_request(
         &self,
         method: reqwest::Method,
@@ -79,21 +86,62 @@ impl JmClient {
         form: Option<serde_json::Value>,
         ts: u64,
     ) -> eyre::Result<reqwest::Response> {
-        let generation = self.session_generation.load(Ordering::Relaxed);
-        let http_resp = self
-            .send(&method, path, query.as_ref(), form.as_ref(), ts)
-            .await?;
+        let candidates = lines::api_line_candidates(&self.api_domain());
 
-        if http_resp.status() != StatusCode::UNAUTHORIZED || !self.relogin(generation).await {
+        for (index, domain) in candidates.iter().enumerate() {
+            let generation = self.session_generation.load(Ordering::Relaxed);
+            if index > 0 && !self.cookie_store.has_session(domain) {
+                // 新域名上还没有登录态：走同一套重登逻辑（含冷却），没存密码就只做匿名请求
+                self.relogin(generation, domain).await;
+            }
+
+            let last_candidate = index + 1 == candidates.len();
+            let http_resp = match self
+                .send_on_domain(domain, &method, path, query.as_ref(), form.as_ref(), ts)
+                .await
+            {
+                Ok(resp) if resp.status().is_server_error() && !last_candidate => {
+                    tracing::warn!(
+                        domain = %domain,
+                        status = %resp.status(),
+                        "API 线路返回 5xx，自动换下一条线路重试"
+                    );
+                    continue;
+                }
+                // 最后一条线路的 5xx 原样交给上层，保持原来的错误文案
+                Ok(resp) => resp,
+                Err(err) if !last_candidate => {
+                    tracing::warn!(
+                        domain = %domain,
+                        message = %err,
+                        "API 线路连接失败，自动换下一条线路重试"
+                    );
+                    continue;
+                }
+                // 所有线路都连不上：原样返回最后一次的错误
+                Err(err) => return Err(err),
+            };
+
+            // 这条线路能连通，记下来让后续请求优先走它
+            lines::mark_api_line_ok(domain);
+
+            if http_resp.status() == StatusCode::UNAUTHORIZED
+                && self.relogin(generation, domain).await
+            {
+                return self
+                    .send_on_domain(domain, &method, path, query.as_ref(), form.as_ref(), ts)
+                    .await;
+            }
+
             return Ok(http_resp);
         }
 
-        self.send(&method, path, query.as_ref(), form.as_ref(), ts)
-            .await
+        Err(eyre!("API 线路全部失败"))
     }
 
-    async fn send(
+    async fn send_on_domain(
         &self,
+        api_domain: &str,
         method: &reqwest::Method,
         path: ApiPath,
         query: Option<&serde_json::Value>,
@@ -107,7 +155,6 @@ impl JmClient {
             utils::md5_hex(&format!("{ts}{APP_TOKEN_SECRET}"))
         };
 
-        let api_domain = self.app.get_config().read().get_api_domain();
         let path = path.as_str();
         let request = self
             .api_client
@@ -235,9 +282,20 @@ impl JmClient {
         *self.last_relogin_failure.write() = None;
     }
 
+    /// 在当前线路登录；登录态按域名保存，换线后不会把旧域名的 AVS 带过去
     #[instrument(level = "error", skip_all)]
     pub async fn login(
         &self,
+        username: &str,
+        password: &str,
+    ) -> eyre::Result<GetUserProfileRespData> {
+        let domain = self.api_domain();
+        self.login_on_domain(&domain, username, password).await
+    }
+
+    async fn login_on_domain(
+        &self,
+        domain: &str,
         username: &str,
         password: &str,
     ) -> eyre::Result<GetUserProfileRespData> {
@@ -248,7 +306,14 @@ impl JmClient {
         });
         // 发送登录请求。这里绕开 jm_request：登录本身就回 401 时不能再触发重登
         let http_resp = self
-            .send(&reqwest::Method::POST, ApiPath::Login, None, Some(&form), ts)
+            .send_on_domain(
+                domain,
+                &reqwest::Method::POST,
+                ApiPath::Login,
+                None,
+                Some(&form),
+                ts,
+            )
             .await?;
         // 检查http响应状态码
         let status = http_resp.status();
@@ -280,7 +345,7 @@ impl JmClient {
         user_profile.photo = format!("https://{IMAGE_DOMAIN}/media/users/{}", user_profile.photo);
 
         if let Some(avs) = session_avs {
-            self.cookie_store.set_session(avs);
+            self.cookie_store.set_session(domain, avs);
         }
         self.session_generation.fetch_add(1, Ordering::Relaxed);
         *self.last_relogin_failure.write() = None;
@@ -289,10 +354,13 @@ impl JmClient {
     }
 
     /// 登录态失效时用配置里的账号密码重新登录一次
+    /// - 登录态按域名隔离，domain 是这次要登录的线路；换线重登和 401 重登共用同一套冷却
     /// - 返回 false 表示这次没登成（没存账号密码、冷却期内、或者登录又失败了）
-    async fn relogin(&self, generation: u64) -> bool {
-        // 等锁的这段时间里别的请求已经登好了，直接重试就行
-        if self.session_generation.load(Ordering::Relaxed) != generation {
+    async fn relogin(&self, generation: u64, domain: &str) -> bool {
+        // 等锁的这段时间里这个域名已经登好了，直接重试就行
+        if self.cookie_store.has_session(domain)
+            && self.session_generation.load(Ordering::Relaxed) != generation
+        {
             return true;
         }
         if let Some(at) = *self.last_relogin_failure.read() {
@@ -308,7 +376,9 @@ impl JmClient {
                 return false;
             }
         }
-        if self.session_generation.load(Ordering::Relaxed) != generation {
+        if self.cookie_store.has_session(domain)
+            && self.session_generation.load(Ordering::Relaxed) != generation
+        {
             return true;
         }
 
@@ -321,13 +391,13 @@ impl JmClient {
             return false;
         }
 
-        match self.login(&username, &password).await {
+        match self.login_on_domain(domain, &username, &password).await {
             Ok(_) => {
-                tracing::info!("登录态已失效，已用保存的账号重新登录");
+                tracing::info!(domain = %domain, "登录态已失效，已用保存的账号重新登录");
                 true
             }
             Err(err) => {
-                tracing::error!(message = %err, "自动重新登录失败");
+                tracing::error!(message = %err, domain = %domain, "自动重新登录失败");
                 *self.last_relogin_failure.write() = Some(Instant::now());
                 false
             }
