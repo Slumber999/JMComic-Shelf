@@ -77,8 +77,93 @@ fn build_api_request(
         .query(&query)
 }
 
+/// 快速失败的上限：从发出到出错超过这个时间，说明线路是慢/死的，
+/// 重试只会再等一遍，不如直接换线
+const FAST_FAIL_MS: u128 = 500;
+
+/// 同线路快速重试前的间隔：给服务端的瞬时故障一点恢复时间
+const FAST_RETRY_DELAY: Duration = Duration::from_millis(400);
+
+/// 有界快速重试的唯一判定：GET（幂等）+ 快速失败（耗时 < FAST_FAIL_MS）+ 本次请求还没重试过。
+/// - POST 一律不重试：重复评论 / 签到 / 收藏比失败更糟
+/// - 慢失败（例如 3 秒超时）说明这条线路是慢/死的，重试没有意义，交给换线逻辑
+fn should_fast_retry(method: &reqwest::Method, elapsed_ms: u128, already_retried: bool) -> bool {
+    method == reqwest::Method::GET && !already_retried && elapsed_ms < FAST_FAIL_MS
+}
+
+/// 一条线路上的一次尝试：成功、连接层失败、或「连上了但这次不能算成功」（5xx / 非 JSON）
+enum Attempt {
+    Ok {
+        status: StatusCode,
+        body: String,
+    },
+    /// 连接 / TLS / 超时 / 读 body 失败
+    Transport(eyre::Report),
+    /// 5xx，或该是 JSON 却不是 JSON：响应原样带着，最后一条线路要交回上层
+    Unusable {
+        reason: &'static str,
+        status: StatusCode,
+        body: String,
+    },
+}
+
+impl Attempt {
+    /// 失败原因（成功返回 None）：transport / http5xx / parse，也是重试日志的 reason 字段
+    fn failure_reason(&self) -> Option<&'static str> {
+        match self {
+            Attempt::Ok { .. } => None,
+            Attempt::Transport(_) => Some("transport"),
+            Attempt::Unusable { reason, .. } => Some(*reason),
+        }
+    }
+
+    /// 失败详情：只进日志与诊断，不进用户文案
+    fn failure_detail(&self) -> String {
+        match self {
+            Attempt::Ok { .. } => String::new(),
+            Attempt::Transport(err) => format!("{err}"),
+            Attempt::Unusable { status, body, .. } => {
+                let brief: String = body.chars().take(200).collect();
+                format!("status {status} body={brief}")
+            }
+        }
+    }
+}
+
+/// 记录一次同线路快速重试（zone=retry 便于事后统计瞬时故障）
+/// - attempt = 2：这是这条线路上的第 2 次尝试，也是整个请求唯一允许的一次重试
+fn log_fast_retry(domain: &str, elapsed_ms: u128, reason: &str, detail: &str) {
+    tracing::warn!(
+        zone = "retry",
+        attempt = 2,
+        elapsed_ms = elapsed_ms as u64,
+        reason,
+        domain = %domain,
+        message = %detail,
+        "API 请求快速失败，同线路再试一次"
+    );
+    api_measure(&format!(
+        "api fast-retry domain={domain} ms={elapsed_ms} reason={reason}"
+    ));
+}
+
+/// 记录一次换线前的线路失败（原来的日志格式，补上 reason 便于统计）
+fn log_line_failed(domain: &str, elapsed_ms: u128, reason: &str, detail: &str) {
+    tracing::warn!(
+        domain = %domain,
+        reason,
+        elapsed_ms = elapsed_ms as u64,
+        message = %detail,
+        "API 线路失败，自动换下一条线路重试"
+    );
+    api_measure(&format!(
+        "api fail domain={domain} ms={elapsed_ms} reason={reason} {detail}"
+    ));
+}
+
 /// 冷启动抢跑：还没有已知可用线路时，候选线路并发发出同一个请求，
 /// 谁先成功用谁（省掉「逐条线路等超时」的那几秒）
+/// - `check_json` 为真时，body 解析不成 JmResp 也算这条线路没成功：抢跑不能把服务端的错误页当结果
 async fn race_cold_start(
     client: Arc<RwLock<ClientWithMiddleware>>,
     candidates: Vec<String>,
@@ -87,7 +172,8 @@ async fn race_cold_start(
     query: Option<serde_json::Value>,
     form: Option<serde_json::Value>,
     ts: u64,
-) -> Option<(String, reqwest::Response)> {
+    check_json: bool,
+) -> Option<(String, StatusCode, String)> {
     let mut tasks = tokio::task::JoinSet::new();
     for domain in candidates {
         let client = client.clone();
@@ -101,18 +187,32 @@ async fn race_cold_start(
                 Some(payload) => request.form(&payload),
                 None => request,
             };
-            match request.send().await {
-                Ok(response) if !response.status().is_server_error() => Ok((domain, response)),
-                Ok(response) => Err((domain, format!("status {}", response.status()))),
-                Err(err) => Err((domain, format!("{err}"))),
+            let response = match request.send().await {
+                Ok(response) => response,
+                Err(err) => return Err((domain, format!("{err}"))),
+            };
+            let status = response.status();
+            if status.is_server_error() {
+                return Err((domain, format!("status {status}")));
             }
+            let body = match response.text().await {
+                Ok(body) => body,
+                Err(err) => return Err((domain, format!("读取响应失败: {err}"))),
+            };
+            if check_json
+                && status == StatusCode::OK
+                && serde_json::from_str::<JmResp>(&body).is_err()
+            {
+                return Err((domain, "响应不是接口数据".to_string()));
+            }
+            Ok((domain, status, body))
         });
     }
     while let Some(joined) = tasks.join_next().await {
         match joined {
-            Ok(Ok((domain, response))) => {
+            Ok(Ok((domain, status, body))) => {
                 tasks.abort_all();
-                return Some((domain, response));
+                return Some((domain, status, body));
             }
             Ok(Err((domain, message))) => {
                 lines::mark_api_line_failed(&domain);
@@ -162,8 +262,16 @@ impl JmClient {
         lines::active_api_domain(&configured)
     }
 
-    /// 发请求；连接失败 / TLS 失败 / 超时 / 5xx 时按候选顺序自动换线（最多 3 条），
-    /// 全部失败才报错。登录态按域名隔离，换到新线路后没登录态就用保存的账号重登
+    /// 发请求并把 body 读出来；连接失败 / TLS 失败 / 超时 / 5xx 时按候选顺序自动换线（最多 3 条），
+    /// 全部失败才报错。登录态按域名隔离，换到新线路后没登录态就用保存的账号重登。
+    ///
+    /// 换线之前允许一次「同线路快速重试」（见 should_fast_retry）：GET 且 500ms 内就失败时，
+    /// 先在同一条线路上隔 400ms 再试一次，还失败才换线。慢失败直接换线，POST 从不重试。
+    ///
+    /// - expect_json：接口是否该返回 JSON。是的话，GET 的非 JSON body 也算本次尝试失败
+    ///   （服务端这次回的是它自己的错误页，典型瞬时故障，重试一次往往就好了）。
+    ///   POST 不做这个判定：不能因为响应看不懂就换线重发，那条请求可能已经提交成功了
+    /// - 返回 (状态码, body)：各接口按自己的规则解释 body
     async fn jm_request(
         &self,
         method: reqwest::Method,
@@ -171,13 +279,18 @@ impl JmClient {
         query: Option<serde_json::Value>,
         form: Option<serde_json::Value>,
         ts: u64,
-    ) -> eyre::Result<reqwest::Response> {
-        let candidates = lines::api_line_candidates(&self.api_domain());
+        expect_json: bool,
+    ) -> eyre::Result<(StatusCode, String)> {
+        let mut candidates = lines::api_line_candidates(&self.api_domain());
         let request_started = jm_now_ms();
+        // 「同线路快速重试」整个请求只有一次预算，用完就只剩换线
+        let mut retried = false;
+        // 只有 GET 才把「不是 JSON」当成这次尝试失败：POST 重发可能造成重复提交
+        let check_json = expect_json && method == reqwest::Method::GET;
 
         // 冷启动还不知道哪条线路能用：候选并发抢跑，避免「第一条挂掉的线路先等 2s 超时」
         if !lines::has_active_api_line() && candidates.len() > 1 {
-            if let Some((domain, response)) = race_cold_start(
+            if let Some((domain, status, body)) = race_cold_start(
                 self.api_client.clone(),
                 candidates.clone(),
                 method.clone(),
@@ -185,6 +298,7 @@ impl JmClient {
                 query.clone(),
                 form.clone(),
                 ts,
+                check_json,
             )
             .await
             {
@@ -193,12 +307,13 @@ impl JmClient {
                     "api race ok domain={domain} total={}",
                     jm_now_ms() - request_started
                 ));
-                return Ok(response);
+                return Ok((status, body));
             }
+            // 抢跑期间有线路被记成失败：重新取一次候选，失败的会被熔断窗口跳过
+            candidates = lines::api_line_candidates(&self.api_domain());
         }
 
-        for (index, domain) in candidates.iter().enumerate() {
-            let attempt_started = jm_now_ms();
+        'lines: for (index, domain) in candidates.iter().enumerate() {
             let generation = self.session_generation.load(Ordering::Relaxed);
             if index > 0 && !self.cookie_store.has_session(domain) {
                 // 新域名上还没有登录态：走同一套重登逻辑（含冷却），没存密码就只做匿名请求
@@ -206,67 +321,66 @@ impl JmClient {
             }
 
             let last_candidate = index + 1 == candidates.len();
-            let http_resp = match self
-                .send_on_domain(domain, &method, path, query.as_ref(), form.as_ref(), ts)
-                .await
-            {
-                Ok(resp) if resp.status().is_server_error() && !last_candidate => {
+            let (status, body) = loop {
+                // 用单调时钟量「从发出到出错」的耗时：这是判定快速失败的依据
+                let attempt_started = Instant::now();
+                let attempt = self
+                    .attempt_on_domain(
+                        domain,
+                        &method,
+                        path,
+                        query.as_ref(),
+                        form.as_ref(),
+                        ts,
+                        check_json,
+                    )
+                    .await;
+                let elapsed_ms = attempt_started.elapsed().as_millis();
+
+                if let Some(reason) = attempt.failure_reason() {
+                    let detail = attempt.failure_detail();
+                    // 快速失败：GET 且刚出错，服务端瞬时故障往往同线路再来一次就好
+                    if should_fast_retry(&method, elapsed_ms, retried) {
+                        retried = true;
+                        log_fast_retry(domain, elapsed_ms, reason, &detail);
+                        tokio::time::sleep(FAST_RETRY_DELAY).await;
+                        continue;
+                    }
+                    // 慢失败 / POST / 已经重试过：走原来的换线逻辑
                     lines::mark_api_line_failed(domain);
-                    api_measure(&format!(
-                        "api retry domain={domain} index={index} ms={} status={}",
-                        jm_now_ms() - attempt_started,
-                        resp.status()
-                    ));
-                    tracing::warn!(
-                        domain = %domain,
-                        status = %resp.status(),
-                        "API 线路返回 5xx，自动换下一条线路重试"
-                    );
-                    continue;
+                    log_line_failed(domain, elapsed_ms, reason, &detail);
+                    if last_candidate {
+                        // 没有下一条线路可换了：连接层错误原样返回，5xx / 非 JSON 的响应
+                        // 也原样交给上层，由它按状态码给出错误文案
+                        return match attempt {
+                            Attempt::Transport(err) => Err(err),
+                            Attempt::Unusable { status, body, .. } => Ok((status, body)),
+                            Attempt::Ok { .. } => unreachable!("失败分支不可能是 Attempt::Ok"),
+                        };
+                    }
+                    continue 'lines;
                 }
-                // 最后一条线路的 5xx 原样交给上层，保持原来的错误文案
-                Ok(resp) => resp,
-                Err(err) if !last_candidate => {
-                    lines::mark_api_line_failed(domain);
-                    api_measure(&format!(
-                        "api fail domain={domain} index={index} ms={} err={err}",
-                        jm_now_ms() - attempt_started
-                    ));
-                    tracing::warn!(
-                        domain = %domain,
-                        message = %err,
-                        "API 线路连接失败，自动换下一条线路重试"
-                    );
-                    continue;
-                }
-                // 所有线路都连不上：原样返回最后一次的错误
-                Err(err) => {
-                    lines::mark_api_line_failed(domain);
-                    api_measure(&format!(
-                        "api fail domain={domain} last ms={} err={err}",
-                        jm_now_ms() - attempt_started
-                    ));
-                    return Err(err);
-                }
+
+                let (status, body) = match attempt {
+                    Attempt::Ok { status, body } => (status, body),
+                    _ => unreachable!("成功分支只可能是 Attempt::Ok"),
+                };
+                // 这条线路能连通，记下来（并落盘，下次冷启动先用它）
+                lines::mark_api_line_ok_and_persist(&self.app, domain);
+                api_measure(&format!(
+                    "api ok domain={domain} index={index} ms={elapsed_ms} total={}",
+                    jm_now_ms() - request_started
+                ));
+                break (status, body);
             };
 
-            // 这条线路能连通，记下来（并落盘，下次冷启动先用它）
-            lines::mark_api_line_ok_and_persist(&self.app, domain);
-            api_measure(&format!(
-                "api ok domain={domain} index={index} ms={} total={}",
-                jm_now_ms() - attempt_started,
-                jm_now_ms() - request_started
-            ));
-
-            if http_resp.status() == StatusCode::UNAUTHORIZED
-                && self.relogin(generation, domain).await
-            {
+            if status == StatusCode::UNAUTHORIZED && self.relogin(generation, domain).await {
                 return self
-                    .send_on_domain(domain, &method, path, query.as_ref(), form.as_ref(), ts)
+                    .send_and_read(domain, &method, path, query.as_ref(), form.as_ref(), ts)
                     .await;
             }
 
-            return Ok(http_resp);
+            return Ok((status, body));
         }
 
         Err(eyre!("API 线路全部失败"))
@@ -298,13 +412,71 @@ impl JmClient {
         Ok(http_resp)
     }
 
+    /// 在指定线路上发一次请求并读出 body（不做重试 / 换线判定）
+    async fn send_and_read(
+        &self,
+        api_domain: &str,
+        method: &reqwest::Method,
+        path: ApiPath,
+        query: Option<&serde_json::Value>,
+        form: Option<&serde_json::Value>,
+        ts: u64,
+    ) -> eyre::Result<(StatusCode, String)> {
+        let http_resp = self
+            .send_on_domain(api_domain, method, path, query, form, ts)
+            .await?;
+        let status = http_resp.status();
+        let body = http_resp.text().await.wrap_err("读取响应内容失败")?;
+        Ok((status, body))
+    }
+
+    /// 在一条线路上发一次请求：连接 + 读 body，JSON 接口再校验 body 能不能解析。
+    /// 不重试、不换线，只把这次尝试的结果分好类交给 jm_request
+    async fn attempt_on_domain(
+        &self,
+        api_domain: &str,
+        method: &reqwest::Method,
+        path: ApiPath,
+        query: Option<&serde_json::Value>,
+        form: Option<&serde_json::Value>,
+        ts: u64,
+        check_json: bool,
+    ) -> Attempt {
+        let (status, body) = match self
+            .send_and_read(api_domain, method, path, query, form, ts)
+            .await
+        {
+            Ok(response) => response,
+            Err(err) => return Attempt::Transport(err),
+        };
+        if status.is_server_error() {
+            return Attempt::Unusable {
+                reason: "http5xx",
+                status,
+                body,
+            };
+        }
+        if check_json && status == StatusCode::OK && serde_json::from_str::<JmResp>(&body).is_err()
+        {
+            // 服务端这次回的是它自己的错误页 / 纯文本：完整原文进日志，用户只看一句人话
+            tracing::warn!(status = %status, body = %body, "接口返回的不是 JSON，按瞬时故障处理");
+            return Attempt::Unusable {
+                reason: "parse",
+                status,
+                body,
+            };
+        }
+        Attempt::Ok { status, body }
+    }
+
+    /// 获取接口文本：GetScrambleId 返回的是 HTML 模板，不能按 JSON 校验
     async fn jm_get(
         &self,
         path: ApiPath,
         query: Option<serde_json::Value>,
         ts: u64,
-    ) -> eyre::Result<reqwest::Response> {
-        self.jm_request(reqwest::Method::GET, path, query, None, ts)
+    ) -> eyre::Result<(StatusCode, String)> {
+        self.jm_request(reqwest::Method::GET, path, query, None, ts, false)
             .await
     }
 
@@ -345,21 +517,31 @@ impl JmClient {
         no_data_err: Option<&str>,
     ) -> eyre::Result<String> {
         let ts = SystemTime::now().duration_since(UNIX_EPOCH)?.as_secs();
-        let http_resp = self.jm_request(method, path, query, form, ts).await?;
-        // 检查http响应状态码
-        let status = http_resp.status();
-        let body = http_resp.text().await?;
+        // 重试 / 换线都在 jm_request 里做完了，这里拿到的已经是最后一次尝试的响应
+        let (status, body) = self.jm_request(method, path, query, form, ts, true).await?;
         if let Some(message) = unauthorized_err {
             if status == reqwest::StatusCode::UNAUTHORIZED {
                 return Err(eyre!("{message}"));
             }
         }
         if status != reqwest::StatusCode::OK {
-            return Err(eyre!("{err_title}，预料之外的状态码({status}): {body}"));
+            // 服务端原文（可能是它自己的错误页 / SQL 报错）只进日志，不给用户看
+            tracing::error!(err_title, status = %status, body = %body, "接口返回了预料之外的状态码");
+            return Err(eyre!(
+                "{err_title}，预料之外的状态码({status})，请稍后重试"
+            ));
         }
-        // 尝试将body解析为JmResp
-        let jm_resp = serde_json::from_str::<JmResp>(&body)
-            .wrap_err(format!("将body解析为JmResp失败: {body}"))?;
+        // 尝试将body解析为JmResp：走到这里说明 body 不是 JSON（JSON 校验在重试层已经做过），
+        // 原文只进日志，用户只看一句人话
+        let jm_resp = match serde_json::from_str::<JmResp>(&body) {
+            Ok(jm_resp) => jm_resp,
+            Err(err) => {
+                tracing::error!(err_title, body = %body, reason = %err, "将body解析为JmResp失败");
+                return Err(eyre!(
+                    "{err_title}，服务端返回的不是接口数据（可能是临时故障），请稍后重试"
+                ));
+            }
+        };
         // 检查JmResp的code字段
         if jm_resp.code != 200 {
             return Err(eyre!("{err_title}，预料之外的code: {jm_resp:?}"));
@@ -954,10 +1136,8 @@ impl JmClient {
             "express": "off",
         });
         // 发送获取scramble_id请求
-        let http_resp = self.jm_get(ApiPath::GetScrambleId, Some(query), ts).await?;
+        let (status, body) = self.jm_get(ApiPath::GetScrambleId, Some(query), ts).await?;
         // 检查http响应状态码
-        let status = http_resp.status();
-        let body = http_resp.text().await?;
         if status != reqwest::StatusCode::OK {
             return Err(eyre!(
                 "获取scramble_id失败，预料之外的状态码({status}): {body}"
@@ -1182,4 +1362,27 @@ async fn read_image_body(http_resp: reqwest::Response) -> eyre::Result<Bytes> {
         return Err(eyre!("下载图片失败，预料之外的状态码({status}): {text}"));
     }
     Ok(http_resp.bytes().await?)
+}
+
+#[cfg(test)]
+mod retry_tests {
+    use super::*;
+
+    #[test]
+    fn fast_get_failure_should_retry_once() {
+        // 连接被拒 / 立即 5xx / 非 JSON：都在 500ms 内失败，GET 可以同线路再试一次
+        assert!(should_fast_retry(&reqwest::Method::GET, 0, false));
+        assert!(should_fast_retry(&reqwest::Method::GET, 499, false));
+    }
+
+    #[test]
+    fn slow_post_and_retried_should_not_retry() {
+        // 500ms 及以上说明线路是慢/死的：直接换线，重试只会再等一遍
+        assert!(!should_fast_retry(&reqwest::Method::GET, 500, false));
+        assert!(!should_fast_retry(&reqwest::Method::GET, 3_000, false));
+        // POST 不幂等：评论 / 签到 / 收藏绝不能重放
+        assert!(!should_fast_retry(&reqwest::Method::POST, 10, false));
+        // 一个请求只重试一次
+        assert!(!should_fast_retry(&reqwest::Method::GET, 10, true));
+    }
 }
