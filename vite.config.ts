@@ -6,7 +6,14 @@ import vueJsx from '@vitejs/plugin-vue-jsx'
 import vueDevTools from 'vite-plugin-vue-devtools'
 
 // @ts-expect-error process is a nodejs global
-const host = process.env.TAURI_DEV_HOST
+const env = process.env
+const host = env.TAURI_DEV_HOST
+
+/// 把相对本配置文件的目录转成 alias 需要的绝对路径；不引 @types/node，手动补回 Windows 盘符
+function configDir(relative: string): string {
+  const path = decodeURIComponent(new URL(relative, import.meta.url).pathname)
+  return path.replace(/^\/([A-Za-z]:)/, '$1').replace(/\/$/, '')
+}
 
 /// <script setup lang="tsx"> 的脚本子请求（id 形如 `<file>.vue?vue&type=script&lang.tsx`）。
 /// vueJsx 的 include 是 /\.[jt]sx$/，这个 id 正好以 `lang.tsx` 结尾，于是整块脚本被它
@@ -42,31 +49,42 @@ function vueTsxScriptPlugin(): Plugin {
 }
 
 // https://vitejs.dev/config/
-export default defineConfig(async () => ({
-  // componentInspector 必须关掉：它会把 <script setup lang="tsx"> 的脚本块用 isTSX:true 去解析，
-  // 于是 defineProps<{...}>() / defineModel<T>() 这类泛型调用会被当成 JSX 标签，直接 500（章节详情页就是这么挂的）。
-  // 关掉只影响「点组件在编辑器里打开」，devtools 面板照旧。
-  plugins: [vueTsxScriptPlugin(), vue(), UnoCSS(), vueJsx(), vueDevTools({ componentInspector: false })],
+export default defineConfig(async ({ command, mode }) => {
+  // 外壳由构建模式决定：--mode android 切移动端，默认桌面；开发期改用运行时选择器，方便 ?shell=mobile 预览
+  const mobileShell = mode === 'android' || env.JM_SHELL === 'mobile'
+  const shellDir = mobileShell ? 'src/mobile' : 'src/desktop'
+  // 开发期用 src/shell-dev 在运行时二选一，构建产物只包含对应外壳
+  const shellAlias = command === 'serve' && !mobileShell ? 'src/shell-dev' : shellDir
 
-  // Vite options tailored for Tauri development and only applied in `tauri dev` or `tauri build`
-  //
-  // 1. prevent vite from obscuring rust errors
-  clearScreen: false,
-  // 2. tauri expects a fixed port, fail if that port is not available
-  server: {
-    port: 5005,
-    strictPort: true,
-    host: host || false,
-    hmr: host
-      ? {
-          protocol: 'ws',
-          host,
-          port: 1421,
-        }
-      : undefined,
-    watch: {
-      // 3. tell vite to ignore watching `src-tauri`
-      ignored: ['**/src-tauri/**'],
+  return {
+    plugins: [vueTsxScriptPlugin(), vue(), UnoCSS(), vueJsx(), vueDevTools({ componentInspector: false })],
+
+    resolve: {
+      alias: {
+        '@shell': configDir(shellAlias),
+      },
     },
-  },
-}))
+
+    // Vite options tailored for Tauri development and only applied in `tauri dev` or `tauri build`
+    //
+    // 1. prevent vite from obscuring rust errors
+    clearScreen: false,
+    // 2. tauri expects a fixed port, fail if that port is not available
+    server: {
+      port: 5005,
+      strictPort: true,
+      host: host || false,
+      hmr: host
+        ? {
+            protocol: 'ws',
+            host,
+            port: 1421,
+          }
+        : undefined,
+      watch: {
+        // 3. tell vite to ignore watching `src-tauri`
+        ignored: ['**/src-tauri/**'],
+      },
+    },
+  }
+})

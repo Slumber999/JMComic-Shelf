@@ -48,7 +48,7 @@ export function t(key: string, params?: Record<string, string | number>): string
   })
 }
 
-/// 组件里用这个，模板中保持 t('xxx') 的写法
+/// 组件里用这个，模板中保持 t("xxx") 的写法
 export function useI18n() {
   return { t, locale, setLocale }
 }

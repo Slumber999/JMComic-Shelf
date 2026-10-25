@@ -18,7 +18,7 @@ use reqwest::StatusCode;
 use reqwest::Url;
 use reqwest_middleware::ClientWithMiddleware;
 use reqwest_retry::policies::ExponentialBackoff;
-use reqwest_retry::{Jitter, RetryTransientMiddleware};
+use reqwest_retry::RetryTransientMiddleware;
 use serde_json::json;
 use tauri::AppHandle;
 use tracing::instrument;
@@ -329,26 +329,26 @@ fn create_api_client_with_config(
     let builder = apply_proxy(
         reqwest::ClientBuilder::new().cookie_provider(cookie_store.clone()),
         config,
-    )?;
-
-    let retry_policy = ExponentialBackoff::builder()
-        .base(1) // 指数为1，保证重试间隔为1秒不变
-        .jitter(Jitter::Bounded) // 重试间隔在1秒左右波动
-        .build_with_total_retry_duration(Duration::from_secs(5)); // 重试总时长为5秒
+    )?
+    // 冷启动第一条请求别干等：连不上 / 首包迟迟不回就尽快换下一条线路
+    .connect_timeout(Duration::from_millis(1200))
+    .timeout(Duration::from_secs(3));
 
     let client = builder
         .build()
         .wrap_err("创建 API 客户端失败（请检查代理设置）")?;
 
-    Ok(
-        reqwest_middleware::ClientBuilder::new(client)
-            .with(RetryTransientMiddleware::new_with_policy(retry_policy))
-            .build(),
-    )
+    // 同线路不再自动重试：单条线路最多花 3 秒就交给换线逻辑，
+    // 否则「超时 3s + 退避 1s + 再超时 3s」会把一条死线路拖到 7 秒
+    Ok(reqwest_middleware::ClientBuilder::new(client).build())
 }
 
 fn create_img_client_with_config(config: &Config) -> eyre::Result<ClientWithMiddleware> {
-    let builder = apply_proxy(reqwest::ClientBuilder::new(), config)?;
+    // 图片/章节页体积大：不设整体超时，只限制建连，死线路仍能尽快换下一条
+    let builder = apply_proxy(
+        reqwest::ClientBuilder::new().connect_timeout(Duration::from_secs(10)),
+        config,
+    )?;
     let retry_policy = ExponentialBackoff::builder().build_with_max_retries(2);
 
     let client = builder

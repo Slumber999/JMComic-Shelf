@@ -1,3 +1,6 @@
+mod app;
+pub use app::*;
+
 mod account;
 pub use account::*;
 

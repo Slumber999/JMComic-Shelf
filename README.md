@@ -1,17 +1,17 @@
 <div align="center">
 
-<img src="src-tauri/icons/128x128.png" width="112" alt="JMComic Shelf" />
+<img src="docs/图标.png" width="112" alt="JMComic Shelf" />
 
 # 禁漫书架 · JMComic Shelf
 
-禁漫天堂（JMComic / 18comic）桌面客户端
+禁漫天堂（JMComic / 18comic）客户端 · 桌面与安卓
 搜索 · 下载 · 任务管理 · 本地书库 · 内置阅读器
 
 </div>
 
 <p align="center">
   <a href="https://github.com/Slumber999/JMComic-Shelf/releases"><img src="https://img.shields.io/github/v/release/Slumber999/JMComic-Shelf?style=flat-square&label=release&color=F97316&logo=github&logoColor=white" alt="release"></a>
-  <img src="https://img.shields.io/badge/platform-Windows_10_%2F_11-0078D4?style=flat-square" alt="platform">
+  <img src="https://img.shields.io/badge/platform-Windows_10_%2F_11_%7C_Android_8%2B-3DDC84?style=flat-square&logo=android&logoColor=white" alt="platform">
   <img src="https://img.shields.io/badge/Tauri-2-24C8DB?style=flat-square&logo=tauri&logoColor=white" alt="Tauri 2">
   <img src="https://img.shields.io/badge/Vue-3-41B883?style=flat-square&logo=vuedotjs&logoColor=white" alt="Vue 3">
   <img src="https://img.shields.io/badge/Rust-stable-DEA584?style=flat-square&logo=rust&logoColor=1a1a1a" alt="Rust">
@@ -86,10 +86,10 @@
 | [![排行榜](docs/排行榜.png)](docs/排行榜.png) | [![全站评论](docs/全站评论.png)](docs/全站评论.png) |
 | 完整的官方排行榜 | 全站最新评论，点击跳到对应漫画的详情页 |
 
-| **下载** | **快速阅读器** |
+| **下载** | **安卓端** |
 | :---: | :---: |
-| [![下载](docs/下载.png)](docs/下载.png) | [![快速阅读器](docs/快速阅读器.png)](docs/快速阅读器.png) |
-| 章节勾选、下载与进度查看 | 导出的自包含分享包，在浏览器里直接阅读 |
+| [![下载](docs/下载.png)](docs/下载.png) | [![安卓端](docs/安卓.png)](docs/安卓.png) |
+| 章节勾选、下载与进度查看 | 安卓与桌面端功能基本一致 |
 
 | **小说列表** | **评论屏蔽** |
 | :---: | :---: |
@@ -98,7 +98,12 @@
 
 ## 下载
 
-前往 [Releases](https://github.com/Slumber999/JMComic-Shelf/releases) 下载 Windows 免安装单文件 exe，双击即可运行。需要系统自带 WebView2，Windows 10 / 11 一般都有。作者尚未在mac等其他系统验证软件运行，不过代码本身不受不同系统限制，如若需要请自行构建。
+前往 [Releases](https://github.com/Slumber999/JMComic-Shelf/releases) 下载：
+
+- **Windows**：免安装单文件 exe，双击即可运行，需要系统自带 WebView2（Windows 10 / 11 一般都有）
+- **Android**：arm64 APK，直接安装即可（首次安装需允许「未知来源」）
+
+两端功能基本一致。作者尚未在 macOS / iOS 等其他系统验证，代码本身不受系统限制，需要请自行构建。
 
 ## 构建
 

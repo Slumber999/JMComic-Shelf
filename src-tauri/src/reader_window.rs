@@ -3,7 +3,9 @@
 use parking_lot::RwLock;
 use serde::{Deserialize, Serialize};
 use specta::Type;
-use tauri::{AppHandle, Emitter, Manager, WebviewUrl, WebviewWindowBuilder};
+use tauri::{AppHandle, Manager};
+#[cfg(desktop)]
+use tauri::{Emitter, WebviewUrl, WebviewWindowBuilder};
 
 use crate::{errors::{CommandError, CommandResult}, types::Comic};
 
@@ -40,18 +42,23 @@ impl MainWindowInitialSize {
 #[specta::specta]
 pub fn open_reader_window(app: AppHandle, target: ReaderWindowTarget) -> CommandResult<()> {
     *app.state::<ReaderWindowTargetState>().0.write() = Some(target.clone());
+    open_reader_window_platform(&app, &target)
+}
 
+/// 桌面：开独立阅读窗口（已有就复用）
+#[cfg(desktop)]
+fn open_reader_window_platform(app: &AppHandle, target: &ReaderWindowTarget) -> CommandResult<()> {
     // 已经开着阅读窗口就复用：聚焦 + 通知它换漫画
     if let Some(window) = app.get_webview_window(READER_WINDOW_LABEL) {
         let _ = window.set_focus();
-        let _ = app.emit_to(READER_WINDOW_LABEL, READER_WINDOW_TARGET_EVENT, target);
+        let _ = app.emit_to(READER_WINDOW_LABEL, READER_WINDOW_TARGET_EVENT, target.clone());
         return Ok(());
     }
 
     // 阅读窗口按主窗口「启动时」的尺寸开
-    let (width, height) = initial_reader_window_size(&app);
+    let (width, height) = initial_reader_window_size(app);
 
-    WebviewWindowBuilder::new(&app, READER_WINDOW_LABEL, WebviewUrl::App("index.html".into()))
+    WebviewWindowBuilder::new(app, READER_WINDOW_LABEL, WebviewUrl::App("index.html".into()))
         .title("禁漫书架 · 阅读")
         .inner_size(width, height)
         .min_inner_size(420.0, 500.0)
@@ -61,7 +68,20 @@ pub fn open_reader_window(app: AppHandle, target: ReaderWindowTarget) -> Command
     Ok(())
 }
 
+/// 移动端只有一个 WebView，阅读器走内嵌浮层；这里明确报错让前端回落
+#[cfg(mobile)]
+fn open_reader_window_platform(
+    _app: &AppHandle,
+    _target: &ReaderWindowTarget,
+) -> CommandResult<()> {
+    Err(CommandError::from(
+        "打开阅读窗口失败",
+        eyre::eyre!("移动端不支持独立阅读窗口"),
+    ))
+}
+
 /// 阅读窗口的初始尺寸：优先用主窗口启动时记录下来的尺寸
+#[cfg(desktop)]
 fn initial_reader_window_size(app: &AppHandle) -> (f64, f64) {
     if let Some(size) = app
         .try_state::<MainWindowInitialSize>()
@@ -73,6 +93,7 @@ fn initial_reader_window_size(app: &AppHandle) -> (f64, f64) {
 }
 
 /// 主窗口当前的逻辑尺寸；拿不到就用默认值
+#[cfg(desktop)]
 fn main_window_size(app: &AppHandle) -> (f64, f64) {
     let Some(main_window) = app.get_webview_window("main") else {
         return (600.0, 720.0);

@@ -2,6 +2,20 @@
 
 use super::*;
 
+/// 临时诊断：API 线路每次尝试的耗时写到 logcat（tag=JMAPI），adb 直接读；
+/// 桌面端没有 logcat，同一份数据落 debug 日志，冷启动时间戳可直接查
+fn api_measure(line: &str) {
+    tracing::debug!("{line}");
+    crate::android_log::log_line("JMAPI", line);
+}
+
+fn jm_now_ms() -> u128 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|elapsed| elapsed.as_millis())
+        .unwrap_or_default()
+}
+
 /// 签到接口没登录时的文案：/daily 不带 user_id、/daily_chk 没登录态都返回 `data: []`
 const SIGN_NOT_LOGGED_IN: &str = "登录态无效或已过期，请重新登录";
 
@@ -37,6 +51,78 @@ impl CommentTarget {
     }
 }
 
+/// 拼一次 API 请求（顺序发送与冷启动抢跑共用同一套 token / UA）
+fn build_api_request(
+    client: &ClientWithMiddleware,
+    api_domain: &str,
+    method: &reqwest::Method,
+    path: ApiPath,
+    query: Option<&serde_json::Value>,
+    ts: u64,
+) -> reqwest_middleware::RequestBuilder {
+    let tokenparam = format!("{ts},{APP_VERSION}");
+    let token = if path == ApiPath::GetScrambleId {
+        utils::md5_hex(&format!("{ts}{APP_TOKEN_SECRET_2}"))
+    } else {
+        utils::md5_hex(&format!("{ts}{APP_TOKEN_SECRET}"))
+    };
+    client
+        .request(method.clone(), format!("https://{api_domain}{}", path.as_str()).as_str())
+        .header("token", token)
+        .header("tokenparam", tokenparam)
+        .header(
+            "user-agent",
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36",
+        )
+        .query(&query)
+}
+
+/// 冷启动抢跑：还没有已知可用线路时，候选线路并发发出同一个请求，
+/// 谁先成功用谁（省掉「逐条线路等超时」的那几秒）
+async fn race_cold_start(
+    client: Arc<RwLock<ClientWithMiddleware>>,
+    candidates: Vec<String>,
+    method: reqwest::Method,
+    path: ApiPath,
+    query: Option<serde_json::Value>,
+    form: Option<serde_json::Value>,
+    ts: u64,
+) -> Option<(String, reqwest::Response)> {
+    let mut tasks = tokio::task::JoinSet::new();
+    for domain in candidates {
+        let client = client.clone();
+        let method = method.clone();
+        let query = query.clone();
+        let form = form.clone();
+        tasks.spawn(async move {
+            let client = client.read().clone();
+            let request = build_api_request(&client, &domain, &method, path, query.as_ref(), ts);
+            let request = match &form {
+                Some(payload) => request.form(&payload),
+                None => request,
+            };
+            match request.send().await {
+                Ok(response) if !response.status().is_server_error() => Ok((domain, response)),
+                Ok(response) => Err((domain, format!("status {}", response.status()))),
+                Err(err) => Err((domain, format!("{err}"))),
+            }
+        });
+    }
+    while let Some(joined) = tasks.join_next().await {
+        match joined {
+            Ok(Ok((domain, response))) => {
+                tasks.abort_all();
+                return Some((domain, response));
+            }
+            Ok(Err((domain, message))) => {
+                lines::mark_api_line_failed(&domain);
+                api_measure(&format!("api race fail {domain} {message}"));
+            }
+            Err(err) => api_measure(&format!("api race join err {err}")),
+        }
+    }
+    None
+}
 impl JmClient {
     /// 创建客户端。不会失败：代理配置不合法时退化为直连（并记错误日志），
     /// 保证应用永远能启动
@@ -87,8 +173,32 @@ impl JmClient {
         ts: u64,
     ) -> eyre::Result<reqwest::Response> {
         let candidates = lines::api_line_candidates(&self.api_domain());
+        let request_started = jm_now_ms();
+
+        // 冷启动还不知道哪条线路能用：候选并发抢跑，避免「第一条挂掉的线路先等 2s 超时」
+        if !lines::has_active_api_line() && candidates.len() > 1 {
+            if let Some((domain, response)) = race_cold_start(
+                self.api_client.clone(),
+                candidates.clone(),
+                method.clone(),
+                path,
+                query.clone(),
+                form.clone(),
+                ts,
+            )
+            .await
+            {
+                lines::mark_api_line_ok_and_persist(&self.app, &domain);
+                api_measure(&format!(
+                    "api race ok domain={domain} total={}",
+                    jm_now_ms() - request_started
+                ));
+                return Ok(response);
+            }
+        }
 
         for (index, domain) in candidates.iter().enumerate() {
+            let attempt_started = jm_now_ms();
             let generation = self.session_generation.load(Ordering::Relaxed);
             if index > 0 && !self.cookie_store.has_session(domain) {
                 // 新域名上还没有登录态：走同一套重登逻辑（含冷却），没存密码就只做匿名请求
@@ -101,6 +211,12 @@ impl JmClient {
                 .await
             {
                 Ok(resp) if resp.status().is_server_error() && !last_candidate => {
+                    lines::mark_api_line_failed(domain);
+                    api_measure(&format!(
+                        "api retry domain={domain} index={index} ms={} status={}",
+                        jm_now_ms() - attempt_started,
+                        resp.status()
+                    ));
                     tracing::warn!(
                         domain = %domain,
                         status = %resp.status(),
@@ -111,6 +227,11 @@ impl JmClient {
                 // 最后一条线路的 5xx 原样交给上层，保持原来的错误文案
                 Ok(resp) => resp,
                 Err(err) if !last_candidate => {
+                    lines::mark_api_line_failed(domain);
+                    api_measure(&format!(
+                        "api fail domain={domain} index={index} ms={} err={err}",
+                        jm_now_ms() - attempt_started
+                    ));
                     tracing::warn!(
                         domain = %domain,
                         message = %err,
@@ -119,11 +240,23 @@ impl JmClient {
                     continue;
                 }
                 // 所有线路都连不上：原样返回最后一次的错误
-                Err(err) => return Err(err),
+                Err(err) => {
+                    lines::mark_api_line_failed(domain);
+                    api_measure(&format!(
+                        "api fail domain={domain} last ms={} err={err}",
+                        jm_now_ms() - attempt_started
+                    ));
+                    return Err(err);
+                }
             };
 
-            // 这条线路能连通，记下来让后续请求优先走它
-            lines::mark_api_line_ok(domain);
+            // 这条线路能连通，记下来（并落盘，下次冷启动先用它）
+            lines::mark_api_line_ok_and_persist(&self.app, domain);
+            api_measure(&format!(
+                "api ok domain={domain} index={index} ms={} total={}",
+                jm_now_ms() - attempt_started,
+                jm_now_ms() - request_started
+            ));
 
             if http_resp.status() == StatusCode::UNAUTHORIZED
                 && self.relogin(generation, domain).await
@@ -148,21 +281,7 @@ impl JmClient {
         form: Option<&serde_json::Value>,
         ts: u64,
     ) -> eyre::Result<reqwest::Response> {
-        let tokenparam = format!("{ts},{APP_VERSION}");
-        let token = if path == ApiPath::GetScrambleId {
-            utils::md5_hex(&format!("{ts}{APP_TOKEN_SECRET_2}"))
-        } else {
-            utils::md5_hex(&format!("{ts}{APP_TOKEN_SECRET}"))
-        };
-
-        let path = path.as_str();
-        let request = self
-            .api_client
-            .read()
-            .request(method.clone(), format!("https://{api_domain}{path}").as_str())
-            .header("token", token)
-            .header("tokenparam", tokenparam)
-            .header("user-agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36");
+        let request = build_api_request(&self.api_client.read(), api_domain, method, path, query, ts);
 
         let http_resp = match form {
             Some(payload) => request.query(&query).form(payload).send().await,

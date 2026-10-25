@@ -21,6 +21,7 @@ use crate::reader_window::{
     READER_WINDOW_LABEL,
 };
 
+mod android_log;
 mod comic_tags;
 mod commands;
 mod config;
@@ -48,6 +49,7 @@ fn generate_context() -> tauri::Context<Wry> {
 }
 
 /// 恢复主窗口上次的尺寸，比当前显示器还大就收回来
+#[cfg(desktop)]
 fn restore_main_window_size(window: &tauri::WebviewWindow, width: u32, height: u32) {
     let mut logical_width = f64::from(width);
     let mut logical_height = f64::from(height);
@@ -159,6 +161,7 @@ pub fn run() {
             open_log_file,
             open_reader_window,
             get_reader_window_target,
+            exit_app,
         ])
         .events(tauri_specta::collect_events![
             DownloadEvent,
@@ -171,7 +174,8 @@ pub fn run() {
             LogEvent,
         ]);
 
-    #[cfg(debug_assertions)]
+    // 只在桌面开发时导出 TS 绑定：Android 上沙箱里没有 ../src 可写，会直接 panic
+    #[cfg(all(debug_assertions, desktop))]
     builder
         .export(
             specta_typescript::Typescript::default()
@@ -212,22 +216,26 @@ pub fn run() {
             }
 
             // 关掉主窗口就跟着关掉阅读窗口，避免只剩一个阅读窗口还开着
-            if window.label() == "main" {
-                if let Some(reader_window) = window.app_handle().get_webview_window(READER_WINDOW_LABEL)
-                {
-                    let _ = reader_window.close();
-                }
+            #[cfg(desktop)]
+            {
+                if window.label() == "main" {
+                    if let Some(reader_window) =
+                        window.app_handle().get_webview_window(READER_WINDOW_LABEL)
+                    {
+                        let _ = reader_window.close();
+                    }
 
-                // 关窗时再记一次尺寸，免得刚拉完窗口就退出、前端那次防抖保存还没落盘
-                if let (Some(config), Ok(size)) =
-                    (window.try_state::<RwLock<Config>>(), window.inner_size())
-                {
-                    let scale_factor = window.scale_factor().unwrap_or(1.0);
-                    let mut config = config.write();
-                    config.window_width = (f64::from(size.width) / scale_factor).round() as u32;
-                    config.window_height = (f64::from(size.height) / scale_factor).round() as u32;
-                    if let Err(err) = config.save(window.app_handle()) {
-                        tracing::error!(message = %err, "退出时保存窗口尺寸失败");
+                    // 关窗时再记一次尺寸，免得刚拉完窗口就退出、前端那次防抖保存还没落盘
+                    if let (Some(config), Ok(size)) =
+                        (window.try_state::<RwLock<Config>>(), window.inner_size())
+                    {
+                        let scale_factor = window.scale_factor().unwrap_or(1.0);
+                        let mut config = config.write();
+                        config.window_width = (f64::from(size.width) / scale_factor).round() as u32;
+                        config.window_height = (f64::from(size.height) / scale_factor).round() as u32;
+                        if let Err(err) = config.save(window.app_handle()) {
+                            tracing::error!(message = %err, "退出时保存窗口尺寸失败");
+                        }
                     }
                 }
             }
@@ -262,23 +270,29 @@ pub fn run() {
             let config = RwLock::new(Config::new(app.handle())?);
 
             // 主窗口用上次的尺寸（换网格档位、拉伸窗口时前端会把它写进配置）
-            if let Some(window) = app.get_webview_window("main") {
-                let (width, height) = {
-                    let saved = config.read();
-                    (saved.window_width, saved.window_height)
-                };
-                restore_main_window_size(&window, width, height);
+            #[cfg(desktop)]
+            {
+                if let Some(window) = app.get_webview_window("main") {
+                    let (width, height) = {
+                        let saved = config.read();
+                        (saved.window_width, saved.window_height)
+                    };
+                    restore_main_window_size(&window, width, height);
 
-                // 记下主窗口启动时的尺寸：阅读窗口按它开，不跟随之后的变化
-                let scale_factor = window.scale_factor().unwrap_or(1.0);
-                if let Ok(size) = window.inner_size() {
-                    let initial = (
-                        f64::from(size.width) / scale_factor,
-                        f64::from(size.height) / scale_factor,
-                    );
-                    app.manage(MainWindowInitialSize::new(initial));
+                    // 记下主窗口启动时的尺寸：阅读窗口按它开，不跟随之后的变化
+                    let scale_factor = window.scale_factor().unwrap_or(1.0);
+                    if let Ok(size) = window.inner_size() {
+                        let initial = (
+                            f64::from(size.width) / scale_factor,
+                            f64::from(size.height) / scale_factor,
+                        );
+                        app.manage(MainWindowInitialSize::new(initial));
+                    }
                 }
             }
+
+            // 冷启动先用上次请求成功的线路，别从死线路开始等超时
+            lines::load_persisted_api_line(app.handle());
 
             app.manage(config);
 
@@ -297,6 +311,35 @@ pub fn run() {
             app.manage(ReaderWindowTargetState::default());
 
             logger::init(app.handle())?;
+
+            // 启动预热：登录态恢复后在后台打一次最轻的 /categories，把 DNS/TLS/线路选择提前做掉；
+            // 失败静默重试一次，不弹错误、不阻塞界面
+            {
+                let warm_handle = app.handle().clone();
+                tauri::async_runtime::spawn(async move {
+                    let client = warm_handle.state::<JmClient>().inner().clone();
+                    let started = std::time::Instant::now();
+                    let mut last_error = None;
+                    for attempt in 0..2 {
+                        match client.get_categories().await {
+                            Ok(_) => {
+                                last_error = None;
+                                break;
+                            }
+                            Err(err) => last_error = Some(err),
+                        }
+                        if attempt == 0 {
+                            tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+                        }
+                    }
+                    let ms = started.elapsed().as_millis() as u64;
+                    match last_error {
+                        None => tracing::debug!(ms, "启动预热完成"),
+                        Some(err) => tracing::debug!(ms, message = %err, "启动预热失败，忽略"),
+                    }
+                    crate::android_log::log_line("JMAPI", &format!("warmup categories ms={ms}"));
+                });
+            }
 
             // 恢复上次没做完的任务（全部恢复成暂停状态，由用户手动继续）
             app.state::<DownloadManager>().restore_tasks();

@@ -6,13 +6,14 @@
 //!   （issue #195）。这里维护一个运行时的线路健康顺序：失败自动换下一条，成功的那条会被记到最前面，
 //!   之后的图片就直接走它，不会每张图都先超时一次
 
+use std::collections::HashMap;
 use std::sync::LazyLock;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use parking_lot::RwLock;
 use serde::{Deserialize, Serialize};
 use specta::Type;
-use tauri::AppHandle;
+use tauri::{AppHandle, Manager};
 
 use crate::config::{api_line_domains, ApiDomainMode};
 use crate::extensions::AppHandleExt;
@@ -93,8 +94,21 @@ pub fn mark_image_line_failed(domain: &str) {
 /// 一次请求最多尝试的 API 线路数：失败自动换线，全部失败才报错
 pub const API_LINE_MAX_ATTEMPTS: usize = 3;
 
+/// 线路熔断窗口：某条线路刚失败后，其它请求在窗口内直接跳过它，
+/// 不用各自再等同一条死线路超时。窗口很短，恢复后自动放行
+pub const API_LINE_COOLDOWN: Duration = Duration::from_secs(10);
+
+/// 运行时熔断记录：域名 -> 最近一次失败时间（连接/TLS/超时/5xx）
+static API_LINE_FAILED_AT: LazyLock<RwLock<HashMap<String, Instant>>> =
+    LazyLock::new(|| RwLock::new(HashMap::new()));
+
 /// 运行时选中的 API 线路：换线成功后固定下来，设置里改线路时清空
 static API_LINE_ACTIVE: LazyLock<RwLock<Option<String>>> = LazyLock::new(|| RwLock::new(None));
+
+/// 是否已经确定可用线路（冷启动抢跑只在还没确定时触发）
+pub fn has_active_api_line() -> bool {
+    API_LINE_ACTIVE.read().is_some()
+}
 
 /// 当前该用的 API 域名：运行时换过线就用换过的，否则用配置里选的
 pub fn active_api_domain(configured: &str) -> String {
@@ -104,33 +118,129 @@ pub fn active_api_domain(configured: &str) -> String {
         .unwrap_or_else(|| configured.to_string())
 }
 
+/// 上次成功线路的落盘文件：冷启动直接用这条，避免第一条请求先等一条挂掉的线路超时
+const API_LINE_FILE: &str = "api-line.json";
+
+#[derive(Serialize, Deserialize)]
+struct ApiLineState {
+    domain: String,
+}
+
 /// 某条 API 线路请求成功：之后的请求优先走它
 pub fn mark_api_line_ok(domain: &str) {
+    API_LINE_FAILED_AT.write().remove(domain);
     *API_LINE_ACTIVE.write() = Some(domain.to_string());
 }
 
-/// 设置里改了线路：清掉运行时选择，回到配置里的那条
-pub fn reset_api_line() {
-    *API_LINE_ACTIVE.write() = None;
+/// 请求成功 + 落盘（只在变化时写文件）：下次冷启动从这条线路开始
+pub fn mark_api_line_ok_and_persist(app: &AppHandle, domain: &str) {
+    let changed = API_LINE_ACTIVE.read().as_deref() != Some(domain);
+    mark_api_line_ok(domain);
+    if !changed {
+        return;
+    }
+    let Ok(dir) = app.path().app_data_dir() else {
+        return;
+    };
+    let state = ApiLineState {
+        domain: domain.to_string(),
+    };
+    let text = serde_json::to_string(&state).unwrap_or_default();
+    let _ = std::fs::write(dir.join(API_LINE_FILE), text);
 }
 
-/// 候选线路：当前线路 -> 其余官方线路（去重），最多 API_LINE_MAX_ATTEMPTS 条
+/// 某条 API 线路失败（连接/TLS/超时/5xx）：熔断窗口内其它请求不再试它
+pub fn mark_api_line_failed(domain: &str) {
+    API_LINE_FAILED_AT
+        .write()
+        .insert(domain.to_string(), Instant::now());
+}
+
+/// 启动时恢复上次成功的线路（文件不存在 / 坏掉就安静忽略）
+pub fn load_persisted_api_line(app: &AppHandle) {
+    let Ok(dir) = app.path().app_data_dir() else {
+        return;
+    };
+    let Ok(text) = std::fs::read_to_string(dir.join(API_LINE_FILE)) else {
+        return;
+    };
+    let Ok(state) = serde_json::from_str::<ApiLineState>(&text) else {
+        return;
+    };
+    let domain = state.domain.trim();
+    if domain.is_empty() {
+        return;
+    }
+    *API_LINE_ACTIVE.write() = Some(domain.to_string());
+}
+
+/// 设置里改了线路：清掉运行时选择和熔断记录，回到配置里的那条
+pub fn reset_api_line() {
+    *API_LINE_ACTIVE.write() = None;
+    API_LINE_FAILED_AT.write().clear();
+}
+
+/// 同上，顺带删掉落盘记录（设置页改线路时用）
+pub fn reset_api_line_and_file(app: &AppHandle) {
+    reset_api_line();
+    if let Ok(dir) = app.path().app_data_dir() {
+        let _ = std::fs::remove_file(dir.join(API_LINE_FILE));
+    }
+}
+
+/// 候选线路：当前线路 -> 其余官方线路（去重），熔断中的线路跳过，
+/// 最多 API_LINE_MAX_ATTEMPTS 条；全部线路都在熔断时按原顺序立刻重试
 pub fn api_line_candidates(active: &str) -> Vec<String> {
-    let mut candidates = Vec::with_capacity(API_LINE_MAX_ATTEMPTS);
+    let all = all_api_line_candidates(active);
+    let selected = {
+        let failed_at = API_LINE_FAILED_AT.read();
+        select_api_line_candidates(&all, &failed_at, Instant::now())
+    };
+    selected.into_iter().take(API_LINE_MAX_ATTEMPTS).collect()
+}
+
+/// 全部候选线路（不截断）：当前线路在最前，后面是官方线路
+fn all_api_line_candidates(active: &str) -> Vec<String> {
+    let mut all = Vec::with_capacity(api_line_domains().len() + 1);
     let active = active.trim();
     if !active.is_empty() {
-        candidates.push(active.to_string());
+        all.push(active.to_string());
     }
     for (_, domain) in api_line_domains() {
-        if candidates.iter().any(|candidate| candidate == domain) {
-            continue;
-        }
-        candidates.push(domain.to_string());
-        if candidates.len() >= API_LINE_MAX_ATTEMPTS {
-            break;
+        if !all.iter().any(|candidate| candidate == domain) {
+            all.push(domain.to_string());
         }
     }
-    candidates
+    all
+}
+
+/// 跳过熔断窗口内的线路；全部线路都在熔断时放行全部，避免把应用锁死
+fn select_api_line_candidates(
+    all: &[String],
+    failed_at: &HashMap<String, Instant>,
+    now: Instant,
+) -> Vec<String> {
+    let fresh: Vec<String> = all
+        .iter()
+        .filter(|domain| !is_api_line_circuit_open(failed_at, domain, now))
+        .cloned()
+        .collect();
+    if fresh.is_empty() {
+        all.to_vec()
+    } else {
+        fresh
+    }
+}
+
+/// 这条线路是否还在熔断窗口内
+fn is_api_line_circuit_open(
+    failed_at: &HashMap<String, Instant>,
+    domain: &str,
+    now: Instant,
+) -> bool {
+    failed_at
+        .get(domain)
+        .is_some_and(|at| now.saturating_duration_since(*at) < API_LINE_COOLDOWN)
 }
 
 /// API 线路测速结果
@@ -229,6 +339,38 @@ mod tests {
         let empty = api_line_candidates("  ");
         assert_eq!(empty.len(), API_LINE_MAX_ATTEMPTS);
         assert!(empty.iter().all(|domain| !domain.is_empty()));
+    }
+
+    #[test]
+    fn circuit_open_lines_should_be_skipped_then_recover_after_window() {
+        let now = Instant::now();
+        let all = all_api_line_candidates(api_line_domains()[0].1);
+        let dead = all[0].clone();
+
+        let mut failed = HashMap::new();
+        failed.insert(dead.clone(), now);
+
+        // 刚失败：跳过它，其余线路顺序不变
+        let picked = select_api_line_candidates(&all, &failed, now);
+        assert_eq!(picked.len(), all.len() - 1);
+        assert!(!picked.contains(&dead));
+        assert_eq!(picked[0], all[1]);
+
+        // 窗口过后自动恢复
+        let picked =
+            select_api_line_candidates(&all, &failed, now + API_LINE_COOLDOWN);
+        assert_eq!(picked, all);
+    }
+
+    #[test]
+    fn all_lines_failed_should_still_return_candidates() {
+        let now = Instant::now();
+        let all = all_api_line_candidates("probe.example.com");
+        let failed: HashMap<String, Instant> =
+            all.iter().map(|domain| (domain.clone(), now)).collect();
+
+        // 全部熔断时放行全部：不能因为等窗口把应用锁死
+        assert_eq!(select_api_line_candidates(&all, &failed, now), all);
     }
 
     #[test]

@@ -54,8 +54,8 @@ export const useStore = defineStore('store', () => {
   const commentsPage = ref<number>(1)
   const getWeeklyResult = ref<GetWeeklyResult>()
   const downloadedComics = ref<Comic[]>([])
-  // 阅读器目标：传 comic = 本地优先；只传 comicId = 可以从网络读
-  const readerTarget = ref<{ comic?: Comic; comicId?: number }>()
+  // 阅读器目标：传 comic = 本地优先；只传 comicId = 可以从网络读；chapterIndex 可选（手机端直接定位章节）
+  const readerTarget = ref<{ comic?: Comic; comicId?: number; chapterIndex?: number }>()
   // 小说阅读目标：与 readerTarget 并列的另一套，同一时间只会显示其中一个
   const novelReaderTarget = ref<NovelReaderTarget>()
   // 官方分类树 + 常用标签：整个会话只拉一次，避免重复请求和选项抖动
@@ -95,9 +95,11 @@ export const useStore = defineStore('store', () => {
     currentTabName.value = 'chapter'
   }
 
-  /// 打开阅读器：设置里开了「阅读器独立窗口」就开新窗口，否则用现在这种内嵌浮层
-  function openReader(target: { comic?: Comic; comicId?: number }) {
-    if (config.value?.splitReader === true) {
+  /// 打开阅读器：设置里开了「阅读器独立窗口」就开新窗口，否则用现在这种内嵌浮层。
+  /// chapterIndex 是可选的起始章节（手机端用）；不传时阅读器按原有逻辑恢复进度
+  function openReader(target: { comic?: Comic; comicId?: number; chapterIndex?: number }) {
+    // 独立窗口的目标结构里没有章节字段：指定了起始章节就走内嵌阅读器，手机端才能直接定位
+    if (config.value?.splitReader === true && target.chapterIndex === undefined) {
       void commands.openReaderWindow({ comic: target.comic ?? null, comicId: target.comicId ?? null })
       return
     }

@@ -1,0 +1,19 @@
+<resources xmlns:tools="http://schemas.android.com/tools">
+    <!-- Base application theme. -->
+    <style name="Theme.jmcomic_shelf" parent="Theme.MaterialComponents.DayNight.NoActionBar">
+        <!-- jm-tools: system-bars -->
+        <!-- 状态栏/导航栏跟应用背景一致（白底深色图标），去掉主题默认主色造成的蓝/紫边 -->
+        <item name="android:statusBarColor">@android:color/white</item>
+        <item name="android:navigationBarColor">@android:color/white</item>
+        <item name="android:windowLightStatusBar">true</item>
+        <item name="android:windowLightNavigationBar">true</item>
+        <item name="android:windowBackground">@android:color/white</item>
+                <!-- jm-tools: system-bars -->
+        <!-- 状态栏/导航栏跟应用背景一致（白底深色图标），去掉主题默认主色造成的蓝/紫边 -->
+        <item name="android:statusBarColor">@android:color/white</item>
+        <item name="android:navigationBarColor">@android:color/white</item>
+        <item name="android:windowLightStatusBar">true</item>
+        <item name="android:windowLightNavigationBar">true</item>
+        <item name="android:windowBackground">@android:color/white</item>
+    </style>
+</resources>

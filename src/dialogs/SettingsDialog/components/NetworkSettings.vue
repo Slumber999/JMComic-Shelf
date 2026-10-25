@@ -16,6 +16,9 @@ import {
 } from 'naive-ui'
 import { useI18n } from '../../../i18n.ts'
 
+/// 手机端没有调整下载速度的意义：可选隐藏并发数与各类等待间隔，桌面默认不隐藏
+defineProps<{ hideDownloadSpeed?: boolean }>()
+
 const store = useStore()
 const { t } = useI18n()
 
@@ -102,73 +105,75 @@ onMounted(loadActiveImageDomain)
 
 <template>
   <div v-if="store.config !== undefined" class="flex flex-col">
-    <span class="font-bold">{{ t('settings.network.speed') }}</span>
-    <div class="flex flex-col gap-1">
-      <div class="flex gap-1">
-        <n-input-group class="w-35%">
-          <n-input-group-label size="small">{{ t('settings.network.chapterConcurrency') }}</n-input-group-label>
+    <template v-if="!hideDownloadSpeed">
+      <span class="font-bold">{{ t('settings.network.speed') }}</span>
+      <div class="flex flex-col gap-1">
+        <div class="flex gap-1">
+          <n-input-group class="w-35%">
+            <n-input-group-label size="small">{{ t('settings.network.chapterConcurrency') }}</n-input-group-label>
+            <n-input-number
+              class="w-full"
+              v-model:value="store.config.chapterConcurrency"
+              size="small"
+              @update:value="message.warning(t('settings.network.chapterConcurrencyRestart'))"
+              :min="1"
+              :parse="(x: string) => Number(x)" />
+          </n-input-group>
+          <n-input-group class="w-65%">
+            <n-input-group-label size="small">{{ t('settings.network.chapterInterval') }}</n-input-group-label>
+            <n-input-number
+              class="w-full"
+              v-model:value="store.config.chapterDownloadIntervalSec"
+              size="small"
+              :min="0"
+              :parse="(x: string) => Number(x)" />
+            <n-input-group-label size="small">{{ t('settings.network.seconds') }}</n-input-group-label>
+          </n-input-group>
+        </div>
+        <div class="flex gap-1">
+          <n-input-group class="w-35%">
+            <n-input-group-label size="small">{{ t('settings.network.imageConcurrency') }}</n-input-group-label>
+            <n-input-number
+              class="w-full"
+              v-model:value="store.config.imgConcurrency"
+              size="small"
+              @update-value="message.warning(t('settings.network.imageConcurrencyRestart'))"
+              :min="1"
+              :parse="(x: string) => Number(x)" />
+          </n-input-group>
+          <n-input-group class="w-65%">
+            <n-input-group-label size="small">{{ t('settings.network.imageInterval') }}</n-input-group-label>
+            <n-input-number
+              class="w-full"
+              v-model:value="store.config.imgDownloadIntervalSec"
+              size="small"
+              :min="0"
+              :parse="(x: string) => Number(x)" />
+            <n-input-group-label size="small">{{ t('settings.network.seconds') }}</n-input-group-label>
+          </n-input-group>
+        </div>
+        <n-input-group>
+          <n-input-group-label size="small">{{ t('settings.network.favoritesInterval') }}</n-input-group-label>
           <n-input-number
             class="w-full"
-            v-model:value="store.config.chapterConcurrency"
+            v-model:value="store.config.downloadAllFavoritesIntervalSec"
             size="small"
-            @update:value="message.warning(t('settings.network.chapterConcurrencyRestart'))"
-            :min="1"
+            :min="0"
             :parse="(x: string) => Number(x)" />
+          <n-input-group-label size="small">{{ t('settings.network.seconds') }}</n-input-group-label>
         </n-input-group>
-        <n-input-group class="w-65%">
-          <n-input-group-label size="small">{{ t('settings.network.chapterInterval') }}</n-input-group-label>
+        <n-input-group>
+          <n-input-group-label size="small">{{ t('settings.network.updateInterval') }}</n-input-group-label>
           <n-input-number
             class="w-full"
-            v-model:value="store.config.chapterDownloadIntervalSec"
+            v-model:value="store.config.updateDownloadedComicsIntervalSec"
             size="small"
             :min="0"
             :parse="(x: string) => Number(x)" />
           <n-input-group-label size="small">{{ t('settings.network.seconds') }}</n-input-group-label>
         </n-input-group>
       </div>
-      <div class="flex gap-1">
-        <n-input-group class="w-35%">
-          <n-input-group-label size="small">{{ t('settings.network.imageConcurrency') }}</n-input-group-label>
-          <n-input-number
-            class="w-full"
-            v-model:value="store.config.imgConcurrency"
-            size="small"
-            @update-value="message.warning(t('settings.network.imageConcurrencyRestart'))"
-            :min="1"
-            :parse="(x: string) => Number(x)" />
-        </n-input-group>
-        <n-input-group class="w-65%">
-          <n-input-group-label size="small">{{ t('settings.network.imageInterval') }}</n-input-group-label>
-          <n-input-number
-            class="w-full"
-            v-model:value="store.config.imgDownloadIntervalSec"
-            size="small"
-            :min="0"
-            :parse="(x: string) => Number(x)" />
-          <n-input-group-label size="small">{{ t('settings.network.seconds') }}</n-input-group-label>
-        </n-input-group>
-      </div>
-      <n-input-group>
-        <n-input-group-label size="small">{{ t('settings.network.favoritesInterval') }}</n-input-group-label>
-        <n-input-number
-          class="w-full"
-          v-model:value="store.config.downloadAllFavoritesIntervalSec"
-          size="small"
-          :min="0"
-          :parse="(x: string) => Number(x)" />
-        <n-input-group-label size="small">{{ t('settings.network.seconds') }}</n-input-group-label>
-      </n-input-group>
-      <n-input-group>
-        <n-input-group-label size="small">{{ t('settings.network.updateInterval') }}</n-input-group-label>
-        <n-input-number
-          class="w-full"
-          v-model:value="store.config.updateDownloadedComicsIntervalSec"
-          size="small"
-          :min="0"
-          :parse="(x: string) => Number(x)" />
-        <n-input-group-label size="small">{{ t('settings.network.seconds') }}</n-input-group-label>
-      </n-input-group>
-    </div>
+    </template>
 
     <span class="font-bold mt-2">{{ t('settings.network.apiDomain') }}</span>
     <n-radio-group v-model:value="store.config.apiDomainMode" size="small">

@@ -11,7 +11,7 @@ import {
   PhChatCircleDots,
   PhX,
 } from '@phosphor-icons/vue'
-import { getProgress, saveProgress as saveReaderProgress } from './progress.ts'
+import { getProgress, markChapterRead, saveProgress as saveReaderProgress } from './progress.ts'
 import { readerPageUrl } from './protocol.ts'
 import { useReaderWidthRuler } from './readerWidth.ts'
 import { useI18n } from '../i18n.ts'
@@ -167,6 +167,7 @@ async function open() {
   await nextTick()
   preloadAround()
   scrollToCurrentPage()
+  markCurrentChapterRead()
 }
 
 /// 退出阅读：释放后端缓存
@@ -234,6 +235,14 @@ function saveProgress() {
   })
 }
 
+/// 记已读：只在章节就绪、第一页渲染之后调用；请求失败的章节不算读过
+function markCurrentChapterRead() {
+  if (pageCount.value === 0) {
+    return
+  }
+  markChapterRead(comicId.value, chapterIndex.value)
+}
+
 // ---------- 翻页 / 滚动 ----------
 
 function goToPage(index: number) {
@@ -273,9 +282,9 @@ async function goToChapter(index: number) {
   saveProgress()
   preloadAround()
 
-  nextTick(() => {
-    scrollToCurrentPage()
-  })
+  await nextTick()
+  scrollToCurrentPage()
+  markCurrentChapterRead()
 }
 
 function nextPage() {

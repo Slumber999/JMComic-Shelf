@@ -1,0 +1,336 @@
+//! 封面：在线封面也走后端自定义协议，才能吃到应用内代理设置 + 图片线路自动 fallback
+//!
+//! - `/cover/{comicId}`：在线封面（3x4 缩略图），走 JmClient（多线路 fallback），带内存缓存
+//! - `/local-cover/{comicId}?dir=<目录>`：本地库存优先直接读目录里的 cover.jpg；
+//!   导出目录没有独立封面时，从 cbz/ 下第一本 cbz 里按需读第一张图；都没有再回落到在线封面
+//!
+//! 为什么要走后端：WebView 里的 `<img>` 走浏览器自己的网络栈，既不吃应用内代理设置，
+//! 也没有多线路 fallback，封面域名 cdn-msp3.18comic.vip 连不上时整页封面就是空的。
+
+use std::io::Read;
+use std::path::{Path, PathBuf};
+use std::sync::LazyLock;
+
+use tokio::sync::Semaphore;
+
+use bytes::Bytes;
+use eyre::WrapErr;
+use indexmap::IndexMap;
+use parking_lot::Mutex;
+use tauri::AppHandle;
+use tracing::instrument;
+
+use crate::extensions::AppHandleExt;
+use crate::jm_client::IMAGE_DOMAIN;
+use crate::reader::{image_response, list_cbz_files, natural_cmp, not_found};
+
+/// 封面内存缓存上限：一张 3x4 缩略图大约 60~90KB，64MB 能放几百上千张
+const COVER_CACHE_BUDGET: usize = 64 * 1024 * 1024;
+
+/// 从 cbz 里取封面时单张图片的上限；超过就放弃，保持原来的回落行为
+const CBZ_COVER_MAX_BYTES: u64 = 8 * 1024 * 1024;
+
+static COVER_CACHE: LazyLock<Mutex<CoverCache>> = LazyLock::new(|| Mutex::new(CoverCache::default()));
+
+/// 同时只允许这么多张封面在下载：一页列表可能有几十上百张，
+/// 不限并发容易被 CDN 限速（前端也做了 loading="lazy"，正常不会打到上限）
+const COVER_FETCH_CONCURRENCY: usize = 8;
+static COVER_FETCH_SEM: LazyLock<Semaphore> =
+    LazyLock::new(|| Semaphore::new(COVER_FETCH_CONCURRENCY));
+
+/// 简单的LRU：用IndexMap的插入顺序当访问顺序，超预算就从最旧的开始淘汰
+#[derive(Default)]
+struct CoverCache {
+    entries: IndexMap<i64, (Bytes, &'static str)>,
+    bytes: usize,
+}
+
+impl CoverCache {
+    fn get(&mut self, comic_id: &i64) -> Option<(Bytes, &'static str)> {
+        let value = self.entries.shift_remove(comic_id)?;
+        // 重新插入 = 标记为最近使用
+        self.entries.insert(*comic_id, value.clone());
+        Some(value)
+    }
+
+    fn insert(&mut self, comic_id: i64, value: (Bytes, &'static str)) {
+        if let Some(old) = self.entries.shift_remove(&comic_id) {
+            self.bytes = self.bytes.saturating_sub(old.0.len());
+        }
+        self.bytes += value.0.len();
+        self.entries.insert(comic_id, value);
+
+        while self.bytes > COVER_CACHE_BUDGET {
+            let Some((_, evicted)) = self.entries.shift_remove_index(0) else {
+                break;
+            };
+            self.bytes = self.bytes.saturating_sub(evicted.0.len());
+        }
+    }
+}
+
+/// 处理 `comic` 协议里封面相关的路由；不是封面路由时返回 None，交给阅读器处理
+pub fn handle_cover_request(
+    app: &AppHandle,
+    path: &str,
+    query: Option<&str>,
+) -> Option<tauri::http::Response<Vec<u8>>> {
+    if let Some(rest) = path.strip_prefix("/cover/") {
+        let comic_id = rest.parse::<i64>().ok()?;
+        return Some(cover_response(app, comic_id, None));
+    }
+
+    if let Some(rest) = path.strip_prefix("/local-cover/") {
+        let comic_id = rest.parse::<i64>().ok()?;
+        let dir = query.and_then(query_value_of_dir);
+        return Some(cover_response(app, comic_id, dir));
+    }
+
+    None
+}
+
+#[instrument(level = "error", skip_all, fields(comic_id = comic_id, local = local_dir.is_some()))]
+fn cover_response(
+    app: &AppHandle,
+    comic_id: i64,
+    local_dir: Option<String>,
+) -> tauri::http::Response<Vec<u8>> {
+    // 1. 本地库存：直接用目录里的 cover.jpg（零网络、离线也能显示）
+    if let Some(dir) = local_dir {
+        if let Some(path) = local_cover_path(app, &dir) {
+            match std::fs::read(&path) {
+                Ok(bytes) if !bytes.is_empty() => {
+                    return image_response(bytes, content_type_of_cover(&path));
+                }
+                Ok(_) => tracing::warn!(path = %path.display(), "本地封面是空文件，改用在线封面"),
+                Err(err) => tracing::warn!(path = %path.display(), message = %err, "读取本地封面失败，改用在线封面"),
+            }
+        }
+        // 1.5 导出目录没有独立封面：从 cbz 里取第一张图，失效时安静地回落
+        if let Some((bytes, content_type)) = local_cbz_cover(app, &dir) {
+            return image_response(bytes, content_type);
+        }
+    }
+
+    // 2. 内存缓存
+    if let Some((bytes, content_type)) = COVER_CACHE.lock().get(&comic_id) {
+        return image_response(bytes.to_vec(), content_type);
+    }
+
+    // 3. 在线封面（JmClient 内部会按线路健康顺序自动 fallback）
+    let url = format!("https://{IMAGE_DOMAIN}/media/albums/{comic_id}_3x4.jpg");
+    match fetch_cover(app, &url) {
+        Ok((bytes, content_type)) => {
+            COVER_CACHE
+                .lock()
+                .insert(comic_id, (bytes.clone(), content_type));
+            image_response(bytes.to_vec(), content_type)
+        }
+        Err(err) => {
+            tracing::error!(url = %url, message = %err, "获取封面失败");
+            not_found("fetch cover failed")
+        }
+    }
+}
+
+#[instrument(level = "error", skip_all, fields(url = url))]
+fn fetch_cover(app: &AppHandle, url: &str) -> eyre::Result<(Bytes, &'static str)> {
+    let jm_client = app.get_jm_client();
+    // 这里是自定义协议的独立线程（不在 tokio runtime 里），所以可以 block_on
+    let (bytes, _format) = tauri::async_runtime::block_on(async {
+        let _permit = COVER_FETCH_SEM
+            .acquire()
+            .await
+            .wrap_err("等待封面下载并发许可失败")?;
+        jm_client.get_img_data_and_format(url).await
+    })
+    .wrap_err("下载封面失败")?;
+    // 在线封面固定是 jpg
+    Ok((bytes, "image/jpeg"))
+}
+
+/// 本地封面路径：只允许下载目录/导出目录里的 cover.jpg，避免自定义协议变成任意文件读取
+fn local_cover_path(app: &AppHandle, dir: &str) -> Option<PathBuf> {
+    let candidate = Path::new(dir).join("cover.jpg");
+    if !candidate.is_file() {
+        return None;
+    }
+    let candidate = candidate.canonicalize().ok()?;
+    is_allowed_local_path(app, &candidate).then_some(candidate)
+}
+
+/// 只允许下载目录/导出目录内的路径，避免自定义协议变成任意文件读取
+fn is_allowed_local_path(app: &AppHandle, path: &Path) -> bool {
+    let config = app.get_config();
+    let config = config.read();
+    let allowed = [config.download_dir.clone(), config.export_dir.clone()];
+    allowed
+        .iter()
+        .filter_map(|root| root.canonicalize().ok())
+        .any(|root| path.starts_with(root))
+}
+
+/// 导出目录的兜底封面：cbz/ 下自然序第一本 cbz 里自然序第一张图片
+/// - 只按需读一个 entry，不解压整本、不落临时文件；单张超过 CBZ_COVER_MAX_BYTES 就放弃
+fn local_cbz_cover(app: &AppHandle, dir: &str) -> Option<(Vec<u8>, &'static str)> {
+    let cbz_dir = Path::new(dir).join("cbz");
+    if !cbz_dir.is_dir() {
+        return None;
+    }
+    let cbz_dir = cbz_dir.canonicalize().ok()?;
+    if !is_allowed_local_path(app, &cbz_dir) {
+        return None;
+    }
+
+    let cbz_path = list_cbz_files(&cbz_dir).ok()?.into_iter().next()?;
+    let cbz_path = cbz_path.canonicalize().ok()?;
+    if !is_allowed_local_path(app, &cbz_path) {
+        return None;
+    }
+
+    let file = std::fs::File::open(&cbz_path).ok()?;
+    let mut archive = zip::ZipArchive::new(file).ok()?;
+    // 只收集 entry 名（不读数据）再挑图，避免依赖 zip 内部顺序
+    let names: Vec<String> = archive.file_names().map(str::to_string).collect();
+    let name = first_image_entry(names.iter().map(String::as_str))?;
+
+    let entry = archive.by_name(&name).ok()?;
+    if entry.size() > CBZ_COVER_MAX_BYTES {
+        return None;
+    }
+    let mut bytes = Vec::with_capacity(usize::try_from(entry.size()).unwrap_or(0));
+    // 多读 1 字节：entry 头里的 size 不可信时也不会无限读
+    entry
+        .take(CBZ_COVER_MAX_BYTES + 1)
+        .read_to_end(&mut bytes)
+        .ok()?;
+    if bytes.is_empty() || bytes.len() as u64 > CBZ_COVER_MAX_BYTES {
+        return None;
+    }
+
+    Some((bytes, content_type_of_cover(Path::new(&name))))
+}
+
+/// 从 zip 的 entry 名里挑自然序第一张图片（png/jpg/jpeg/webp）
+fn first_image_entry<'a>(names: impl Iterator<Item = &'a str>) -> Option<String> {
+    names
+        .filter(|name| is_cover_image(name))
+        .min_by(|a, b| natural_cmp(a, b))
+        .map(str::to_string)
+}
+
+fn is_cover_image(name: &str) -> bool {
+    Path::new(name)
+        .extension()
+        .and_then(|ext| ext.to_str())
+        .is_some_and(|ext| {
+            matches!(
+                ext.to_ascii_lowercase().as_str(),
+                "png" | "jpg" | "jpeg" | "webp"
+            )
+        })
+}
+
+fn content_type_of_cover(path: &Path) -> &'static str {
+    match path
+        .extension()
+        .and_then(|ext| ext.to_str())
+        .map(str::to_lowercase)
+        .as_deref()
+    {
+        Some("png") => "image/png",
+        Some("webp") => "image/webp",
+        _ => "image/jpeg",
+    }
+}
+
+/// 从 `dir=xxx` 里取出下载目录（前端用 encodeURIComponent 编码过）
+fn query_value_of_dir(query: &str) -> Option<String> {
+    let raw = query
+        .split('&')
+        .find_map(|pair| pair.strip_prefix("dir="))?;
+    Some(percent_decode(raw))
+}
+
+/// 只做 percent 解码：前端用的是 encodeURIComponent，不会产出 '+'
+fn percent_decode(input: &str) -> String {
+    let bytes = input.as_bytes();
+    let mut decoded = Vec::with_capacity(bytes.len());
+    let mut index = 0;
+    while index < bytes.len() {
+        if bytes[index] == b'%' && index + 2 < bytes.len() {
+            let hex = std::str::from_utf8(&bytes[index + 1..index + 3])
+                .ok()
+                .and_then(|hex| u8::from_str_radix(hex, 16).ok());
+            if let Some(byte) = hex {
+                decoded.push(byte);
+                index += 3;
+                continue;
+            }
+        }
+        decoded.push(bytes[index]);
+        index += 1;
+    }
+    String::from_utf8_lossy(&decoded).into_owned()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn percent_decode_should_handle_chinese_and_backslash() {
+        assert_eq!(
+            percent_decode("C%3A%5CUsers%5C%E6%BC%AB%E7%94%BB"),
+            "C:\\Users\\漫画"
+        );
+        assert_eq!(percent_decode("plain"), "plain");
+        // 不合法的 % 序列原样保留，不能 panic
+        assert_eq!(percent_decode("100%"), "100%");
+    }
+
+    #[test]
+    fn query_value_of_dir_should_pick_dir_param() {
+        assert_eq!(
+            query_value_of_dir("dir=C%3A%5C%E6%BC%AB%E7%94%BB"),
+            Some("C:\\漫画".to_string())
+        );
+        assert_eq!(query_value_of_dir("x=1&dir=abc"), Some("abc".to_string()));
+        assert_eq!(query_value_of_dir("x=1"), None);
+    }
+
+    /// cbz 里混着 ComicInfo.xml、非图片和大写扩展名时，取自然序第一张图片
+    #[test]
+    fn first_image_entry_should_pick_natural_order_image() {
+        let names = [
+            "ComicInfo.xml",
+            "10.jpg",
+            "2.png",
+            "1.WEBP",
+            "notes.txt",
+            "folder/3.jpeg",
+        ];
+        assert_eq!(
+            first_image_entry(names.into_iter()),
+            Some("1.WEBP".to_string())
+        );
+        assert_eq!(first_image_entry(["ComicInfo.xml"].into_iter()), None);
+    }
+
+    /// 导出目录挑 cbz：只看 .cbz，按文件名自然序取第一本
+    #[test]
+    fn list_cbz_files_should_pick_natural_first() {
+        let root =
+            std::env::temp_dir().join(format!("jmcomic-shelf-cover-cbz-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&root).unwrap();
+        for name in ["第10话.cbz", "第2话.cbz", "cover.jpg", "notes.txt"] {
+            std::fs::write(root.join(name), b"x").unwrap();
+        }
+
+        let files = list_cbz_files(&root).unwrap();
+        assert_eq!(files.len(), 2);
+        assert_eq!(files[0].file_name().unwrap(), "第2话.cbz");
+
+        let _ = std::fs::remove_dir_all(&root);
+    }
+}

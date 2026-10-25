@@ -78,7 +78,11 @@ async function downloadCheckedChapters() {
       class="chapter-download-pane-selection-container box-border p-2 overflow-auto h-full"
       @contextmenu="showDropdown">
       <div class="grid grid-cols-3 gap-1.5 w-full">
-        <ChapterCheckbox v-for="chapter in chapterInfos" :key="chapter.chapterId" :chapter="chapter" />
+        <ChapterCheckbox
+          v-for="(chapter, index) in chapterInfos"
+          :key="chapter.chapterId"
+          :chapter="chapter"
+          :index="index" />
       </div>
     </div>
 

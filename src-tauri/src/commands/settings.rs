@@ -66,7 +66,7 @@ pub fn save_config(app: AppHandle, config: Config) -> CommandResult<()> {
 
     // 设置里换了线路：清掉运行时换线结果，下一次请求从用户选的那条开始
     if api_domain_changed {
-        lines::reset_api_line();
+        lines::reset_api_line_and_file(&app);
     }
 
     if proxy_changed {

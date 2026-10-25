@@ -746,6 +746,12 @@ async openReaderWindow(target: ReaderWindowTarget) : Promise<Result<null, Comman
  */
 async getReaderWindowTarget() : Promise<ReaderWindowTarget | null> {
     return await TAURI_INVOKE("get_reader_window_target");
+},
+/**
+ * 根屏「再按一次退出」由前端直接调用，不需要额外的 JS↔Kotlin 桥。
+ */
+async exitApp() : Promise<void> {
+    await TAURI_INVOKE("exit_app");
 }
 }
 

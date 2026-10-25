@@ -16,6 +16,10 @@
     "jsxImportSource": "vue",
     /* Linting */
     "strict": true,
+    "baseUrl": ".",
+    "paths": {
+      "@shell/*": ["src/desktop/*"]
+    },
     "noUnusedLocals": true,
     "noUnusedParameters": true,
     "noFallthroughCasesInSwitch": true

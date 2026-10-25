@@ -4,6 +4,7 @@ import { ChapterInfo, DownloadTaskState } from '../../bindings.ts'
 import { useStore } from '../../store.ts'
 import { useMarqueeSelection } from '../../marqueeSelection.ts'
 import { useI18n } from '../../i18n.ts'
+import { getProgress, getReadChapters } from '../../reader/progress.ts'
 import { createChapterCheckbox } from './components/ChapterCheckbox.tsx'
 
 type State = DownloadTaskState | 'Idle'
@@ -32,6 +33,16 @@ export function useChapterCheckbox(options: {
   const { t } = useI18n()
 
   const chapterInfos = computed<ChapterInfo[]>(() => store.pickedComic?.chapterInfos ?? [])
+  /// 已读章节下标：共享的 reader 进度模块，阅读器标记后这里自动更新
+  const readChapterIndexes = computed<Set<number>>(() => {
+    const comic = store.pickedComic
+    return comic === undefined ? new Set<number>() : getReadChapters(comic.id)
+  })
+  /// 当前读到的那章（「继续阅读」进度），-1 表示还没有进度
+  const readingChapterIndex = computed<number>(() => {
+    const comic = store.pickedComic
+    return comic === undefined ? -1 : (getProgress(comic.id)?.chapter ?? -1)
+  })
   const checkedIds = ref<Set<number>>(new Set())
   /// 拖拽框选：只认 chapterInfos 里真实存在的章节
   const { selectedIds, selectionOptions, updateSelectedIds, unselectAll, clearSelection } =
@@ -149,6 +160,8 @@ export function useChapterCheckbox(options: {
     selectedIds,
     isChapterSelectable,
     stateClass: (chapter) => options.checkboxStateClass(chapter, isDownloadingChapter),
+    readChapterIndexes,
+    readingChapterIndex,
   })
 
   return {
