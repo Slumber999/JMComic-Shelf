@@ -27,6 +27,7 @@ import { useI18n } from '../../i18n.ts'
 import { useLocalTags } from '../../localTags.ts'
 import { tagExpandLabel } from '../../tagCloudPaging.ts'
 import { splitAuthorNames } from '../../authorNames.ts'
+import { openReaderForComic } from '../../reader/localReader.ts'
 
 const store = useStore()
 const { t } = useI18n()
@@ -154,9 +155,9 @@ const localLibrarySource = computed({
   set: (value) => store.setLocalLibrarySource(value),
 })
 
-// 阅读器（本地库存传 comic，本地优先读）
-function openReader(comic: Comic) {
-  store.openReader({ comic })
+// 阅读器：和详情页共用同一个入口（本地库存直接读，导出过的 cbz 也走同一套判断）
+async function openReader(comic: Comic) {
+  await openReaderForComic(comic)
 }
 
 // 连点切换来源时会有多个请求在飞，只认最后一次的结果

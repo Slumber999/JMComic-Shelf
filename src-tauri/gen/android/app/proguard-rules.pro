@@ -19,3 +19,6 @@
 # If you keep the line number information, uncomment this to
 # hide the original source file name.
 #-renamesourcefileattribute SourceFile
+
+# jm-tools/android-patch-android.ps1：DownloadSink 只被 Rust 用 JNI 按类名调用，R8 不能裁剪/改名
+-keep class com.slumber999.jmcomic_shelf.DownloadSink { *; }

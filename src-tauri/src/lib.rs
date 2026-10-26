@@ -26,6 +26,7 @@ mod comic_tags;
 mod commands;
 mod config;
 mod covers;
+mod crash;
 mod downloader;
 mod errors;
 mod events;
@@ -43,6 +44,15 @@ mod responses;
 mod storage;
 mod types;
 mod utils;
+
+/// 自定义协议的响应预算。
+/// Android：wry 在 shouldInterceptRequest 里只等 10s（MAIN_PIPE_TIMEOUT），超时把
+/// `Err(Timeout)` unwrap 成 panic，release 的 panic=abort 直接退进程，所以自己先掐到 8s。
+/// 桌面：没有这个限制，留一个足够长的上限，正常慢请求行为不变。
+#[cfg(target_os = "android")]
+const PROTOCOL_RESPONSE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(8);
+#[cfg(not(target_os = "android"))]
+const PROTOCOL_RESPONSE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(300);
 
 fn generate_context() -> tauri::Context<Wry> {
     tauri::generate_context!()
@@ -70,6 +80,9 @@ fn restore_main_window_size(window: &tauri::WebviewWindow, width: u32, height: u
 // TODO: 添加Panic Doc
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
+    // 最先装 panic hook：启动早期崩溃 / 阅读时的 native 崩溃都能留下记录
+    crash::install();
+
     // 安装失败（比如已经装过）不应该让整个应用起不来，记一条日志继续跑
     if let Err(err) = install_custom_eyre_handler() {
         eprintln!("安装自定义错误处理器失败，继续启动: {err:?}");
@@ -139,6 +152,7 @@ pub fn run() {
             export_cbz,
             export_cbz_without_download,
             export_cbz_chapters_without_download,
+            export_comic_zip,
             pause_export_task,
             resume_export_task,
             delete_export_task,
@@ -193,15 +207,35 @@ pub fn run() {
         // 异步 + 独立线程处理，绝不阻塞主线程
         .register_asynchronous_uri_scheme_protocol("comic", |ctx, request, responder| {
             let app = ctx.app_handle().clone();
+            let uri = request.uri().clone();
+            let path = uri.path().to_string();
+            let query = uri.query().map(str::to_string);
+            let log_path = path.clone();
+
+            // Android 上 wry 只等 10s，超时把 Err(Timeout) unwrap 成 panic，release 的
+            // panic=abort 再把整个进程带走（设备上 16:32 的 SIGABRT 就是这条路径）。
+            // 这里先按 PROTOCOL_RESPONSE_TIMEOUT 掐时间：超时回 504，取图/取封面继续在
+            // 后台跑并把结果写进缓存，前端重试一次就能命中；桌面这个上限很长，行为不变。
+            let (tx, rx) = std::sync::mpsc::channel();
             std::thread::spawn(move || {
-                let uri = request.uri().clone();
-                let path = uri.path().to_string();
-                let query = uri.query().map(str::to_string);
                 // 封面（/cover、/local-cover）先走 covers，其余都交给阅读器
                 let response = covers::handle_cover_request(&app, &path, query.as_deref())
                     .unwrap_or_else(|| reader::handle_request(&app, &path));
-                responder.respond(response);
+                // 主线程可能已经超时返回 504 并把 rx 丢掉，send 失败就算了
+                let _ = tx.send(response);
             });
+
+            match rx.recv_timeout(PROTOCOL_RESPONSE_TIMEOUT) {
+                Ok(response) => responder.respond(response),
+                Err(_) => {
+                    tracing::warn!(
+                        path = %log_path,
+                        budget = ?PROTOCOL_RESPONSE_TIMEOUT,
+                        "comic:// 响应超时，先回 504（后台继续取，稍后重试即可命中缓存）"
+                    );
+                    responder.respond(reader::timeout_response());
+                }
+            }
         })
         .on_window_event(|window, event| {
             // 阅读窗口关掉了就释放它的后端缓存
@@ -266,6 +300,9 @@ pub fn run() {
                 "failed to create app data dir: {}",
                 app_data_dir.display()
             ))?;
+
+            // panic hook 落盘用同一个日志目录（logger 的 logs_dir 也在 app_data_dir/日志）
+            crash::set_log_dir(app_data_dir.join("日志"));
 
             let config = RwLock::new(Config::new(app.handle())?);
 

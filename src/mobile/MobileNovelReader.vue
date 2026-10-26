@@ -37,47 +37,33 @@ const paragraphs = computed(() => novelParagraphs(content.value))
 const commentTarget = computed<CommentTarget>(() => ({ kind: 'novel', id: props.target.nid }))
 
 const scrollContainer = ref<HTMLElement>()
+const contentEl = ref<HTMLElement | null>(null)
 const commentDrawerShowing = ref<boolean>(false)
 const chapterSheetShowing = ref<boolean>(false)
 /// 章节目录面板单独占一层历史：返回只关目录
 useOverlayLayer(chapterSheetShowing)
 
 const barVisible = ref<boolean>(true)
-const seeking = ref<boolean>(false)
-/// 本章正文的滚动比例：进度条 = (章下标 + 章内比例) / 章数
-const scrollRatio = ref<number>(0)
+/// 进度条按「本章正文按视口高度分页」定位：视口高 / 正文总高 / 当前滚动位置
+const viewportHeight = ref<number>(0)
+const contentHeight = ref<number>(0)
+const scrollTop = ref<number>(0)
+let metricsObserver: ResizeObserver | undefined
 
 let closed = true
 /// 正文请求序号：只有最后一次请求的响应能写状态
 let requestSeq = 0
-let hideTimer: number | undefined
 let scrollRaf = 0
 
 // ---------- 控件显隐 ----------
 
-const BAR_HIDE_MS = 4000
-
-function clearHideTimer() {
-  if (hideTimer !== undefined) {
-    window.clearTimeout(hideTimer)
-    hideTimer = undefined
-  }
-}
-
-function showBar(autoHide = true) {
+/// 显隐只由「点正文空白区」的 toggleBar 控制：不自动淡出，滚动 / 切章也不改它
+function showBar() {
   barVisible.value = true
-  clearHideTimer()
-  if (autoHide) {
-    hideTimer = window.setTimeout(() => {
-      hideTimer = undefined
-      barVisible.value = false
-    }, BAR_HIDE_MS)
-  }
 }
 
 function hideBar() {
   barVisible.value = false
-  clearHideTimer()
 }
 
 function toggleBar() {
@@ -143,7 +129,7 @@ function saveCurrentProgress() {
 
 // ---------- 正文 ----------
 
-async function goToChapter(index: number, fraction = 0) {
+async function goToChapter(index: number) {
   const chapter = chapters.value[index]
   if (chapter === undefined) {
     return
@@ -156,7 +142,7 @@ async function goToChapter(index: number, fraction = 0) {
   chapterTitle.value = chapter.title
   opening.value = true
   failed.value = false
-  scrollRatio.value = 0
+  scrollTop.value = 0
 
   const result = await commands.getNovelChapter(chapter.ncid, CHAPTER_LANG)
   // 又换了章或已经关掉阅读器：这份响应作废，不写任何状态
@@ -177,16 +163,13 @@ async function goToChapter(index: number, fraction = 0) {
   saveCurrentProgress()
 
   await nextTick()
-  if (fraction > 0) {
-    scrollToRatio(fraction)
-  } else {
-    scrollContainer.value?.scrollTo({ top: 0 })
-  }
+  scrollContainer.value?.scrollTo({ top: 0 })
+  measure()
 }
 
 async function retryChapter() {
   failed.value = false
-  await goToChapter(chapterIndex.value, scrollRatio.value)
+  await goToChapter(chapterIndex.value)
 }
 
 function prevChapter() {
@@ -210,53 +193,68 @@ function pickChapter(index: number) {
   void goToChapter(index)
 }
 
-// ---------- 进度条 ----------
+// ---------- 进度条：当前章节内的分页进度（正文按视口高度分页，不跨章） ----------
 
-const seekRatio = ref<number>()
-
-const overallProgress = computed(() => {
-  const count = chapters.value.length
-  if (count === 0) {
+/// 视口高度 / 正文总高：正文总高按视口高切分，至少 1 页
+const pageCount = computed(() => {
+  if (viewportHeight.value <= 0) {
     return 0
   }
-  return Math.min(1, (chapterIndex.value + scrollRatio.value) / count)
+  return Math.max(1, Math.ceil(contentHeight.value / viewportHeight.value))
 })
 
-const seekTarget = computed(() => {
-  const count = chapters.value.length
-  const ratio = Math.min(0.999999, Math.max(0, seekRatio.value ?? overallProgress.value))
-  if (count === 0) {
-    return { chapter: 0, fraction: 0 }
+const pageIndex = computed(() => {
+  const count = pageCount.value
+  const scrollable = contentHeight.value - viewportHeight.value
+  if (count <= 1 || scrollable <= 0) {
+    return 0
   }
-  const scaled = ratio * count
-  const chapter = Math.min(count - 1, Math.floor(scaled))
-  return { chapter, fraction: scaled - chapter }
+  const ratio = Math.min(1, Math.max(0, scrollTop.value / scrollable))
+  return Math.min(count - 1, Math.round(ratio * (count - 1)))
 })
 
-const progressChapterTitle = computed(() => {
-  const chapter = chapters.value[seekTarget.value.chapter]
-  return chapter?.title ?? chapterTitle.value
+const pageProgress = computed(() => {
+  const count = pageCount.value
+  return count <= 1 ? 0 : pageIndex.value / (count - 1)
 })
 
-const progressPageLabel = computed(() => {
-  const count = chapters.value.length
-  const percent = Math.round(seekTarget.value.fraction * 100)
-  const chapterText = String(seekTarget.value.chapter + 1) + '/' + (count > 0 ? count : '…')
-  return chapterText + ' · ' + percent + '%'
-})
+const progressChapterTitle = computed(() => chapterTitle.value)
 
-function scrollToRatio(fraction: number) {
+const progressPageLabel = computed(() =>
+  pageCount.value > 0 ? t('mobile.readerPageOf', { page: pageIndex.value + 1, total: pageCount.value }) : '',
+)
+
+/// 拖动比例 -> 本章页码：两端停在首页 / 末页，不会跳到别的章节
+function pageAtRatio(ratio: number): number {
+  const count = pageCount.value
+  if (count <= 1) {
+    return 1
+  }
+  return Math.min(count, Math.max(1, Math.round(Math.min(1, Math.max(0, ratio)) * (count - 1)) + 1))
+}
+
+function scrollToPage(page: number) {
+  const container = scrollContainer.value
+  const count = pageCount.value
+  if (container === undefined || count <= 1) {
+    return
+  }
+  const scrollable = Math.max(0, contentHeight.value - viewportHeight.value)
+  container.scrollTop = ((page - 1) / (count - 1)) * scrollable
+  onScroll()
+}
+
+function measure() {
   const container = scrollContainer.value
   if (container === undefined) {
     return
   }
-  const max = container.scrollHeight - container.clientHeight
-  container.scrollTop = Math.max(0, max * Math.min(1, Math.max(0, fraction)))
-  onScroll()
+  viewportHeight.value = container.clientHeight
+  contentHeight.value = container.scrollHeight
 }
 
 function onScroll() {
-  if (seeking.value || scrollRaf !== 0) {
+  if (scrollRaf !== 0) {
     return
   }
   scrollRaf = requestAnimationFrame(() => {
@@ -265,39 +263,21 @@ function onScroll() {
     if (container === undefined) {
       return
     }
-    const max = container.scrollHeight - container.clientHeight
-    scrollRatio.value = max > 0 ? Math.min(1, Math.max(0, container.scrollTop / max)) : 0
+    scrollTop.value = container.scrollTop
+    // 正文回流（换章、字体、图片）会改总高：分页范围跟着更新
+    if (container.scrollHeight !== contentHeight.value) {
+      contentHeight.value = container.scrollHeight
+    }
   })
 }
 
 function onSeekPreview(ratio: number) {
-  const target = seekTarget.value
-  seeking.value = true
-  seekRatio.value = ratio
-  // 还在同一章：拖动时就跟着滚，松手不用再等
-  if (target.chapter === chapterIndex.value) {
-    scrollToRatio(target.fraction)
-  }
+  scrollToPage(pageAtRatio(ratio))
 }
 
 function onSeek(ratio: number) {
-  const count = chapters.value.length
-  if (count === 0) {
-    seeking.value = false
-    seekRatio.value = undefined
-    return
-  }
-  const scaled = Math.min(0.999999, Math.max(0, ratio)) * count
-  const chapter = Math.min(count - 1, Math.floor(scaled))
-  const fraction = scaled - chapter
-  seeking.value = false
-  seekRatio.value = undefined
-  if (chapter === chapterIndex.value) {
-    scrollToRatio(fraction)
-    showBar()
-    return
-  }
-  void goToChapter(chapter, fraction)
+  scrollToPage(pageAtRatio(ratio))
+  showBar()
 }
 
 /// 单击正文切换控件显隐；正文里的选区/点击不额外拦
@@ -307,12 +287,32 @@ function onContentClick() {
 
 // ---------- 生命周期 ----------
 
+watch(
+  [scrollContainer, contentEl],
+  ([container, article]) => {
+    metricsObserver?.disconnect()
+    metricsObserver = undefined
+    if (container === undefined) {
+      return
+    }
+    measure()
+    metricsObserver = new ResizeObserver(measure)
+    metricsObserver.observe(container)
+    if (article !== null && article !== undefined) {
+      metricsObserver.observe(article)
+    }
+  },
+  { flush: 'post' },
+)
+
 onMounted(() => {
   showBar()
+  measure()
 })
 
 onBeforeUnmount(() => {
-  clearHideTimer()
+  metricsObserver?.disconnect()
+  metricsObserver = undefined
   if (scrollRaf !== 0) {
     cancelAnimationFrame(scrollRaf)
     scrollRaf = 0
@@ -334,7 +334,7 @@ onBeforeUnmount(() => {
         <button class="retry-btn" type="button" @click="retryChapter">{{ t('mobile.retry') }}</button>
       </div>
 
-      <article v-else class="novel-body">
+      <article v-else ref="contentEl" class="novel-body">
         <h2 class="novel-title">{{ chapterTitle }}</h2>
         <p v-if="paragraphs.length === 0" class="novel-empty">{{ t('novel.emptyChapter') }}</p>
         <p v-for="(paragraph, index) in paragraphs" :key="index" class="novel-paragraph">{{ paragraph }}</p>
@@ -359,15 +359,15 @@ onBeforeUnmount(() => {
 
     <!-- 底部固定栏：进度条紧贴在一排按钮上方，点正文一起收起/唤出 -->
     <div class="reader-dock" :class="{ hidden: !barVisible }">
-      <div class="reader-progress">
+      <!-- 单页章节没有可拖动的页进度，直接不显示 -->
+      <div v-if="pageCount > 1" class="reader-progress">
         <reader-progress-bar
-          :value="overallProgress"
-          :chapter-count="chapters.length"
+          :value="pageProgress"
+          :chapter-count="0"
           :chapter-title="progressChapterTitle"
           :page-label="progressPageLabel"
           @preview="onSeekPreview"
-          @seek="onSeek"
-          @grabbing="seeking = $event" />
+          @seek="onSeek" />
       </div>
 
       <div class="reader-tools" :class="readerHand === 'left' ? 'hand-left' : 'hand-right'">

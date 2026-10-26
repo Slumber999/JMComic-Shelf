@@ -2,12 +2,11 @@
 import { computed, onMounted, ref, watch } from 'vue'
 import type { Component } from 'vue'
 import { NAvatar, useMessage, useNotification } from 'naive-ui'
-import { PhBookOpen, PhDownloadSimple, PhGift } from '@phosphor-icons/vue'
+import { PhClockCounterClockwise, PhDownloadSimple, PhGift, PhLightning } from '@phosphor-icons/vue'
 import { isTauri } from '@tauri-apps/api/core'
 import LoginDialog from '../dialogs/LoginDialog.vue'
 import MobileNovelReader from './MobileNovelReader.vue'
 import LoadingSpinner from '../components/LoadingSpinner.vue'
-import { lastProgress, progressLabel } from '../reader/progress.ts'
 import { commands } from '../bindings.ts'
 import type { Config, SignStatus } from '../bindings.ts'
 import { showError, setErrorNotifier } from '../errors.ts'
@@ -16,11 +15,15 @@ import { setLocale, useI18n } from '../i18n.ts'
 import { useStore } from '../store.ts'
 import { useNotifications } from '../notifications/useNotifications.ts'
 import FanMenu from './components/FanMenu.vue'
+import LinePanel from './components/LinePanel.vue'
 import ScreenPage from './components/ScreenPage.vue'
 import MobileComicReader from './MobileComicReader.vue'
 import DetailScreen from './screens/DetailScreen.vue'
 import NovelDetailScreen from './screens/NovelDetailScreen.vue'
 import TasksScreen from './screens/TasksScreen.vue'
+import HistoryScreen from './screens/HistoryScreen.vue'
+import NovelScreen from './screens/NovelScreen.vue'
+import RankingScreen from './screens/RankingScreen.vue'
 import { isNovelTarget, useNavStack } from './useNavStack.ts'
 import type { ScreenTarget, MobileScreen } from './useNavStack.ts'
 import { retryResult } from './netRetry.ts'
@@ -36,7 +39,7 @@ if (isTauri()) {
   listenLogErrors()
 }
 
-const { current, currentTarget, exitHintVisible, push, replace, pushOverlay, closeOverlay } =
+const { current, currentTarget, exitHintVisible, stack, push, replace, pop, pushOverlay, closeOverlay } =
   useNavStack('search')
 
 /// 详情屏按目标类型二选一：小说目标渲染小说详情，其余渲染漫画详情
@@ -49,7 +52,7 @@ const comicTarget = computed(() => {
   return target === undefined || isNovelTarget(target) ? undefined : target
 })
 
-/// 根屏分页器：8 屏横向排列，顺序来自 SHELL_SCREENS（滑动 / 扇形菜单 / 高亮共用）
+/// 根屏分页器：5 屏横向排列，顺序来自 SHELL_SCREENS（滑动 / 扇形菜单 / 高亮共用）
 const pagerEl = ref<HTMLElement>()
 const activeIndex = ref(0)
 /// 已经打开过的屏（访问过就保留，返回时数据/位置都还在）
@@ -57,12 +60,19 @@ const visitedScreens = ref<Set<string>>(new Set([SHELL_SCREENS[0]]))
 /// 扇形菜单展开时禁用滑动切页（遮罩在挡点击）
 const fanOpen = ref(false)
 
-/// 详情 / 任务压在分页器上：下面的列表不卸载，返回时位置和数据都还在
+/// 压在分页器上的层级页：下面的列表不卸载，返回键原样退回。
+/// 历史 / 小说 / 排行榜已不在滑动顺序里，只能从入口压进来。
+const PUSHED_VIEWS: Partial<Record<MobileScreen, Component>> = {
+  tasks: TasksScreen,
+  history: HistoryScreen,
+  novel: NovelScreen,
+  ranking: RankingScreen,
+}
 const pushedView = computed<Component | undefined>(() => {
   if (current.value === 'detail') {
     return novelTarget.value !== undefined ? NovelDetailScreen : DetailScreen
   }
-  return current.value === 'tasks' ? TasksScreen : undefined
+  return PUSHED_VIEWS[current.value]
 })
 const pushedProps = computed<Record<string, unknown>>(() => {
   if (current.value !== 'detail') {
@@ -151,13 +161,88 @@ watch(
 const signedToday = ref<boolean>()
 const signStatus = ref<SignStatus>()
 const signingIn = ref(false)
-const signDrawerShowing = ref(false)
+/// 顶栏入口的连点窗口：200ms 内的重复点按只认第一次，快速连点压不出两层
+const BAR_TAP_GUARD_MS = 200
+let lastBarTapAt = 0
+function barTapAllowed() {
+  const now = performance.now()
+  if (now - lastBarTapAt < BAR_TAP_GUARD_MS) {
+    return false
+  }
+  lastBarTapAt = now
+  return true
+}
+
+/// 签到 / 线路是浮层面板：同一时刻只开一个，再点同一个按钮就关掉
+type BarPanel = 'sign' | 'line'
+const barPanel = ref<BarPanel>()
+const signPanelOpen = computed(() => barPanel.value === 'sign')
+const linePanelOpen = computed(() => barPanel.value === 'line')
+/// 任务页是压栈页：开没开只看当前屏，不另存状态（否则会和真实栈不同步）
+const tasksOpen = computed(() => current.value === 'tasks')
+
+function closeBarPanel() {
+  barPanel.value = undefined
+}
+
+function toggleBarPanel(panel: BarPanel) {
+  if (barPanel.value === panel) {
+    closeBarPanel()
+    return
+  }
+  barPanel.value = panel
+  // 开浮层时收掉任务页：同一时刻只留一个窗体
+  if (current.value === 'tasks') {
+    pop()
+  }
+}
+
+/// 历史 / 任务两个压栈入口共用：已在目标页就什么都不做；
+/// 两个顶栏页之间来回点时只把当前这一层换掉，不往上叠新层
+function goBarScreen(screen: 'history' | 'tasks') {
+  if (current.value === screen) {
+    return
+  }
+  if (current.value === 'history' || current.value === 'tasks') {
+    stack.value = [...stack.value.slice(0, -1), { screen }]
+    return
+  }
+  // 栈里已经有同一屏（例如从详情退回来再点）：不再压一层
+  if (stack.value.some((entry) => entry.screen === screen)) {
+    return
+  }
+  push(screen)
+}
+
+/// 顶栏历史入口：页面跳转，不做 toggle
+function openHistory() {
+  if (!barTapAllowed()) {
+    return
+  }
+  closeBarPanel()
+  goBarScreen('history')
+}
+
+/// 顶栏下载入口：任务页可开可关，关闭只退回自己这一层
+function toggleTasks() {
+  if (!barTapAllowed()) {
+    return
+  }
+  closeBarPanel()
+  if (current.value === 'tasks') {
+    pop()
+    return
+  }
+  goBarScreen('tasks')
+}
 
 async function refreshSignStatus() {
   if (store.userProfile === undefined) {
     signedToday.value = undefined
     signStatus.value = undefined
-    signDrawerShowing.value = false
+    if (barPanel.value === 'sign') {
+      barPanel.value = undefined
+    }
     return
   }
 
@@ -224,45 +309,17 @@ async function signInNow() {
       signStatus.value = { ...signStatus.value, signed_today: true }
     }
     window.setTimeout(() => {
-      signDrawerShowing.value = false
+      if (barPanel.value === 'sign') {
+        barPanel.value = undefined
+      }
     }, 700)
   } finally {
     signingIn.value = false
   }
 }
 
-/// 继续阅读：本地有这本就用本地数据，没有就让后端从网上读
-const resuming = ref(false)
+/// 阅读器浮层：详情里点章节、或之后任何入口设了 store.readerTarget 都会开
 const readerShowing = ref(false)
-const lastRead = computed(() => lastProgress())
-const lastReadTitle = computed(() => {
-  const last = lastRead.value
-  if (last === undefined) return ''
-  const comicTitle =
-    last.progress.comicTitle !== ''
-      ? last.progress.comicTitle
-      : (store.downloadedComics.find((comic) => comic.id === last.comicId)?.name ??
-        t('app.fallbackComicName', { id: last.comicId }))
-  return t('app.continueReadingWith', { title: comicTitle, progress: progressLabel(last.progress) })
-})
-
-async function continueReading() {
-  const last = lastRead.value
-  if (last === undefined) return
-
-  resuming.value = true
-  try {
-    let comics = store.downloadedComics
-    if (comics.length === 0) {
-      comics = await commands.getLocalComics(store.localLibrarySource)
-    }
-    const comic = comics.find((item) => item.id === last.comicId)
-    // 手机上没有独立阅读窗口，直接开内嵌阅读器
-    store.readerTarget = comic !== undefined ? { comic } : { comicId: last.comicId }
-  } finally {
-    resuming.value = false
-  }
-}
 
 watch(
   () => store.readerTarget,
@@ -270,8 +327,7 @@ watch(
     if (target !== undefined) readerShowing.value = true
   },
 )
-// 阅读器打开时压一层历史：返回键先关阅读器，再回到详情；设置按钮关完再压设置页
-let afterReaderClose: (() => void) | undefined
+// 阅读器打开时压一层历史：返回键先关阅读器，再回到详情
 watch(readerShowing, (value) => {
   if (value) {
     pushOverlay(() => {
@@ -280,9 +336,7 @@ watch(readerShowing, (value) => {
     return
   }
   store.readerTarget = undefined
-  const after = afterReaderClose
-  afterReaderClose = undefined
-  closeOverlay(after)
+  closeOverlay()
 })
 
 /// 小说阅读器浮层：详情页点章节后由 store.novelReaderTarget 触发
@@ -396,25 +450,19 @@ function navigate(screen: MobileScreen, target?: ScreenTarget) {
   push(screen, target)
 }
 
-/// 阅读器底栏的设置：先关阅读器（吃掉浮层历史），再压入设置页
-function openReaderSettings() {
-  afterReaderClose = () => navigate('settings')
-  readerShowing.value = false
-}
-
 /// 详情里点标签：填进搜索框后回到搜索根屏，由搜索屏自己发起搜索
 function searchComicTag(keyword: string) {
   store.pendingSearch = keyword
   replace('search')
 }
 
-/// 小说详情里点标签：同样回到小说根屏，按关键词搜小说
+/// 小说详情里点标签：压一层小说屏，由它接住关键词搜小说
 function searchNovelTag(keyword: string) {
   store.pendingNovelSearch = keyword
-  replace('novel')
+  navigate('novel')
 }
 
-/// 扇形菜单：8 屏平级，点哪屏就切到哪屏（任务 / 详情不在菜单里）
+/// 扇形菜单：5 屏平级，点哪屏就切到哪屏（历史 / 任务 / 详情不在菜单里）
 function onFanNavigate(screen: MobileScreen) {
   switchTo(screen)
 }
@@ -427,6 +475,9 @@ function onFanNavigate(screen: MobileScreen) {
   </div>
 
   <div v-else class="shell">
+    <!-- 线路面板的遮罩：压在内容上、顶栏之下，点空白处关面板但顶栏按钮照常可点 -->
+    <div v-if="linePanelOpen" class="panel-scrim" @click="closeBarPanel()" />
+
     <!-- 全站一条顶栏：根屏 / 评论 / 设置 / 任务 / 详情完全一样，返回交给系统返回键 -->
     <header class="top-bar">
       <button class="user" type="button" @click="loginDialogShowing = true">
@@ -439,17 +490,7 @@ function onFanNavigate(screen: MobileScreen) {
       </button>
 
       <div class="bar-actions">
-        <button
-          v-if="lastRead !== undefined"
-          class="continue-button"
-          type="button"
-          :disabled="resuming"
-          :title="lastReadTitle"
-          :aria-label="t('app.continueReading')"
-          @click="continueReading">
-          <ph-book-open :size="18" />
-          <span class="continue-label">{{ t('app.continueReading') }}</span>
-        </button>
+        <!-- 顺序固定：签到 · 历史 · 下载 · 线路；签到/下载/线路是可开可关的窗体，历史是跳页 -->
         <button
           v-if="signedToday !== undefined"
           class="icon-button sign-button"
@@ -457,23 +498,51 @@ function onFanNavigate(screen: MobileScreen) {
           type="button"
           :aria-label="signedToday ? t('mobile.signedTodayButton') : t('sign.button')"
           :title="signedToday ? t('mobile.signedTodayButton') : t('sign.button')"
-          @click="signDrawerShowing = true">
+          @click="toggleBarPanel('sign')">
           <ph-gift :size="20" />
           <span v-if="signedToday === false" class="sign-dot" />
         </button>
+        <button
+          class="icon-button"
+          type="button"
+          :aria-label="t('tab.history')"
+          :title="t('tab.history')"
+          @click="openHistory">
+          <ph-clock-counter-clockwise :size="21" />
+        </button>
         <span class="task-wrap">
-          <button class="icon-button" type="button" :aria-label="t('mobile.tasksTitle')" @click="navigate('tasks')">
+          <button
+            class="icon-button"
+            :class="{ 'is-open': tasksOpen }"
+            type="button"
+            :aria-label="t('mobile.tasksTitle')"
+            :title="t('mobile.tasksTitle')"
+            :aria-expanded="tasksOpen"
+            @click="toggleTasks()">
             <ph-download-simple :size="21" />
           </button>
           <span v-if="activeTaskCount > 0" class="task-badge">
             {{ activeTaskCount > 99 ? '99+' : activeTaskCount }}
           </span>
         </span>
+        <button
+          class="icon-button"
+          :class="{ 'is-open': linePanelOpen }"
+          type="button"
+          :aria-label="t('mobile.lineButton')"
+          :title="t('mobile.lineButton')"
+          :aria-expanded="linePanelOpen"
+          @click="toggleBarPanel('line')">
+          <ph-lightning :size="21" />
+        </button>
       </div>
+
+      <!-- 线路面板：从顶栏向下弹出，再点线路按钮或点面板外都能关 -->
+      <line-panel v-if="linePanelOpen" @close="closeBarPanel()" />
     </header>
 
     <main class="screen-host">
-      <!-- 8 屏横向分页：顺序来自 SHELL_SCREENS，跟手位移 + 松手切换 -->
+      <!-- 5 屏横向分页：顺序来自 SHELL_SCREENS，跟手位移 + 松手切换 -->
       <div ref="pagerEl" class="pager">
         <div class="track" :class="{ 'is-dragging': dragging }" :style="trackStyle">
           <!-- 屏按 flex 顺序并排，位移只由轨道负责，别在屏上再加一次 -->
@@ -487,9 +556,13 @@ function onFanNavigate(screen: MobileScreen) {
         </div>
       </div>
 
-      <!-- 详情 / 任务压在上面：下面的分页器不卸载，返回就是原样 -->
+      <!-- 详情 / 任务 / 历史 / 小说 / 排行榜压在上面：下面的分页器不卸载，返回就是原样 -->
       <div v-if="pushedView !== undefined" class="pushed">
-        <screen-page :view="pushedView" :view-props="pushedProps" @search="onPushedSearch" />
+        <screen-page
+          :view="pushedView"
+          :view-props="pushedProps"
+          @navigate="navigate"
+          @search="onPushedSearch" />
       </div>
     </main>
 
@@ -498,13 +571,13 @@ function onFanNavigate(screen: MobileScreen) {
     <div v-if="exitHintVisible" class="exit-hint">{{ t('mobile.exitHint') }}</div>
 
     <div
-      v-if="signDrawerShowing"
+      v-if="signPanelOpen"
       class="sign-overlay"
-      @click.self="signDrawerShowing = false">
+      @click.self="closeBarPanel()">
       <div class="sign-sheet" role="dialog" aria-modal="true">
         <div class="sign-head">
           <span class="sign-title">{{ t('mobile.signTitle') }}</span>
-          <button class="sign-close" type="button" :aria-label="t('common.cancel')" @click="signDrawerShowing = false">
+          <button class="sign-close" type="button" :aria-label="t('common.cancel')" @click="closeBarPanel()">
             ×
           </button>
         </div>
@@ -540,8 +613,7 @@ function onFanNavigate(screen: MobileScreen) {
       v-model:showing="readerShowing"
       :comic="store.readerTarget?.comic"
       :comic-id="store.readerTarget?.comicId"
-      :start-chapter="store.readerTarget?.chapterIndex"
-      @settings="openReaderSettings" />
+      :start-chapter="store.readerTarget?.chapterIndex" />
     <mobile-novel-reader
       v-if="store.novelReaderTarget !== undefined"
       v-model:showing="novelReaderShowing"
@@ -612,35 +684,6 @@ function onFanNavigate(screen: MobileScreen) {
   margin-left: auto;
 }
 
-.continue-button {
-  display: flex;
-  align-items: center;
-  gap: 4px;
-  padding: 6px 10px;
-  border: none;
-  border-radius: 999px;
-  background: #fff2e6;
-  color: #d96200;
-  font-size: 12px;
-  font-weight: 600;
-  white-space: nowrap;
-}
-
-/* 400px 下签到 + 下载 + 继续阅读要挤在一行：窄屏把继续阅读缩成纯图标 */
-@media (max-width: 420px) {
-  .continue-label {
-    display: none;
-  }
-
-  .continue-button {
-    padding: 8px;
-  }
-}
-
-.continue-button:disabled {
-  opacity: 0.6;
-}
-
 .task-wrap {
   position: relative;
   display: flex;
@@ -656,6 +699,20 @@ function onFanNavigate(screen: MobileScreen) {
   border-radius: 50%;
   background: #f4f4f4;
   color: #444;
+}
+
+/* 开着的窗体按钮：和线路面板/签到面板的高亮呼应 */
+.icon-button.is-open {
+  background: #fff2e6;
+  color: #d96200;
+}
+
+/* 线路面板遮罩：压在内容上、顶栏之下，只负责「点外面关掉」 */
+.panel-scrim {
+  position: fixed;
+  inset: 0;
+  z-index: 9;
+  background: transparent;
 }
 
 .sign-button {
@@ -790,7 +847,7 @@ function onFanNavigate(screen: MobileScreen) {
   height: 100%;
 }
 
-/* 只在跟手拖动时提升为合成层：常驻会让整个 8 屏轨道变成一个巨大的图层 */
+/* 只在跟手拖动时提升为合成层：常驻会让整个 5 屏轨道变成一个巨大的图层 */
 .track.is-dragging {
   will-change: transform;
 }

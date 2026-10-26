@@ -219,6 +219,19 @@ fn cover_payload(
         if let Some((bytes, content_type)) = local_cbz_cover(app, &dir) {
             return processed_cover(app, comic_id, width, bytes, content_type, "local-cbz", 0, 0);
         }
+        // 1.6 下载目录是散图：取第一话目录里自然序第一张图（和导出目录同一套「第一页当封面」）
+        if let Some((bytes, content_type)) = local_chapter_cover(app, &dir) {
+            return processed_cover(
+                app,
+                comic_id,
+                width,
+                bytes,
+                content_type,
+                "local-chapter",
+                0,
+                0,
+            );
+        }
     }
 
     // 2. 内存缓存（原图 / 缩略图分开存）
@@ -442,6 +455,56 @@ fn is_allowed_local_path(app: &AppHandle, path: &Path) -> bool {
         .any(|root| path.starts_with(root))
 }
 
+/// 下载目录的兜底封面：章节目录里自然序第一张图片
+/// - 下载目录结构是「漫画/章节/图片」，只多扫一层；图片直接放在漫画目录里的也照顾到
+/// - 只检查目录里自然序第一张，读不到（空文件 / 超过上限）就当没有，继续回落在线封面
+fn local_chapter_cover(app: &AppHandle, dir: &str) -> Option<(Vec<u8>, &'static str)> {
+    let root = Path::new(dir).canonicalize().ok()?;
+    if !is_allowed_local_path(app, &root) {
+        return None;
+    }
+    if let Some(cover) = first_image_in_dir(&root) {
+        return Some(cover);
+    }
+
+    let mut chapter_dirs: Vec<PathBuf> = std::fs::read_dir(&root)
+        .ok()?
+        .flatten()
+        .map(|entry| entry.path())
+        .filter(|path| path.is_dir())
+        .collect();
+    chapter_dirs.sort_by(|a, b| natural_cmp(&file_name_of(a), &file_name_of(b)));
+    chapter_dirs
+        .iter()
+        .find_map(|chapter_dir| first_image_in_dir(chapter_dir))
+}
+
+/// 目录里自然序第一张图片（png/jpg/jpeg/webp）；只读一张，超过上限就放弃
+fn first_image_in_dir(dir: &Path) -> Option<(Vec<u8>, &'static str)> {
+    let mut images: Vec<PathBuf> = std::fs::read_dir(dir)
+        .ok()?
+        .flatten()
+        .map(|entry| entry.path())
+        .filter(|path| path.is_file() && is_cover_image(&path.to_string_lossy()))
+        .collect();
+    images.sort_by(|a, b| natural_cmp(&file_name_of(a), &file_name_of(b)));
+
+    let path = images.into_iter().next()?;
+    let size = std::fs::metadata(&path).ok()?.len();
+    if size == 0 || size > CBZ_COVER_MAX_BYTES {
+        return None;
+    }
+    let bytes = std::fs::read(&path).ok()?;
+    (!bytes.is_empty()).then(|| (bytes, content_type_of_cover(&path)))
+}
+
+/// 路径最后一段：自然序比较只认文件名
+fn file_name_of(path: &Path) -> String {
+    path.file_name()
+        .map(|name| name.to_string_lossy().to_string())
+        .unwrap_or_default()
+}
+
 /// 导出目录的兜底封面：cbz/ 下自然序第一本 cbz 里自然序第一张图片
 /// - 只按需读一个 entry，不解压整本、不落临时文件；单张超过 CBZ_COVER_MAX_BYTES 就放弃
 fn local_cbz_cover(app: &AppHandle, dir: &str) -> Option<(Vec<u8>, &'static str)> {
@@ -601,6 +664,28 @@ mod tests {
             Some("1.WEBP".to_string())
         );
         assert_eq!(first_image_entry(["ComicInfo.xml"].into_iter()), None);
+    }
+
+    /// 散图目录：取自然序第一张图片，非图片和空目录不参与
+    #[test]
+    fn first_image_in_dir_should_pick_natural_first_image() {
+        let root = std::env::temp_dir().join(format!(
+            "jmcomic-shelf-cover-chapter-{}",
+            uuid::Uuid::new_v4()
+        ));
+        std::fs::create_dir_all(&root).unwrap();
+        for name in ["10.jpg", "2.jpg", "1.jpg", "notes.txt"] {
+            std::fs::write(root.join(name), b"image").unwrap();
+        }
+        let (bytes, content_type) = first_image_in_dir(&root).unwrap();
+        assert_eq!(bytes, b"image");
+        assert_eq!(content_type, "image/jpeg");
+
+        // 空目录 / 只有非图片时返回 None
+        let empty = root.join("empty");
+        std::fs::create_dir_all(&empty).unwrap();
+        assert!(first_image_in_dir(&empty).is_none());
+        let _ = std::fs::remove_dir_all(&root);
     }
 
     /// 导出目录挑 cbz：只看 .cbz，按文件名自然序取第一本

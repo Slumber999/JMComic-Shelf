@@ -537,6 +537,17 @@ async exportCbzChaptersWithoutDownload(comic: Comic, chapterIds: number[]) : Pro
 }
 },
 /**
+ * 打包一本本地漫画成 zip（章节做文件夹），写到下载目录下，返回 zip 的完整路径；同名 zip 覆盖
+ */
+async exportComicZip(comicId: number, source: LocalLibrarySource) : Promise<Result<string, CommandError>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("export_comic_zip", { comicId, source }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+/**
  * 暂停导出任务：当前章节做完后停下，任务留在暂停状态
  */
 async pauseExportTask(uuid: string) : Promise<Result<null, CommandError>> {

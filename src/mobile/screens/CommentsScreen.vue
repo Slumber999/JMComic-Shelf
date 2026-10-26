@@ -93,7 +93,8 @@ function openComic(comment: Comment) {
   const aid = comment.AID
   if (aid === undefined || aid === '') return
   const comicId = Number(aid)
-  if (!Number.isFinite(comicId)) return
+  // 禁漫号 0（上传者撤销 / 官方删除）没有可进的页面，直接忽略，不导航也不报错
+  if (!Number.isFinite(comicId) || comicId <= 0) return
   emit('navigate', 'detail', { comicId, title: `JM${aid}` })
 }
 

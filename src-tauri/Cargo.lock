@@ -2176,7 +2176,7 @@ dependencies = [
 
 [[package]]
 name = "jmcomic-shelf"
-version = "1.2.1"
+version = "1.2.2"
 dependencies = [
  "aes",
  "base64 0.22.1",
@@ -2184,8 +2184,10 @@ dependencies = [
  "eyre",
  "image",
  "indexmap 2.10.0",
+ "jni",
  "lopdf",
  "md5",
+ "ndk-context",
  "notify",
  "parking_lot 0.12.3",
  "rayon",

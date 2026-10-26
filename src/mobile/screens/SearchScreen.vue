@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch, watchEffect } from 'vue'
-import { PhClockCounterClockwise, PhMagnifyingGlass, PhTag } from '@phosphor-icons/vue'
+import { PhMagnifyingGlass, PhTag } from '@phosphor-icons/vue'
 import { commands } from '../../bindings.ts'
 import type {
   CategoryNode,
@@ -8,6 +8,7 @@ import type {
   ComicInSearch,
   CommandError,
   LocalTag,
+  NovelMeta,
   SearchResult,
   SearchSort,
 } from '../../bindings.ts'
@@ -16,29 +17,22 @@ import { useI18n } from '../../i18n.ts'
 import { useStore } from '../../store.ts'
 import { useMessage } from 'naive-ui'
 import { coverThumbUrl } from '../../reader/protocol.ts'
-// 多标签严格 AND 直接复用桌面的纯逻辑（扫描/核对），行为与桌面一致
-import {
-  HIT_BATCH_SIZE,
-  createMultiScanState,
-  pickPrimaryIndex,
-  probeTotal,
-  scanPages,
-} from '../../search/multiKeyword.ts'
-import type { MultiScanState } from '../../search/multiKeyword.ts'
 import ComicGrid from '../components/ComicGrid.vue'
 import ComicGridCard from '../components/ComicGridCard.vue'
 import ListStatus from '../components/ListStatus.vue'
 import MobilePager from '../components/MobilePager.vue'
 import PullRefreshBar from '../components/PullRefreshBar.vue'
+import SearchFilters from '../components/search/SearchFilters.vue'
+import SearchHistory from '../components/search/SearchHistory.vue'
 import { clearListCache, readListCache, writeListCache } from '../listCache.ts'
 import { measureBeacon } from '../measure.ts'
 import { clearListMemory, readListMemory, useListMemory } from '../listMemory.ts'
 import { retryResult } from '../netRetry.ts'
-import { SEARCH_PAGE_SIZE, pageCountOf } from '../paging.ts'
+import { LIST_PAGE_SIZE, SEARCH_PAGE_SIZE, pageCountOf, slicePage } from '../paging.ts'
 import { usePullRefresh } from '../usePullRefresh.ts'
 import { searchModeActive, setSearchResetHandler } from '../searchMode.ts'
 import { useScreenScroll } from '../useScrollHost.ts'
-import type { DetailTarget, MobileScreen } from '../useNavStack.ts'
+import type { DetailTarget, MobileScreen, NovelTarget } from '../useNavStack.ts'
 
 /// 默认列表就是桌面分类树里的「最新A漫」：全部漫画按最近更新排序（c=0）
 const LATEST_CATEGORY_SLUG = '0'
@@ -46,13 +40,20 @@ const MEMORY_KEY = 'search'
 /// 禁漫去碼是官方标签（本地标签缓存里能看到「禁漫去碼/禁漫去码」），不是分类、也不在排序枚举里：
 /// 分类接口只吃 c+o，search 的排序只有 Latest/View/Picture/Like，所以按标签关键词搜，与分类互斥
 const UNRATED_TAG = '禁漫去碼'
+/// 小说列表接口的排序（mr = 最近更新）与默认排行榜（周榜，与排行榜页一致）
+const NOVEL_ORDER = 'mr'
+const DEFAULT_RANKING_ORDER = 'mv_w'
 /// 搜索历史与桌面同一个 key：点击复用、可清空
 const HISTORY_KEY = 'search:history'
 const MAX_HISTORY = 20
 /// 首屏前 6 张不吃懒加载（两行），其余一律 lazy
 const EAGER_COVERS = 6
+/// 这三个标签在接口返回里位置靠后：前端把它们排到「English Manga」前面，其余顺序不动
+const TAG_BEFORE_ENGLISH = ['禁漫去碼', '禁漫漢化組']
+const ENGLISH_MANGA_TAG = 'English Manga'
 
-type ListMode = 'latest' | 'category' | 'search'
+/// idle = 空闲态（不预取任何列表）；其余都是结果态，结果区排在标签区下方
+type ListMode = 'idle' | 'latest' | 'category' | 'search' | 'novel' | 'ranking'
 
 /// 列表数据缓存：同一份筛选条件回来时直接用，不再重拉第一页
 interface SearchCache {
@@ -62,41 +63,58 @@ interface SearchCache {
   total: number
 }
 
+/// 稳定排序：去码/汉化组挪到 English Manga 前，其余标签相对顺序不变
+function sortTags(tags: string[]): string[] {
+  return [...tags].sort((a, b) => {
+    if (TAG_BEFORE_ENGLISH.includes(a) && b === ENGLISH_MANGA_TAG) {
+      return -1
+    }
+    if (TAG_BEFORE_ENGLISH.includes(b) && a === ENGLISH_MANGA_TAG) {
+      return 1
+    }
+    return 0
+  })
+}
+
 const { t } = useI18n()
 const store = useStore()
 const message = useMessage()
 const { scrollToTop } = useScreenScroll()
 const { save, restore } = useListMemory(MEMORY_KEY)
-const emit = defineEmits<{ navigate: [screen: MobileScreen, detail?: DetailTarget] }>()
+const emit = defineEmits<{ navigate: [screen: MobileScreen, detail?: DetailTarget | NovelTarget] }>()
 
 const keyword = ref('')
-/// 当前列表的来源：默认最新 / 按分类 / 按关键词（标签也算关键词搜索）
-const mode = ref<ListMode>('latest')
+const mode = ref<ListMode>('idle')
 const activeQuery = ref('')
 const activeCategory = ref<CategoryNode>()
 const activeTag = ref<string>()
 const results = ref<ComicInSearch[]>([])
+const novels = ref<NovelMeta[]>([])
 const total = ref(0)
 const page = ref(1)
-/// 首帧就显示骨架：列表数据还没回来之前不要留一片白
-const loading = ref(true)
+const loading = ref(false)
 const failed = ref(false)
 const loaded = ref(false)
-const drawerOpen = ref(false)
-/// 列表筛选：排序对所有列表生效，年月只对关键词搜索生效（官方分类接口不吃年月）
+/// 用户本次手动切换标签区（undefined = 跟随默认）；回到 idle 或重新搜索时重置
+const tagManualOpen = ref<boolean>()
+/// 标签区由状态推导：未搜索态默认展开，结果态默认收起；手动切换只影响当次，不持久化
+const drawerOpen = computed(() => tagManualOpen.value ?? (mode.value === 'idle'))
+/// 筛选条件：排序对所有列表生效，年月只对关键词搜索生效（官方分类接口不吃年月）
 const sortSelected = ref<SearchSort>('Latest')
 const yearSelected = ref(0)
 const monthSelected = ref(0)
-const filtersOpen = ref(false)
-const currentYear = new Date().getFullYear()
+/// 排行榜自己的子选项：类型（与首页分类同源，'0' = 全部）+ 周期（总/月/周/日）
+const rankingCategory = ref(LATEST_CATEGORY_SLUG)
+const rankingOrder = ref(DEFAULT_RANKING_ORDER)
 const history = ref<string[]>([])
-/// 标签筛选：官方标签 + 本地标签共用一个多选集合；「多标签」开启时按严格 AND 扫描（与桌面同一套）
+/// 焦点在搜索框（或历史面板）里时，历史面板展开在搜索框正下方
+const historyOpen = ref(false)
+const searchBox = ref<HTMLElement>()
+const keywordInput = ref<HTMLInputElement>()
+/// 标签只做单选：点一下就是一次关键词搜索，这里只保留选中高亮
 const selectedTags = ref<string[]>([])
 const localTags = ref<LocalTag[]>([])
 const localTagsLoaded = ref(false)
-const multiTagEnabled = ref(false)
-const multiState = ref<MultiScanState>()
-const multiScanning = ref(false)
 /// 连点分类/标签/翻页时只认最后一次请求
 let requestId = 0
 let handledPendingSearch = false
@@ -107,30 +125,76 @@ const categoryResp = computed(() => store.categoryResp)
 const topCategories = computed(() =>
   (categoryResp.value?.categories ?? []).filter((category) => category.name !== '' && category.slug !== ''),
 )
-const tagBlocks = computed(() => categoryResp.value?.blocks ?? [])
+/// 标签云按接口分组展示，只把去码/汉化组提到 English Manga 前面，其余保持原顺序
+const tagBlocks = computed(() =>
+  (categoryResp.value?.blocks ?? []).map((block) => ({ ...block, content: sortTags(block.content) })),
+)
 const hasTags = computed(() => tagBlocks.value.some((block) => block.content.length > 0))
 
-const sortOptions = computed<{ value: SearchSort; label: string }[]>(() => [
-  { value: 'Latest', label: t('search.newest') },
-  { value: 'View', label: t('search.mostView') },
-  { value: 'Picture', label: t('search.mostPicture') },
-  { value: 'Like', label: t('search.mostLike') },
+const isIdle = computed(() => mode.value === 'idle')
+const isNovelMode = computed(() => mode.value === 'novel')
+/// 排序/年月只对这三个列表有意义：小说只有最近更新，排行榜用自己的子选项
+const sortable = computed(
+  () => mode.value === 'latest' || mode.value === 'category' || mode.value === 'search',
+)
+const listPageSize = computed(() => (isNovelMode.value ? LIST_PAGE_SIZE : SEARCH_PAGE_SIZE))
+const pageCount = computed(() =>
+  pageCountOf(isNovelMode.value ? novels.value.length : total.value, listPageSize.value),
+)
+/// 小说接口一次返回整份列表，页码在本地切
+const displayNovels = computed(() => slicePage(novels.value, page.value, LIST_PAGE_SIZE))
+const listLength = computed(() => (isNovelMode.value ? novels.value.length : results.value.length))
+
+const rankingOrders = computed(() => [
+  { value: 'mv', label: t('ranking.total') },
+  { value: 'mv_m', label: t('ranking.month') },
+  { value: 'mv_w', label: t('ranking.week') },
+  { value: 'mv_t', label: t('ranking.day') },
 ])
-const yearOptions = computed(() => [
-  { value: 0, label: t('search.yearAll') },
-  ...Array.from({ length: 12 }, (_, index) => ({
-    value: currentYear - index,
-    label: t('search.year', { year: currentYear - index }),
-  })),
-])
-const monthOptions = computed(() => [
-  { value: 0, label: t('search.monthAll') },
-  ...Array.from({ length: 12 }, (_, index) => ({
-    value: index + 1,
-    label: t('search.month', { month: index + 1 }),
-  })),
-])
-const timeFilterActive = computed(() => yearSelected.value !== 0 || monthSelected.value !== 0)
+
+const apiLabel = computed(() => {
+  if (mode.value === 'novel') {
+    return t('tab.novel')
+  }
+  return mode.value === 'ranking' ? t('tab.ranking') : t('tab.search')
+})
+const listTitle = computed(() => {
+  if (activeCategory.value !== undefined) {
+    return activeCategory.value.name
+  }
+  if (mode.value === 'search') {
+    return t('mobile.searchResults')
+  }
+  if (mode.value === 'novel') {
+    return t('tab.novel')
+  }
+  if (mode.value === 'ranking') {
+    return t('ranking.tabRanking')
+  }
+  return t('mobile.latestComics')
+})
+const loadingText = computed(() => {
+  if (mode.value === 'novel') {
+    return t('novel.loading')
+  }
+  if (mode.value === 'ranking') {
+    return t('ranking.loading')
+  }
+  return mode.value === 'latest' ? t('mobile.loading') : t('search.searching')
+})
+const emptyText = computed(() => {
+  if (mode.value === 'novel') {
+    return t('novel.empty')
+  }
+  if (mode.value === 'ranking') {
+    return t('ranking.empty')
+  }
+  return mode.value === 'latest' ? t('mobile.empty') : t('search.nothingFound')
+})
+const drawerLabel = computed(() =>
+  drawerOpen.value ? t('common.collapse') : t('common.expand'),
+)
+
 /// 官方分类/榜单纯排序：与桌面 sortToOrder 同一套映射
 function sortToOrder(sort: SearchSort): string {
   switch (sort) {
@@ -145,23 +209,6 @@ function sortToOrder(sort: SearchSort): string {
   }
 }
 
-const pageCount = computed(() => pageCountOf(total.value, SEARCH_PAGE_SIZE))
-const listTitle = computed(() => {
-  if (activeCategory.value !== undefined) {
-    return activeCategory.value.name
-  }
-  if (mode.value === 'search') {
-    return t('mobile.searchResults')
-  }
-  return t('mobile.latestComics')
-})
-const emptyText = computed(() =>
-  mode.value === 'latest' ? t('mobile.empty') : t('search.nothingFound'),
-)
-const drawerLabel = computed(() =>
-  drawerOpen.value ? t('common.collapse') : t('common.expand'),
-)
-
 /// 搜索结果里纯数字关键词会直接返回一本漫画，交给详情页
 function isComicVariant(data: unknown): data is { Comic: Comic } {
   return data !== null && typeof data === 'object' && 'Comic' in data
@@ -171,7 +218,7 @@ function isComicVariant(data: unknown): data is { Comic: Comic } {
 function handleLoadFailure(error: CommandError, hadData: boolean) {
   if (hadData) {
     loaded.value = true
-    message.warning(t('mobile.refreshFailedApi', { api: t('tab.search') }))
+    message.warning(t('mobile.refreshFailedApi', { api: apiLabel.value }))
     return
   }
   showError(error)
@@ -179,6 +226,9 @@ function handleLoadFailure(error: CommandError, hadData: boolean) {
 }
 
 async function load(nextPage: number) {
+  if (mode.value === 'idle') {
+    return
+  }
   if (mode.value === 'search' && activeQuery.value.trim() === '') {
     return
   }
@@ -188,13 +238,38 @@ async function load(nextPage: number) {
   loading.value = true
   failed.value = false
   loaded.value = false
-  multiState.value = undefined
   const currentRequest = ++requestId
-  const hadData = results.value.length > 0
+  const hadData = listLength.value > 0
 
   try {
+    if (mode.value === 'novel') {
+      // 小说接口忽略 page，一次取完整份列表
+      const result = await retryResult(() => commands.getNovelList(NOVEL_ORDER, 1))
+      if (currentRequest !== requestId) return
+      if (result.status === 'error') {
+        handleLoadFailure(result.error, hadData)
+        return
+      }
+      novels.value = result.data.list ?? []
+      results.value = []
+      total.value = result.data.total
+      page.value = 1
+      loaded.value = true
+      return
+    }
+
     let data: SearchResult
-    if (mode.value === 'category' && activeCategory.value !== undefined) {
+    if (mode.value === 'ranking') {
+      const result = await retryResult(() =>
+        commands.getRanking(rankingCategory.value, rankingOrder.value, nextPage),
+      )
+      if (currentRequest !== requestId) return
+      if (result.status === 'error') {
+        handleLoadFailure(result.error, hadData)
+        return
+      }
+      data = result.data
+    } else if (mode.value === 'category' && activeCategory.value !== undefined) {
       const slug = activeCategory.value.slug
       const result = await retryResult(() =>
         commands.getRanking(slug, sortToOrder(sortSelected.value), nextPage),
@@ -237,6 +312,7 @@ async function load(nextPage: number) {
       data = result.data
     }
 
+    novels.value = []
     results.value = data.content
     total.value = data.total
     page.value = nextPage
@@ -250,7 +326,7 @@ async function load(nextPage: number) {
     if (currentRequest === requestId) {
       if (hadData) {
         loaded.value = true
-        message.warning(t('mobile.refreshFailedApi', { api: t('tab.search') }))
+        message.warning(t('mobile.refreshFailedApi', { api: apiLabel.value }))
       } else {
         failed.value = true
       }
@@ -263,11 +339,17 @@ async function load(nextPage: number) {
 }
 
 function changePage(next: number) {
+  // 小说列表已经全在本地，翻页只换页码
+  if (isNovelMode.value) {
+    page.value = next
+    scrollToTop()
+    return
+  }
   void load(next)
   scrollToTop()
 }
 
-/// 位置记忆的上下文：搜索词 / 分类 / 标签变了，旧页码和滚动位置都不再用
+/// 位置记忆的上下文：搜索词 / 分类 / 榜单顺序变了，旧页码和滚动位置都不再用
 function memoryContext(): string {
   return JSON.stringify({
     mode: mode.value,
@@ -277,11 +359,16 @@ function memoryContext(): string {
     sort: sortSelected.value,
     year: yearSelected.value,
     month: monthSelected.value,
+    rankingCategory: rankingCategory.value,
+    rankingOrder: rankingOrder.value,
   })
 }
 
 /// 主动刷新 / 下拉刷新：重拉当前列表的第一页
 async function refresh() {
+  if (isIdle.value) {
+    return
+  }
   clearListMemory(MEMORY_KEY)
   clearListCache(MEMORY_KEY)
   await load(1)
@@ -294,61 +381,97 @@ function openComic(comic: ComicInSearch) {
   emit('navigate', 'detail', { comicId: comic.id, title: comic.name })
 }
 
-/// 关键词 / 分类 / 标签三者互斥：切换时先清掉另外两块
-function showLatest() {
-  mode.value = 'latest'
-  activeQuery.value = ''
+function openNovel(novel: NovelMeta) {
+  emit('navigate', 'detail', { novel })
+}
+
+/// 分类 / 小说 / 排行榜 / 关键词四个入口互斥：切换时先把另外几块清干净
+/// 进入结果态时重置手动状态，标签区回到默认收起
+function enterMode(next: ListMode) {
+  mode.value = next
+  tagManualOpen.value = undefined
   activeCategory.value = undefined
   activeTag.value = undefined
-  selectedTags.value = []
+  activeQuery.value = ''
   keyword.value = ''
-  drawerOpen.value = false
+  selectedTags.value = []
+  results.value = []
+  novels.value = []
+  total.value = 0
+  page.value = 1
+  historyOpen.value = false
+}
+
+/// 「全部」：默认列表，与分类按钮同一形态（结果态）
+function showLatest() {
+  enterMode('latest')
   void load(1)
   scrollToTop()
 }
 
 function submitSearch() {
   const query = keyword.value.trim()
-  // 清空搜索框再点搜索 = 回到默认最新列表
+  // 空框点搜索 = 回空闲态，和清空搜索框同一个结果
   if (query === '') {
-    showLatest()
+    resetToInitial()
     return
   }
+  enterMode('search')
   pushHistory(query)
-  mode.value = 'search'
   activeQuery.value = query
-  activeCategory.value = undefined
-  activeTag.value = undefined
-  selectedTags.value = []
-  // 真正触发搜索：标签抽屉收起（只收界面，不清筛选条件）
-  drawerOpen.value = false
+  keyword.value = query
+  keywordInput.value?.blur()
   void load(1)
   scrollToTop()
 }
 
 function selectCategory(category: CategoryNode) {
-  mode.value = 'category'
+  enterMode('category')
   activeCategory.value = category
-  activeTag.value = undefined
-  selectedTags.value = []
-  activeQuery.value = ''
-  keyword.value = ''
-  drawerOpen.value = false
   void load(1)
   scrollToTop()
 }
 
-/// 直接按一个标签搜（去码 chip 也走这里），同时把这个标签放进多选集合
-/// 单选语义下一次点击就是一次搜索，所以直接把抽屉收起来
+/// 小说按钮：和同人/单本一样当作一次「结果」展示，只是换接口换卡片
+function selectNovel() {
+  enterMode('novel')
+  void load(1)
+  scrollToTop()
+}
+
+/// 排行榜按钮：默认第一页，子选项（总榜/月榜/周榜/日榜）显示在分类按钮下方
+function selectRanking() {
+  enterMode('ranking')
+  void load(1)
+  scrollToTop()
+}
+
+/// 切类型 / 切周期都按两者的组合重拉第一页
+function selectRankingCategory(slug: string) {
+  if (rankingCategory.value === slug) {
+    return
+  }
+  rankingCategory.value = slug
+  void load(1)
+  scrollToTop()
+}
+
+function selectRankingOrder(value: string) {
+  if (rankingOrder.value === value) {
+    return
+  }
+  rankingOrder.value = value
+  void load(1)
+  scrollToTop()
+}
+
+/// 直接按一个标签搜（去码 chip 也走这里）：标签是单选，点一下就是一次搜索
 function selectTag(tag: string) {
-  mode.value = 'search'
+  enterMode('search')
   activeTag.value = tag
-  activeCategory.value = undefined
   activeQuery.value = tag
   keyword.value = tag
   selectedTags.value = [tag]
-  multiState.value = undefined
-  drawerOpen.value = false
   void load(1)
   scrollToTop()
 }
@@ -356,11 +479,26 @@ function selectTag(tag: string) {
 /// 输入框改字就取消标签选中态，避免旧标签继续高亮
 function onKeywordInput() {
   activeTag.value = undefined
+  selectedTags.value = []
 }
 
-/// 展开抽屉时才去读本地标签
+/// 焦点进入搜索框（或历史面板）时展开历史；离开时收起
+function openHistory() {
+  loadHistory()
+  historyOpen.value = true
+}
+
+function onSearchFocusOut(event: FocusEvent) {
+  const next = event.relatedTarget
+  if (next instanceof Node && searchBox.value?.contains(next) === true) {
+    return
+  }
+  historyOpen.value = false
+}
+
+/// 用户手动点标题才收起/展开；展开时才去读本地标签。换页/刷新不改变当前状态
 function toggleTagDrawer() {
-  drawerOpen.value = !drawerOpen.value
+  tagManualOpen.value = !drawerOpen.value
   if (drawerOpen.value) {
     void loadLocalTags()
   }
@@ -370,14 +508,6 @@ function toggleTagDrawer() {
 
 /// 排序 / 年月变了就重拉第一页；分类浏览只吃排序，年月只在关键词搜索里生效
 function applyFilters() {
-  const state = multiState.value
-  // 排序 / 年月都会立刻重新查询，抽屉同样收起
-  drawerOpen.value = false
-  if (state !== undefined) {
-    void runMulti(state.keywords)
-    scrollToTop()
-    return
-  }
   void load(1)
   scrollToTop()
 }
@@ -407,7 +537,7 @@ function selectMonth(value: number) {
 }
 
 function resetTimeFilter() {
-  if (!timeFilterActive.value) {
+  if (yearSelected.value === 0 && monthSelected.value === 0) {
     return
   }
   yearSelected.value = 0
@@ -425,41 +555,14 @@ function toggleUnrated() {
   selectTag(UNRATED_TAG)
 }
 
-// ---------- 标签筛选 / 多标签 AND ----------
+// ---------- 标签筛选 ----------
 
-function toggleTag(tag: string) {
-  selectedTags.value = selectedTags.value.includes(tag)
-    ? selectedTags.value.filter((item) => item !== tag)
-    : [...selectedTags.value, tag]
-}
-
-/// 标签点击：交集开关关闭时 = 立即按这个标签搜（替换当前条件，单选语义）；
-/// 打开时才是多选累积，再点已选取消
+/// 标签是单选：点一下立即按它搜，替换当前条件
 function onTagClick(tag: string) {
-  if (!multiTagEnabled.value) {
-    selectTag(tag)
-    return
-  }
-  toggleTag(tag)
+  selectTag(tag)
 }
 
-/// 交集开关：关掉时多选收敛成最后一个，并（如果当前是多标签结果）按它重搜，
-/// 避免列表还是交集结果、选中态却只剩一个
-function toggleMultiTag() {
-  multiTagEnabled.value = !multiTagEnabled.value
-  if (multiTagEnabled.value) {
-    return
-  }
-  if (selectedTags.value.length > 1) {
-    selectedTags.value = [selectedTags.value[selectedTags.value.length - 1]]
-  }
-  const last = selectedTags.value[selectedTags.value.length - 1]
-  if (multiState.value !== undefined && last !== undefined) {
-    selectTag(last)
-  }
-}
-
-/// 本地标签（下载目录 + 导出目录）第一次展开抽屉时才读，别拖慢搜索页首屏
+/// 本地标签（下载目录 + 导出目录）第一次展开标签区时才读，别拖慢搜索页首屏
 async function loadLocalTags() {
   if (localTagsLoaded.value) {
     return
@@ -472,52 +575,7 @@ async function loadLocalTags() {
   }
 }
 
-function fetchPageFor(keyword: string, page: number) {
-  return commands.search(
-    keyword,
-    page,
-    sortSelected.value,
-    yearSelected.value === 0 ? null : yearSelected.value,
-    monthSelected.value === 0 ? null : monthSelected.value,
-  )
-}
-
-function fetchTagsOf(comicId: number) {
-  return commands.getComicTags(comicId)
-}
-
-/// 多标签扫描进度/命中列表都从 multiState 读，扫描过程中边扫边长
-const multiProgressText = computed(() => {
-  const state = multiState.value
-  if (state === undefined) {
-    return ''
-  }
-  if (state.limitReached) {
-    return t('search.scanLimitReached', { scanned: state.scanned })
-  }
-  if (state.exhausted) {
-    return t('search.scanFinished', { scanned: state.scanned, hits: state.hits.length })
-  }
-  return state.looked > 0
-    ? t('search.scanProgressTagged', {
-        scanned: state.scanned,
-        looked: state.looked,
-        hits: state.hits.length,
-      })
-    : t('search.scanProgress', { scanned: state.scanned, hits: state.hits.length })
-})
-const multiCanLoadMore = computed(
-  () =>
-    multiState.value !== undefined &&
-    !multiState.value.exhausted &&
-    !multiState.value.limitReached,
-)
-const displayComics = computed(() =>
-  multiState.value === undefined ? results.value : multiState.value.hits,
-)
-const displayTotal = computed(() =>
-  multiState.value === undefined ? total.value : multiState.value.hits.length,
-)
+const displayTotal = computed(() => (isNovelMode.value ? novels.value.length : total.value))
 
 /// 外壳全部渲染（总高度一次确定，分页器不漂移）；卡片高度测一次写进 CSS 变量，
 /// 屏幕外的卡用 content-visibility 跳过布局/绘制，图片仍按可见性挂载
@@ -532,104 +590,13 @@ async function measureCardHeight() {
     cardHeightPx.value = height
   }
 }
-const statusVisible = computed(() => {
-  if (multiState.value !== undefined) {
-    return multiState.value.hits.length === 0 && !multiScanning.value
-  }
-  return loading.value || failed.value || (loaded.value && results.value.length === 0)
-})
-const statusLoading = computed(() => loading.value || multiScanning.value)
-const statusEmpty = computed(() => {
-  if (statusLoading.value || failed.value) {
-    return false
-  }
-  if (multiState.value !== undefined) {
-    return multiState.value.hits.length === 0
-  }
-  return loaded.value && results.value.length === 0
-})
-
-/// 应用标签：1 个标签 = 普通关键词搜索；开了「多标签」且 ≥2 个时走严格 AND 扫描
-async function applyTags() {
-  const tags = [...selectedTags.value]
-  if (tags.length === 0) {
-    return
-  }
-  const query = tags.join(' ')
-  keyword.value = query
-  activeQuery.value = query
-  activeCategory.value = undefined
-  activeTag.value = tags.length === 1 ? tags[0] : undefined
-  mode.value = 'search'
-  drawerOpen.value = false
-  multiState.value = undefined
-  pushHistory(query)
-  if (multiTagEnabled.value && tags.length > 1) {
-    await runMulti(tags)
-    scrollToTop()
-    return
-  }
-  await load(1)
-  scrollToTop()
-}
-
-/// 多标签严格 AND：先探 total 选主检索词，再逐页扫描并核对详情标签（与桌面 searchMultiAnd 同一套）
-async function runMulti(keywords: string[]) {
-  multiScanning.value = true
-  failed.value = false
-  multiState.value = undefined
-  try {
-    const year = yearSelected.value === 0 ? null : yearSelected.value
-    const month = monthSelected.value === 0 ? null : monthSelected.value
-    const probes = await Promise.all(
-      keywords.map((keyword) => commands.search(keyword, 1, sortSelected.value, year, month)),
-    )
-    const totals: number[] = []
-    for (const probe of probes) {
-      if (probe.status === 'error') {
-        showError(probe.error)
-        failed.value = true
-        return
-      }
-      totals.push(probeTotal(probe.data))
-    }
-    const primaryIndex = pickPrimaryIndex(totals)
-    multiState.value = createMultiScanState(
-      keywords,
-      keywords[primaryIndex],
-      totals[primaryIndex],
-    )
-    const outcome = await scanPages(multiState.value, fetchPageFor, fetchTagsOf, HIT_BATCH_SIZE)
-    if (outcome.reason === 'error') {
-      showError(outcome.error)
-      failed.value = true
-      multiState.value = undefined
-    }
-  } finally {
-    multiScanning.value = false
-  }
-}
-
-async function loadMoreHits() {
-  const state = multiState.value
-  if (state === undefined || multiScanning.value) {
-    return
-  }
-  multiScanning.value = true
-  try {
-    const outcome = await scanPages(
-      state,
-      fetchPageFor,
-      fetchTagsOf,
-      state.hits.length + HIT_BATCH_SIZE,
-    )
-    if (outcome.reason === 'error') {
-      showError(outcome.error)
-    }
-  } finally {
-    multiScanning.value = false
-  }
-}
+const statusVisible = computed(
+  () => loading.value || failed.value || (loaded.value && listLength.value === 0),
+)
+const statusLoading = computed(() => loading.value)
+const statusEmpty = computed(
+  () => !statusLoading.value && !failed.value && loaded.value && listLength.value === 0,
+)
 
 // ---------- 搜索历史 ----------
 
@@ -679,22 +646,32 @@ function useHistory(value: string) {
   submitSearch()
 }
 
-/// 返回键退到搜索页初始态：清空关键词和筛选，重新拉默认最新列表
+/// 返回键 / 空搜索：清空关键词与筛选，回到极简空闲态（不预取列表）
 function resetToInitial() {
   keyword.value = ''
   activeQuery.value = ''
   activeCategory.value = undefined
   activeTag.value = undefined
   selectedTags.value = []
-  multiState.value = undefined
-  drawerOpen.value = false
+  historyOpen.value = false
   sortSelected.value = 'Latest'
   yearSelected.value = 0
   monthSelected.value = 0
-  filtersOpen.value = false
-  mode.value = 'latest'
+  results.value = []
+  novels.value = []
+  total.value = 0
+  page.value = 1
+  loaded.value = false
+  failed.value = false
+  loading.value = false
+  mode.value = 'idle'
+  // 回到未搜索态：清掉手动状态，标签区自动展开
+  tagManualOpen.value = undefined
+  // 作废在途请求：回到空闲态后它们不该再把结果写回来
+  requestId += 1
+  keywordInput.value?.blur()
   clearListMemory(MEMORY_KEY)
-  void load(1)
+  clearListCache(MEMORY_KEY)
   scrollToTop()
 }
 
@@ -729,6 +706,8 @@ const savedState = (() => {
       sort?: SearchSort
       year?: number
       month?: number
+      rankingCategory?: string
+      rankingOrder?: string
     }
   } catch (error) {
     console.error(error)
@@ -736,7 +715,7 @@ const savedState = (() => {
   }
 })()
 
-/// 把记忆里的筛选条件放回输入框 / 分类 / 标签；分类已经被删掉就退回最新
+/// 把记忆里的筛选条件放回输入框 / 分类 / 榜单；分类已经被删掉或记忆是空闲态就回空闲态
 function applySavedState(state: NonNullable<typeof savedState>): boolean {
   // 筛选条件跟着列表一起恢复，否则回来时排序/年月和结果对不上
   if (
@@ -749,12 +728,20 @@ function applySavedState(state: NonNullable<typeof savedState>): boolean {
   }
   yearSelected.value = typeof state.year === 'number' ? state.year : 0
   monthSelected.value = typeof state.month === 'number' ? state.month : 0
+  if (typeof state.rankingCategory === 'string') {
+    rankingCategory.value = state.rankingCategory
+  }
+  if (typeof state.rankingOrder === 'string') {
+    rankingOrder.value = state.rankingOrder
+  }
 
   if (state.mode === 'search' && typeof state.query === 'string' && state.query !== '') {
     mode.value = 'search'
     activeQuery.value = state.query
     keyword.value = state.query
     activeTag.value = state.tag ?? undefined
+    // 回来时标签高亮跟搜索条件一起恢复
+    selectedTags.value = state.tag === null || state.tag === undefined ? [] : [state.tag]
     activeCategory.value = undefined
     return true
   }
@@ -772,12 +759,19 @@ function applySavedState(state: NonNullable<typeof savedState>): boolean {
     keyword.value = ''
     return true
   }
-  mode.value = 'latest'
-  activeQuery.value = ''
-  activeCategory.value = undefined
-  activeTag.value = undefined
-  keyword.value = ''
-  return true
+  if (state.mode === 'novel') {
+    mode.value = 'novel'
+    return true
+  }
+  if (state.mode === 'ranking') {
+    mode.value = 'ranking'
+    return true
+  }
+  if (state.mode === 'latest') {
+    mode.value = 'latest'
+    return true
+  }
+  return false
 }
 
 // 详情页点标签：填进搜索框并直接搜（挂载前就带进来的也算）
@@ -790,24 +784,26 @@ watch(
     store.pendingSearch = undefined
     handledPendingSearch = true
     clearListMemory(MEMORY_KEY)
-    keyword.value = pending
-    activeCategory.value = undefined
-    activeTag.value = undefined
+    enterMode('search')
     activeQuery.value = pending
-    mode.value = 'search'
+    keyword.value = pending
+    pushHistory(pending)
     void load(1)
     scrollToTop()
   },
   { immediate: true },
 )
 
-// 返回逻辑靠这个标记判断要不要先退出搜索模式
+// 返回逻辑靠这个标记判断要不要先退出结果态、回到空闲态
 watchEffect(() => {
-  searchModeActive.value = keyword.value.trim() !== '' || mode.value !== 'latest'
+  searchModeActive.value = mode.value !== 'idle'
 })
 
 /// 有缓存且筛选条件一致：直接把列表塞回去（返回时秒开，不重新请求第一页）
 async function restoreCache(scrollTop?: number): Promise<boolean> {
+  if (isIdle.value) {
+    return false
+  }
   const cache = readListCache<SearchCache>(MEMORY_KEY)
   if (cache === undefined || cache.results.length === 0 || cache.context !== memoryContext()) {
     return false
@@ -826,38 +822,50 @@ async function restoreCache(scrollTop?: number): Promise<boolean> {
 onMounted(async () => {
   setSearchResetHandler(resetToInitial)
   loadHistory()
-  // 分类树只影响筛选胶囊，别挡住列表首屏；恢复「分类记忆」时才必须等它
+  // 分类树只影响按钮行，别挡住首屏；恢复「分类记忆」时才必须等它
   void loadCategories()
+  // 标签区默认展开，本地标签也要跟着读一次
+  if (drawerOpen.value) {
+    void loadLocalTags()
+  }
   if (handledPendingSearch) {
     return
   }
-  if (saved !== undefined && savedState !== undefined && savedState.mode === 'category') {
+  // 没有列表记忆 = 直接停在空闲态，不预取最新列表
+  if (saved === undefined || savedState === undefined) {
+    return
+  }
+  if (savedState.mode === 'category') {
     await loadCategories()
   }
-  if (saved !== undefined && savedState !== undefined && applySavedState(savedState)) {
-    if (await restoreCache(saved.scrollTop)) {
-      return
-    }
-    await load(saved.page)
-    await restore(saved.scrollTop)
+  if (!applySavedState(savedState)) {
+    mode.value = 'idle'
     return
   }
-  if (await restoreCache()) {
+  if (await restoreCache(saved.scrollTop)) {
     return
   }
-  await load(1)
+  await load(saved.page)
+  page.value = Math.min(saved.page, pageCount.value)
+  await restore(saved.scrollTop)
 })
 
 onBeforeUnmount(() => {
   setSearchResetHandler(undefined)
   searchModeActive.value = false
+  if (isIdle.value) {
+    return
+  }
   save(page.value, memoryContext())
-  writeListCache<SearchCache>(MEMORY_KEY, {
-    context: memoryContext(),
-    page: page.value,
-    results: results.value,
-    total: total.value,
-  })
+  // 小说列表一次取完，没必要缓存
+  if (!isNovelMode.value) {
+    writeListCache<SearchCache>(MEMORY_KEY, {
+      context: memoryContext(),
+      page: page.value,
+      results: results.value,
+      total: total.value,
+    })
+  }
 })
 </script>
 
@@ -865,123 +873,125 @@ onBeforeUnmount(() => {
   <section class="screen">
     <pull-refresh-bar :distance="pullDistance" :refreshing="refreshing" />
 
-    <form class="search-form" @submit.prevent="submitSearch">
-      <input
-        v-model="keyword"
-        class="search-input"
-        type="search"
-        enterkeyhint="search"
-        :placeholder="t('search.keywordLabel')"
-        @input="onKeywordInput" />
-      <button class="search-button" type="submit" :disabled="loading">
-        <ph-magnifying-glass :size="18" />
-        {{ t('tab.search') }}
-      </button>
-    </form>
+    <!-- 搜索框固定顶部，下面的标签区/结果区依次排下去 -->
+    <div class="head pinned">
+      <div ref="searchBox" class="search-box" @focusin="openHistory" @focusout="onSearchFocusOut">
+        <form class="search-form" @submit.prevent="submitSearch">
+          <input
+            ref="keywordInput"
+            v-model="keyword"
+            class="search-input"
+            type="search"
+            enterkeyhint="search"
+            :placeholder="t('search.keywordLabel')"
+            @input="onKeywordInput" />
+          <button class="search-button" type="submit" :disabled="loading">
+            <ph-magnifying-glass :size="18" />
+            {{ t('tab.search') }}
+          </button>
+        </form>
 
-    <!-- 搜索历史：点一下就重新搜这个词，右侧清空 -->
-    <div v-if="history.length > 0" class="history-bar">
-      <ph-clock-counter-clockwise :size="13" class="history-icon" />
-      <span v-for="item in history" :key="item" class="history-item">
-        <button class="history-chip" type="button" @click="useHistory(item)">
-          {{ item }}
+        <!-- 搜索历史：焦点态展开在搜索框正下方，点一条就填回去搜 -->
+        <search-history
+          v-if="historyOpen && history.length > 0"
+          class="history"
+          :items="history"
+          @select="useHistory"
+          @remove="removeHistory"
+          @clear="clearHistory" />
+      </div>
+
+      <!-- 常驻的一级分类按钮：小说与排行榜和分类同级，四者互斥 -->
+      <div class="category-bar">
+        <button
+          class="category-chip all"
+          :class="{ active: mode === 'latest' }"
+          type="button"
+          @click="showLatest">
+          {{ t('ranking.all') }}
         </button>
         <button
-          class="history-remove"
+          class="category-chip"
+          :class="{ active: mode === 'novel' }"
           type="button"
-          :aria-label="t('search.removeHistory')"
-          @click="removeHistory(item)">
-          ×
+          @click="selectNovel">
+          {{ t('tab.novel') }}
         </button>
-      </span>
-      <button class="history-clear" type="button" @click="clearHistory">
-        {{ t('search.clearHistory') }}
-      </button>
-    </div>
-
-    <!-- 常驻的一级分类按钮：点一下按该分类筛选，和下面的标签抽屉互斥 -->
-    <div class="category-bar">
-      <button
-        class="category-chip all"
-        :class="{ active: mode === 'latest' }"
-        type="button"
-        @click="showLatest">
-        {{ t('ranking.all') }}
-      </button>
-      <button
-        v-for="category in topCategories"
-        :key="category.id"
-        class="category-chip"
-        :class="{ active: activeCategory?.id === category.id }"
-        type="button"
-        @click="selectCategory(category)">
-        {{ category.name }}
-      </button>
-      <!-- 官方标签「禁漫去碼」：全局筛选，点它时分类让位（两者互斥） -->
-      <button
-        class="category-chip unrated"
-        :class="{ active: mode === 'search' && activeQuery === UNRATED_TAG }"
-        type="button"
-        :title="t('mobile.unratedHint')"
-        @click="toggleUnrated">
-        {{ t('mobile.unrated') }}
-      </button>
-    </div>
-
-    <!-- 筛选条：排序对所有列表生效；时间只对关键词搜索生效（官方分类接口不吃年月） -->
-    <div class="filter-bar">
-      <button
-        v-for="option in sortOptions"
-        :key="option.value"
-        class="filter-chip"
-        :class="{ active: sortSelected === option.value }"
-        type="button"
-        @click="selectSort(option.value)">
-        {{ option.label }}
-      </button>
-      <button
-        class="filter-chip time"
-        :class="{ active: filtersOpen || timeFilterActive }"
-        type="button"
-        :aria-expanded="filtersOpen"
-        @click="filtersOpen = !filtersOpen">
-        {{ t('mobile.timeFilter') }}
-      </button>
-    </div>
-
-    <div v-if="filtersOpen" class="time-panel">
-      <!-- 年月只有关键词搜索吃，分类/默认列表下给一句说明，避免点了没反应 -->
-      <p v-if="mode !== 'search'" class="time-hint">{{ t('mobile.timeFilterHint') }}</p>
-      <div class="time-row">
         <button
-          v-for="option in yearOptions"
-          :key="option.value"
-          class="filter-chip sm"
-          :class="{ active: yearSelected === option.value }"
+          class="category-chip"
+          :class="{ active: mode === 'ranking' }"
           type="button"
-          :disabled="mode !== 'search'"
-          @click="selectYear(option.value)">
-          {{ option.label }}
+          @click="selectRanking">
+          {{ t('tab.ranking') }}
+        </button>
+        <button
+          v-for="category in topCategories"
+          :key="category.id"
+          class="category-chip"
+          :class="{ active: activeCategory?.id === category.id }"
+          type="button"
+          @click="selectCategory(category)">
+          {{ category.name }}
+        </button>
+        <!-- 官方标签「禁漫去碼」：全局筛选，点它时分类让位（两者互斥） -->
+        <button
+          class="category-chip unrated"
+          :class="{ active: mode === 'search' && activeQuery === UNRATED_TAG }"
+          type="button"
+          :title="t('mobile.unratedHint')"
+          @click="toggleUnrated">
+          {{ t('mobile.unrated') }}
         </button>
       </div>
-      <div class="time-row">
-        <button
-          v-for="option in monthOptions"
-          :key="option.value"
-          class="filter-chip sm"
-          :class="{ active: monthSelected === option.value }"
-          type="button"
-          :disabled="mode !== 'search'"
-          @click="selectMonth(option.value)">
-          {{ option.label }}
-        </button>
-      </div>
-      <button v-if="timeFilterActive" class="time-reset" type="button" @click="resetTimeFilter">
-        {{ t('search.resetFilters') }}
-      </button>
+
+      <!-- 排行榜：第一排类型（与首页分类同源，'0' = 全部），第二排周期；两排都单选，组合起来请求 -->
+      <template v-if="mode === 'ranking'">
+        <div class="category-bar sub">
+          <button
+            class="category-chip sm"
+            :class="{ active: rankingCategory === LATEST_CATEGORY_SLUG }"
+            type="button"
+            @click="selectRankingCategory(LATEST_CATEGORY_SLUG)">
+            {{ t('ranking.all') }}
+          </button>
+          <button
+            v-for="category in topCategories"
+            :key="category.id"
+            class="category-chip sm"
+            :class="{ active: rankingCategory === category.slug }"
+            type="button"
+            @click="selectRankingCategory(category.slug)">
+            {{ category.name }}
+          </button>
+        </div>
+        <div class="category-bar sub">
+          <button
+            v-for="item in rankingOrders"
+            :key="item.value"
+            class="category-chip sm"
+            :class="{ active: rankingOrder === item.value }"
+            type="button"
+            @click="selectRankingOrder(item.value)">
+            {{ item.label }}
+          </button>
+        </div>
+      </template>
+
+      <!-- 筛选条：只在接受排序的列表里出现（小说只有最近更新，排行榜用自己的子选项） -->
+      <search-filters
+        v-if="sortable"
+        :sort="sortSelected"
+        :year="yearSelected"
+        :month="monthSelected"
+        :time-enabled="mode === 'search'"
+        @select-sort="selectSort"
+        @select-year="selectYear"
+        @select-month="selectMonth"
+        @reset-time="resetTimeFilter" />
+
     </div>
 
-    <!-- 更多标签：默认收起，点开才是完整的官方标签云 -->
+    <!-- 标签区默认展开，只有用户手动点标题才收起（选择记在 localStorage） -->
     <div class="tag-drawer">
       <button
         class="drawer-toggle"
@@ -993,7 +1003,7 @@ onBeforeUnmount(() => {
           {{
             selectedTags.length > 0
               ? t('mobile.tagsSelected', { count: selectedTags.length })
-              : t('mobile.moreTags')
+              : t('mobile.tagsEntry')
           }}
         </span>
         <span class="drawer-action">{{ drawerLabel }}</span>
@@ -1006,10 +1016,7 @@ onBeforeUnmount(() => {
               v-for="tag in block.content"
               :key="tag"
               class="tag"
-              :class="{
-                active: multiTagEnabled && selectedTags.includes(tag),
-                current: !multiTagEnabled && selectedTags.includes(tag),
-              }"
+              :class="{ current: selectedTags.includes(tag) }"
               type="button"
               @click="onTagClick(tag)">
               {{ tag }}
@@ -1018,7 +1025,7 @@ onBeforeUnmount(() => {
         </div>
         <p v-if="!hasTags" class="tag-empty">{{ t('mobile.tagsUnavailable') }}</p>
 
-        <!-- 本地标签（下载目录 + 导出目录），与官方标签同一个多选集合 -->
+        <!-- 本地标签（下载目录 + 导出目录），和官方标签一样点一下即搜索 -->
         <div v-if="localTags.length > 0" class="tag-group">
           <span class="tag-group-title">{{ t('downloaded.localTags') }}</span>
           <div class="tag-list">
@@ -1026,10 +1033,7 @@ onBeforeUnmount(() => {
               v-for="tag in localTags"
               :key="tag.name"
               class="tag"
-              :class="{
-                active: multiTagEnabled && selectedTags.includes(tag.name),
-                current: !multiTagEnabled && selectedTags.includes(tag.name),
-              }"
+              :class="{ current: selectedTags.includes(tag.name) }"
               type="button"
               @click="onTagClick(tag.name)">
               {{ tag.name }}
@@ -1037,74 +1041,64 @@ onBeforeUnmount(() => {
           </div>
         </div>
 
-        <div class="tag-actions">
-          <button
-            class="multi-toggle"
-            :class="{ active: multiTagEnabled }"
-            type="button"
-            :title="t('search.multiTagHint')"
-            @click="toggleMultiTag">
-            {{ t('search.multiTagOn') }}
-          </button>
-          <button v-if="selectedTags.length > 0" class="tag-clear" type="button" @click="selectedTags = []">
+        <!-- 只支持单标签搜索：这里只保留清掉高亮，不再有多标签交集/批量搜索 -->
+        <div v-if="selectedTags.length > 0" class="tag-actions">
+          <button class="tag-clear" type="button" @click="selectedTags = []">
             {{ t('search.resetFilters') }}
-          </button>
-          <button
-            class="tag-apply"
-            type="button"
-            :disabled="selectedTags.length === 0 || statusLoading"
-            @click="applyTags">
-            {{ t('search.applyTags', { count: selectedTags.length }) }}
           </button>
         </div>
       </div>
     </div>
 
-    <div class="list-head">
-      <span class="list-title">{{ listTitle }}</span>
-      <span v-if="displayTotal > 0" class="list-count">
-        {{ t('search.resultTotalShort', { count: displayTotal }) }}
-      </span>
-    </div>
+    <!-- 列表区只在结果态出现；空闲态停在搜索框 + 标签区 -->
+    <template v-if="!isIdle">
+      <div class="list-head">
+        <span class="list-title">{{ listTitle }}</span>
+        <span v-if="displayTotal > 0" class="list-count">
+          {{ t('search.resultTotalShort', { count: displayTotal }) }}
+        </span>
+      </div>
 
-    <!-- 多标签 AND 的扫描进度：边扫边出结果 -->
-    <p v-if="multiState !== undefined" class="multi-progress">{{ multiProgressText }}</p>
+      <list-status
+        v-if="statusVisible"
+        :loading="statusLoading"
+        :failed="failed"
+        :empty="statusEmpty"
+        :loading-text="loadingText"
+        :failed-text="t('mobile.loadFailedApi', { api: apiLabel })"
+        :empty-text="emptyText"
+        @retry="load(page)" />
 
-    <list-status
-      v-if="statusVisible"
-      :loading="statusLoading"
-      :failed="failed"
-      :empty="statusEmpty"
-      :loading-text="mode === 'latest' ? t('mobile.loading') : t('search.searching')"
-      :failed-text="t('mobile.loadFailedApi', { api: t('tab.search') })"
-      :empty-text="multiState === undefined ? emptyText : t('search.nothingFound')"
-      @retry="load(page)" />
-
-    <template v-else>
-      <comic-grid ref="comicsGrid" :style="cardHeightPx > 0 ? { '--card-h': `${cardHeightPx}px` } : undefined">
-        <comic-grid-card
-          v-for="(comic, index) in displayComics"
-          :key="comic.id"
-          :image="coverThumbUrl(comic.id)"
-          :title="comic.name"
-          :author="comic.author"
-          :eager="index < EAGER_COVERS"
-          @select="openComic(comic)" />
-      </comic-grid>
-      <!-- 多标签扫描没有页码，只能继续往后扫 -->
-      <button
-        v-if="multiState !== undefined && multiCanLoadMore"
-        class="load-more"
-        type="button"
-        :disabled="multiScanning"
-        @click="loadMoreHits">
-        {{ multiScanning ? t('search.searching') : t('search.loadMore') }}
-      </button>
-      <mobile-pager
-        v-else-if="multiState === undefined && results.length > 0"
-        :page="page"
-        :page-count="pageCount"
-        @update:page="changePage" />
+      <template v-else>
+        <!-- 小说用同一张 3 列卡片，只是数据和详情目标换一套 -->
+        <comic-grid v-if="isNovelMode">
+          <comic-grid-card
+            v-for="(novel, index) in displayNovels"
+            :key="novel.id"
+            :image="novel.image ?? ''"
+            :title="novel.name ?? ''"
+            :eager="index < EAGER_COVERS"
+            @select="openNovel(novel)" />
+        </comic-grid>
+        <comic-grid
+          v-else
+          ref="comicsGrid"
+          :style="cardHeightPx > 0 ? { '--card-h': `${cardHeightPx}px` } : undefined">
+          <comic-grid-card
+            v-for="(comic, index) in results"
+            :key="comic.id"
+            :image="coverThumbUrl(comic.id)"
+            :title="comic.name"
+            :author="comic.author"
+            :eager="index < EAGER_COVERS"
+            @select="openComic(comic)" />
+        </comic-grid>
+        <mobile-pager
+          v-if="listLength > 0"
+          :page="page"
+          :page-count="pageCount"
+          @update:page="changePage" />
+      </template>
     </template>
   </section>
 </template>
@@ -1115,6 +1109,29 @@ onBeforeUnmount(() => {
   flex-direction: column;
   gap: 10px;
   padding: 10px 8px;
+}
+
+.head {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+/* 搜索框固定在顶部（空闲态也不居中）；下沿留一条阴影，内容从它下面滚过去时不会糊在一起 */
+.head.pinned {
+  position: sticky;
+  top: 0;
+  z-index: 5;
+  margin: 0 -8px;
+  padding: 6px 8px;
+  background: #f5f5f6;
+  box-shadow: 0 1px 0 #ececec;
+}
+
+.search-box {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
 }
 
 .search-form {
@@ -1156,176 +1173,6 @@ onBeforeUnmount(() => {
   opacity: 0.6;
 }
 
-.history-bar {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  overflow-x: auto;
-  padding-bottom: 2px;
-  scrollbar-width: none;
-}
-
-.history-bar::-webkit-scrollbar {
-  display: none;
-}
-
-.history-icon {
-  flex: 0 0 auto;
-  color: #bbb;
-}
-
-.history-chip {
-  flex: 0 0 auto;
-  max-width: 150px;
-  overflow: hidden;
-  padding: 4px 10px;
-  border: 1px solid #eee;
-  border-radius: 999px;
-  background: #fff;
-  color: #666;
-  font-size: 12px;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.history-item {
-  display: flex;
-  flex: 0 0 auto;
-  align-items: center;
-  overflow: hidden;
-  border: 1px solid #eee;
-  border-radius: 999px;
-  background: #fff;
-}
-
-.history-item .history-chip {
-  border: none;
-  border-radius: 999px 0 0 999px;
-  background: none;
-}
-
-.history-remove {
-  flex: 0 0 auto;
-  padding: 0 8px 0 2px;
-  border: none;
-  background: none;
-  color: #bbb;
-  font-size: 14px;
-  line-height: 1;
-}
-
-.history-clear {
-  flex: 0 0 auto;
-  padding: 4px 10px;
-  border: none;
-  background: none;
-  color: #d96200;
-  font-size: 12px;
-  white-space: nowrap;
-}
-
-.multi-progress {
-  margin: 0;
-  padding: 0 2px;
-  color: #888;
-  font-size: 11px;
-  line-height: 1.4;
-}
-
-.load-more {
-  width: 100%;
-  min-height: 44px;
-  border: 1px solid #ffd6b0;
-  border-radius: 12px;
-  background: #fff;
-  color: #d96200;
-  font-size: 13px;
-}
-
-.load-more:disabled {
-  opacity: 0.6;
-}
-
-.filter-bar {
-  display: flex;
-  gap: 6px;
-  overflow-x: auto;
-  padding-bottom: 2px;
-  scrollbar-width: none;
-}
-
-.filter-bar::-webkit-scrollbar {
-  display: none;
-}
-
-.filter-chip {
-  flex: 0 0 auto;
-  padding: 5px 11px;
-  border: 1px solid #e6e6e6;
-  border-radius: 999px;
-  background: #fff;
-  color: #555;
-  font-size: 12px;
-  white-space: nowrap;
-}
-
-.filter-chip.active {
-  border-color: #ff7a00;
-  background: #fff2e6;
-  color: #d96200;
-  font-weight: 600;
-}
-
-.filter-chip:disabled {
-  opacity: 0.45;
-}
-
-.filter-chip.sm {
-  padding: 3px 9px;
-  font-size: 11px;
-}
-
-.filter-chip.time {
-  border-style: dashed;
-}
-
-.time-panel {
-  display: flex;
-  flex-direction: column;
-  gap: 6px;
-  padding: 8px 10px;
-  border-radius: 12px;
-  background: #fff;
-}
-
-.time-row {
-  display: flex;
-  gap: 6px;
-  overflow-x: auto;
-  scrollbar-width: none;
-}
-
-.time-row::-webkit-scrollbar {
-  display: none;
-}
-
-.time-hint {
-  margin: 0;
-  color: #999;
-  font-size: 11px;
-  line-height: 1.4;
-}
-
-.time-reset {
-  align-self: flex-start;
-  padding: 3px 10px;
-  border: 1px solid #ffd0a6;
-  border-radius: 999px;
-  background: #fff7f0;
-  color: #d96200;
-  font-size: 11px;
-}
-
 .category-bar {
   display: flex;
   gap: 6px;
@@ -1353,6 +1200,23 @@ onBeforeUnmount(() => {
   background: #ff7a00;
   color: #fff;
   font-weight: 600;
+}
+
+/* 排行榜的周/月/总/日：比分类小一号，表示它属于当前分类的子选项 */
+.category-chip.sm {
+  padding: 4px 12px;
+  font-size: 12px;
+}
+
+.category-bar.sub .category-chip {
+  border-color: #e6e6e6;
+  color: #666;
+}
+
+.category-bar.sub .category-chip.active {
+  border-color: #ff7a00;
+  background: #fff2e6;
+  color: #d96200;
 }
 
 /* 去码是全局标签筛选，和分类的橙色选中态区分开 */
@@ -1429,13 +1293,7 @@ onBeforeUnmount(() => {
   font-size: 12px;
 }
 
-.tag.active {
-  border-color: #ff7a00;
-  background: #fff2e6;
-  color: #d96200;
-}
-
-/* 单选态 = 当前搜索条件（实心）；多选态用上面的浅色 active 区分 */
+/* 单选态 = 当前搜索条件 */
 .tag.current {
   border-color: #ff7a00;
   background: #ff7a00;
@@ -1450,44 +1308,12 @@ onBeforeUnmount(() => {
   padding-top: 2px;
 }
 
-.multi-toggle {
-  padding: 5px 11px;
-  border: 1px solid #e6e6e6;
-  border-radius: 999px;
-  background: #fff;
-  color: #666;
-  font-size: 12px;
-}
-
-.multi-toggle.active {
-  border-color: #ff7a00;
-  background: #fff2e6;
-  color: #d96200;
-  font-weight: 600;
-}
-
 .tag-clear {
   padding: 5px 11px;
   border: none;
   background: none;
   color: #999;
   font-size: 12px;
-}
-
-.tag-apply {
-  margin-left: auto;
-  padding: 7px 16px;
-  border: none;
-  border-radius: 999px;
-  background: #ff7a00;
-  color: #fff;
-  font-size: 12px;
-  font-weight: 600;
-  white-space: nowrap;
-}
-
-.tag-apply:disabled {
-  opacity: 0.45;
 }
 
 .tag-empty {

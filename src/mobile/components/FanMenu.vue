@@ -20,23 +20,17 @@ interface FanItem {
   screen: ShellScreen
   label: string
   icon: Component
-  /// inner 是靠近按钮的内圈，outer 是原来那一圈
-  tier: 'inner' | 'outer'
   dx: number
   dy: number
   lx: number
   ly: number
 }
 
-/// 外圈 5 项：180°~270° 均分（每项 22.5°）
+/// 5 项全部排在外层一圈：180°~270° 均分（每项 22.5°），角度反着排让搜索在最上、设置在最下
 const OUTER_RADIUS = 164
-const ANGLE_STEP = 90 / 4
-/// 内圈半径 / 间距：内圈 3 项，22.5° 会压到外圈图标，放宽到 35°
-const INNER_RADIUS = 103
-const INNER_SPREAD = 35
-/// 标签沿径向：外圈朝外；内圈朝内（两层只差 9px，朝外会盖住外圈图标）
-const OUTER_LABEL_OFFSET = 36
-const INNER_LABEL_OFFSET = -36
+const ANGLE_STEP = 90 / (SHELL_SCREENS.length - 1)
+/// 标签沿径向朝外
+const LABEL_OFFSET = 36
 /// 命中判定半径：按钮半径 26px 再加一点手指容差
 const HIT_RADIUS = 32
 
@@ -56,31 +50,19 @@ function fanOffset(radius: number, angle: number, labelOffset: number) {
 const mirrored = computed(() => readerHand.value === 'left')
 const mirrorX = (value: number) => (mirrored.value ? -value : value)
 
-/// 内圈前 3 屏、外圈后 5 屏，顺序全部来自 SHELL_SCREENS
-const items = computed<FanItem[]>(() => {
-  const inner = SHELL_SCREENS.slice(0, 3).map((screen, index) => {
-    const offset = fanOffset(INNER_RADIUS, 225 + (index - 1) * INNER_SPREAD, INNER_LABEL_OFFSET)
+/// 5 项都排在外层，顺序全部来自 SHELL_SCREENS，但落角反向：0 项落 270°（正上方）
+const items = computed<FanItem[]>(() =>
+  SHELL_SCREENS.map((screen, index) => {
+    const angle = 180 + (SHELL_SCREENS.length - 1 - index) * ANGLE_STEP
+    const offset = fanOffset(OUTER_RADIUS, angle, LABEL_OFFSET)
     return {
       ...metaOf(screen),
-      tier: 'inner' as const,
       ...offset,
       dx: mirrorX(offset.dx),
       lx: mirrorX(offset.lx),
     }
-  })
-  const outer = SHELL_SCREENS.slice(3).map((screen, index) => {
-    const offset = fanOffset(OUTER_RADIUS, 180 + index * ANGLE_STEP, OUTER_LABEL_OFFSET)
-    return {
-      ...metaOf(screen),
-      tier: 'outer' as const,
-      ...offset,
-      dx: mirrorX(offset.dx),
-      lx: mirrorX(offset.lx),
-    }
-  })
-  // 内圈排在后面渲染：命中判定和视觉层级都以靠近手指的内圈为准
-  return [...outer, ...inner]
-})
+  }),
+)
 
 function metaOf(screen: ShellScreen) {
   const meta = SHELL_SCREEN_META[screen]
@@ -138,27 +120,7 @@ function onScrimClick(event: MouseEvent) {
   event.stopPropagation()
 }
 
-/// 在一圈里找离手指最近、且在阈值内的项
-function nearestInTier(
-  tier: FanItem['tier'],
-  clientX: number,
-  clientY: number,
-  centerX: number,
-  centerY: number,
-) {
-  let best: ShellScreen | undefined
-  let bestDistance = HIT_RADIUS
-  for (const item of items.value) {
-    if (item.tier !== tier) continue
-    const distance = Math.hypot(clientX - (centerX + item.dx), clientY - (centerY + item.dy))
-    if (distance < bestDistance) {
-      bestDistance = distance
-      best = item.screen
-    }
-  }
-  return best
-}
-
+/// 找离手指最近、且在阈值内的项
 function hitTest(clientX: number, clientY: number): ShellScreen | undefined {
   const fab = fabEl.value
   if (fab === undefined) return undefined
@@ -166,11 +128,16 @@ function hitTest(clientX: number, clientY: number): ShellScreen | undefined {
   const centerX = rect.left + rect.width / 2
   const centerY = rect.top + rect.height / 2
 
-  // 内圈优先：半径小、离手指更近，命中内圈就不再让外圈抢
-  return (
-    nearestInTier('inner', clientX, clientY, centerX, centerY) ??
-    nearestInTier('outer', clientX, clientY, centerX, centerY)
-  )
+  let best: ShellScreen | undefined
+  let bestDistance = HIT_RADIUS
+  for (const item of items.value) {
+    const distance = Math.hypot(clientX - (centerX + item.dx), clientY - (centerY + item.dy))
+    if (distance < bestDistance) {
+      bestDistance = distance
+      best = item.screen
+    }
+  }
+  return best
 }
 
 function onPointerDown(event: PointerEvent) {
@@ -272,13 +239,10 @@ onBeforeUnmount(() => {
       v-for="item in items"
       :key="item.screen"
       class="fan-item"
-      :class="[
-        `is-${item.tier}`,
-        {
-          'is-current': item.screen === props.current,
-          'is-highlighted': item.screen === highlighted,
-        },
-      ]"
+      :class="{
+        'is-current': item.screen === props.current,
+        'is-highlighted': item.screen === highlighted,
+      }"
       :style="{
         '--dx': `${item.dx}px`,
         '--dy': `${item.dy}px`,

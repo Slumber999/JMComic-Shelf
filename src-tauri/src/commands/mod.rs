@@ -18,3 +18,6 @@ pub use favorite::*;
 
 mod settings;
 pub use settings::*;
+
+mod zip_export;
+pub use zip_export::*;

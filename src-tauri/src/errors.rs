@@ -68,6 +68,7 @@ fn code_for(err_title: &str) -> &'static str {
         "打开阅读器失败" => "reader-open",
         "导出指定章节cbz失败" => "export-chapter-cbz",
         "导出cbz失败" => "export-cbz",
+        "导出zip失败" => "export-zip",
         "搜索失败" => "search",
         "获取排行榜失败" => "ranking-fetch",
         "同步Comic字段失败" => "sync-comic",

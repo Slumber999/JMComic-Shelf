@@ -83,11 +83,21 @@ impl MakeWriter<'_> for LogEventWriterFactory {
     }
 }
 
+/// tracing 的全局 subscriber 只能装一次：重复 init 会 panic（SetGlobalDefaultError），
+/// release 的 panic=abort 会直接把进程带走（设备上 20:40 的 SIGABRT 就是这个）
+static INITIALIZED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
 static RELOAD_FN: OnceLock<Box<dyn Fn() -> eyre::Result<()> + Send + Sync>> = OnceLock::new();
 static GUARD: OnceLock<parking_lot::Mutex<Option<WorkerGuard>>> = OnceLock::new();
 
 #[instrument(level = "error", skip_all)]
 pub fn init(app: &AppHandle) -> eyre::Result<()> {
+    // 同一进程里重复跑 setup（Activity 重建等）时不能再装一次 subscriber，记一条 warn 继续
+    if INITIALIZED.swap(true, std::sync::atomic::Ordering::SeqCst) {
+        tracing::warn!("日志系统已初始化过，跳过重复初始化");
+        return Ok(());
+    }
+
     let lib_module_path = module_path!();
     let lib_target = lib_module_path.split("::").next().ok_or_eyre(format!(
         "解析lib_target失败: lib_module_path={lib_module_path}"

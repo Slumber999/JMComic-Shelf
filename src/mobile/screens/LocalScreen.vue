@@ -1,6 +1,11 @@
+<script lang="ts">
+/// 本地标签区默认收起：只在本会话内记住展开状态，重启后回到收起（不落 localStorage）
+let tagsExpandedInSession = false
+</script>
+
 <script setup lang="ts">
 import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
-import { PhArrowClockwise } from '@phosphor-icons/vue'
+import { PhArrowClockwise, PhTag } from '@phosphor-icons/vue'
 import { useDialog, useMessage } from 'naive-ui'
 import { commands } from '../../bindings.ts'
 import type { Comic, LocalLibrarySource, LocalTag } from '../../bindings.ts'
@@ -19,11 +24,15 @@ import { clearListMemory, readListMemory, useListMemory } from '../listMemory.ts
 import { LIST_PAGE_SIZE, pageCountOf, slicePage } from '../paging.ts'
 import { usePullRefresh } from '../usePullRefresh.ts'
 import { useScreenScroll } from '../useScrollHost.ts'
-import { registerSelectionExit } from '../selectionMode.ts'
+import { registerSelection } from '../selectionMode.ts'
 import { useSelection } from '../useSelection.ts'
+import { useZipExport } from '../useZipExport.ts'
 import type { DetailTarget, MobileScreen } from '../useNavStack.ts'
 
 const MEMORY_KEY = 'local'
+/// 本地封面请求宽度：3 列卡片在高 DPR 手机上要 ~390 设备像素，取 720（后端缩略图上限也是 720），
+/// 用 320 会被放大 2~3 倍显得糊
+const LOCAL_COVER_WIDTH = 720
 
 const { t } = useI18n()
 const store = useStore()
@@ -48,20 +57,23 @@ const failed = ref(false)
 const deleting = ref(false)
 const deleteDone = ref(0)
 const deleteTotal = ref(0)
+/// 标签区默认收起；展开状态只记在本会话里
+const tagsExpanded = ref(tagsExpandedInSession)
+watch(tagsExpanded, (value) => {
+  tagsExpandedInSession = value
+})
 const { selecting, selectedIds, selectedCount, isSelected, enter, toggle, setAll, invert, exit } =
   useSelection()
+const {
+  exporting: zipExporting,
+  done: zipDone,
+  total: zipTotal,
+  exportZip,
+} = useZipExport()
 
-// 选择模式下按返回键只退出选择模式
-onMounted(() => {
-  registerSelectionExit(() => {
-    if (!selecting.value) {
-      return false
-    }
-    exit()
-    return true
-  })
-})
-onBeforeUnmount(() => registerSelectionExit(undefined))
+// 选择模式下按返回键只退出选择模式（外壳按当前屏来问，别的屏不会顶掉这块登记）
+onMounted(() => registerSelection('local', { active: () => selecting.value, exit }))
+onBeforeUnmount(() => registerSelection('local'))
 
 /// 标签云分批显示：初始 30 个，每次「展开更多」+50（和桌面 tagCloudPaging 一致）
 const {
@@ -73,11 +85,37 @@ const {
   collapse: collapseTags,
 } = useTagCloudPaging(tags)
 
+/// 收藏顺序：id -> 名次（0 = 最新收藏）。索引里的 comics 本身就是最新在前，直接用 position
+const favoriteOrder = ref<Map<number, number>>(new Map())
+
+/// 按收藏顺序排：最新收藏的在前、老收藏的在后（和收藏夹列表同序）；
+/// 未收藏/已取消的保持原有相对顺序排最后；稳定排序，索引为空时原样返回
+function sortByFavoriteOrder(list: Comic[], order: Map<number, number>): Comic[] {
+  if (order.size === 0) {
+    return list
+  }
+  return [...list].sort((a, b) => {
+    const left = order.get(a.id)
+    const right = order.get(b.id)
+    if (left === undefined && right === undefined) {
+      return 0
+    }
+    if (left === undefined) {
+      return 1
+    }
+    if (right === undefined) {
+      return -1
+    }
+    return left - right
+  })
+}
+
+const orderedComics = computed(() => sortByFavoriteOrder(comics.value, favoriteOrder.value))
 const filteredComics = computed(() => {
   if (selectedTags.value.length === 0) {
-    return comics.value
+    return orderedComics.value
   }
-  return comics.value.filter((comic) =>
+  return orderedComics.value.filter((comic) =>
     selectedTags.value.every((tag) => (comic.tags ?? []).includes(tag)),
   )
 })
@@ -101,6 +139,22 @@ async function load() {
     failed.value = true
   } finally {
     loading.value = false
+  }
+}
+
+/// 读收藏索引给本地列表排序用（纯本地文件，不发请求）
+/// - 没建索引 / 读取失败都当作「没有收藏顺序」，保持后端返回的原有顺序
+async function loadFavoriteOrder() {
+  try {
+    const index = await commands.getFavoritesIndex(0)
+    // 索引本就是收藏时间倒序（最新在前）：position 直接当名次，0 最靠前
+    favoriteOrder.value =
+      index === null
+        ? new Map()
+        : new Map(index.comics.map((comic, position) => [comic.id, position]))
+  } catch (error) {
+    console.error(error)
+    favoriteOrder.value = new Map()
   }
 }
 
@@ -220,11 +274,29 @@ async function deleteSelected() {
   }
 }
 
+/// 选中漫画导出 zip：一本一个 zip，全部落在后端下载目录里，完成后提示完整路径
+async function exportSelectedZip() {
+  if (selectedCount.value === 0 || deleting.value || zipExporting.value) {
+    return
+  }
+  // 按列表显示顺序（收藏顺序）逐本打包，和用户看到的顺序一致
+  const targets = orderedComics.value.filter((comic) => selectedIds.value.has(comic.id))
+  if (targets.length === 0) {
+    exit()
+    return
+  }
+  const result = await exportZip(targets, store.localLibrarySource)
+  if (result.exported > 0) {
+    exit()
+  }
+}
+
 /// 主动刷新 / 下拉刷新：回到第一页并丢掉旧的位置记忆
 async function refresh() {
   clearListMemory(MEMORY_KEY)
   exit()
   page.value = 1
+  void loadFavoriteOrder()
   await load()
   scrollToTop()
 }
@@ -250,6 +322,8 @@ onMounted(async () => {
   if (savedState?.tags !== undefined) {
     selectedTags.value = savedState.tags
   }
+  // 收藏顺序只在本屏缓存，进屏读一次；下拉刷新再一起更新
+  void loadFavoriteOrder()
   await load()
   if (selectedTags.value.length > 0 && tags.value.length > 0) {
     selectedTags.value = selectedTags.value.filter((tag) =>
@@ -287,16 +361,21 @@ onBeforeUnmount(() => save(page.value, context.value))
       :busy-text="
         deleting
           ? t('mobile.deletingProgress', { done: deleteDone, total: deleteTotal })
-          : ''
+          : zipExporting
+            ? t('mobile.zipExporting', { done: zipDone, total: zipTotal })
+            : ''
       "
       @cancel="exit">
-      <button type="button" :disabled="deleting" @click="selectAll">
+      <button type="button" :disabled="deleting || zipExporting" @click="selectAll">
         {{ t('mobile.selectAll') }}
       </button>
-      <button type="button" :disabled="deleting" @click="invertSelection">
+      <button type="button" :disabled="deleting || zipExporting" @click="invertSelection">
         {{ t('mobile.invertSelection') }}
       </button>
-      <button class="danger" type="button" :disabled="deleting" @click="confirmDelete">
+      <button class="primary" type="button" :disabled="deleting || zipExporting" @click="exportSelectedZip">
+        {{ t('mobile.zipExport') }}
+      </button>
+      <button class="danger" type="button" :disabled="deleting || zipExporting" @click="confirmDelete">
         {{ deleting ? t('mobile.deleting') : t('mobile.deleteSelected') }}
       </button>
     </selection-bar>
@@ -313,21 +392,43 @@ onBeforeUnmount(() => save(page.value, context.value))
       </button>
     </div>
 
-    <div v-if="tags.length > 0" class="tag-row">
-      <div class="tag-head">
-        <span>{{ t('downloaded.localTags') }}</span>
-        <button v-if="selectedTags.length > 0" class="clear-tags" type="button" @click="clearTags">
-          {{ t('search.resetFilters') }}
-        </button>
-      </div>
-      <tag-chips :tags="visibleTags" :selected="selectedTags" @toggle="toggleTag" />
-      <div v-if="hasMoreTags || canCollapseTags" class="tag-more">
-        <button v-if="hasMoreTags" type="button" @click="loadMoreTags">
-          {{ tagExpandLabel(t, remainingTags) }}
-        </button>
-        <button v-if="canCollapseTags" type="button" @click="collapseTags">
-          {{ t('common.collapse') }}
-        </button>
+    <!-- 本地标签区：默认收起，展开状态只在本会话内记住 -->
+    <div v-if="tags.length > 0" class="tag-drawer">
+      <button
+        class="tag-toggle"
+        type="button"
+        :aria-expanded="tagsExpanded"
+        @click="tagsExpanded = !tagsExpanded">
+        <ph-tag :size="14" />
+        <span>
+          {{
+            selectedTags.length > 0
+              ? t('mobile.tagsSelected', { count: selectedTags.length })
+              : t('downloaded.localTags')
+          }}
+        </span>
+        <span class="drawer-action">
+          {{ tagsExpanded ? t('common.collapse') : t('common.expand') }}
+        </span>
+      </button>
+
+      <div v-if="tagsExpanded" class="tag-row">
+        <tag-chips :tags="visibleTags" :selected="selectedTags" @toggle="toggleTag" />
+        <div class="tag-more">
+          <button v-if="hasMoreTags" type="button" @click="loadMoreTags">
+            {{ tagExpandLabel(t, remainingTags) }}
+          </button>
+          <button v-if="canCollapseTags" type="button" @click="collapseTags">
+            {{ t('common.collapse') }}
+          </button>
+          <button
+            v-if="selectedTags.length > 0"
+            class="clear-tags"
+            type="button"
+            @click="clearTags">
+            {{ t('search.resetFilters') }}
+          </button>
+        </div>
       </div>
     </div>
 
@@ -359,7 +460,7 @@ onBeforeUnmount(() => save(page.value, context.value))
         <comic-grid-card
           v-for="(comic, index) in pageComics"
           :key="comic.id"
-          :image="localCoverUrl(comic.id, comic.comicDownloadDir, 320)"
+          :image="localCoverUrl(comic.id, comic.comicDownloadDir, LOCAL_COVER_WIDTH)"
           :eager="index < 6"
           :title="comic.name"
           :author="(comic.author ?? []).join('、')"
@@ -403,18 +504,36 @@ onBeforeUnmount(() => save(page.value, context.value))
   font-weight: 600;
 }
 
+.tag-drawer {
+  border-radius: 12px;
+  background: #fff;
+}
+
+.tag-toggle {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  width: 100%;
+  padding: 9px 12px;
+  border: none;
+  border-radius: 12px;
+  background: none;
+  color: #555;
+  font-size: 13px;
+  text-align: left;
+}
+
+.drawer-action {
+  margin-left: auto;
+  color: #999;
+  font-size: 12px;
+}
+
 .tag-row {
   display: flex;
   flex-direction: column;
   gap: 5px;
-}
-
-.tag-head {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  color: #888;
-  font-size: 11px;
+  padding: 0 12px 12px;
 }
 
 .tag-more {

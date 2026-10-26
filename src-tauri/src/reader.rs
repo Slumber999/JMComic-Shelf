@@ -594,6 +594,19 @@ pub fn image_response(body: Vec<u8>, content_type: &str) -> tauri::http::Respons
         .unwrap_or_else(|_| tauri::http::Response::new(Vec::new()))
 }
 
+/// 自定义协议没能及时给出响应时的兜底：wry 的 Android 端只等 10s 就把
+/// `recv_timeout` 的 `Err(Timeout)` unwrap 成 panic（release 是 panic=abort，整进程退出）。
+/// 这里先回 504，后台的取图/取封面继续跑并把结果写进缓存，前端稍后重试就能命中。
+pub fn timeout_response() -> tauri::http::Response<Vec<u8>> {
+    tauri::http::Response::builder()
+        .status(tauri::http::StatusCode::GATEWAY_TIMEOUT)
+        .header(tauri::http::header::CONTENT_TYPE, "text/plain")
+        // 不能让浏览器缓存这个失败响应，否则重试永远命中 504
+        .header(tauri::http::header::CACHE_CONTROL, "no-store")
+        .body(b"comic protocol timeout".to_vec())
+        .unwrap_or_else(|_| tauri::http::Response::new(Vec::new()))
+}
+
 pub fn not_found(reason: &str) -> tauri::http::Response<Vec<u8>> {
     tauri::http::Response::builder()
         .status(tauri::http::StatusCode::NOT_FOUND)
@@ -612,6 +625,20 @@ mod tests {
         assert_eq!(natural_cmp("0009.jpg", "0010.jpg"), Ordering::Less);
         assert_eq!(natural_cmp("a2b", "a2b"), Ordering::Equal);
         assert_eq!(natural_cmp("第1话", "第1话 番外"), Ordering::Less);
+    }
+
+    #[test]
+    fn timeout_response_should_be_uncacheable_504() {
+        let response = timeout_response();
+        assert_eq!(response.status(), tauri::http::StatusCode::GATEWAY_TIMEOUT);
+        assert_eq!(
+            response
+                .headers()
+                .get(tauri::http::header::CACHE_CONTROL)
+                .and_then(|value| value.to_str().ok()),
+            Some("no-store")
+        );
+        assert!(!response.body().is_empty());
     }
 
     #[test]

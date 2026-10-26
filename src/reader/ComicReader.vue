@@ -124,10 +124,16 @@ async function open() {
   // 每次打开都用上下滑动
   readingMode.value = 'scroll'
 
-  const result =
+  let result =
     props.comic !== undefined
       ? await commands.openComicReader(props.comic)
       : await commands.openReaderById(props.comicId ?? 0)
+
+  // 本地目录里没有可读图片 / cbz（例如只导出过 PDF）：回落到在线，和手机端同一套判断
+  if (result.status === 'error' && props.comic !== undefined) {
+    console.error(result.error)
+    result = await commands.openReaderById(props.comic.id)
+  }
 
   if (result.status === 'error') {
     opening.value = false

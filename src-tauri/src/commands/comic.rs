@@ -237,19 +237,31 @@ pub fn open_comic_reader(app: AppHandle, comic: Comic) -> CommandResult<ReaderCo
     Ok(reader_comic)
 }
 
+/// 本地优先的章节登记：下载目录 → 导出目录；都没有（或本地读不出来）返回 None，由调用方走在线
+fn open_local_reader(app: &AppHandle, comic_id: i64) -> Option<ReaderComic> {
+    let candidates = [
+        local_index::comic_dir_and_name(app, comic_id),
+        local_index::export_comic_dir_and_name(app, comic_id),
+    ];
+    let state = app.state::<ReaderState>();
+    candidates
+        .into_iter()
+        .flatten()
+        .find_map(|(comic_dir, comic_title)| {
+            crate::reader::open_reader(&state, &comic_title, &comic_dir).ok()
+        })
+}
+
 /// 按漫画ID打开阅读器：本地有就读本地，没有就走在线阅读
 #[tauri::command(async)]
 #[specta::specta]
 #[instrument(level = "error", skip_all, fields(comic_id = comic_id))]
 pub async fn open_reader_by_id(app: AppHandle, comic_id: i64) -> CommandResult<ReaderComic> {
-    // 先查本地索引：已经下载过的漫画直接开，不用先请求一次接口
-    // （以前是"先请求 /album 拿漫画信息，再判断本地有没有"，离线时已下载的漫画也打不开）
-    if let Some((comic_dir, comic_title)) = local_index::comic_dir_and_name(&app, comic_id) {
-        let state = app.state::<ReaderState>();
-        if let Ok(reader_comic) = crate::reader::open_reader(&state, &comic_title, &comic_dir) {
-            tracing::debug!("阅读器打开成功(本地)，章节数={}", reader_comic.chapters.len());
-            return Ok(reader_comic);
-        }
+    // 先查本地索引：已经下载 / 导出过的漫画直接开，不用先请求一次接口
+    // （以前只查下载目录，只导出过 cbz 的漫画会白跑一次接口，离线时直接打不开）
+    if let Some(reader_comic) = open_local_reader(&app, comic_id) {
+        tracing::debug!("阅读器打开成功(本地)，章节数={}", reader_comic.chapters.len());
+        return Ok(reader_comic);
     }
 
     let comic = utils::get_comic(app.clone(), comic_id)

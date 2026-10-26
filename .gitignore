@@ -22,3 +22,7 @@ dist-ssr
 *.njsproj
 *.sln
 *.sw?
+
+# 临时构建与测试截图
+.tmp*
+src/mobile/*.test.mjs.tmp

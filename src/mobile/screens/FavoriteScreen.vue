@@ -1,10 +1,12 @@
 <script setup lang="ts">
 import { computed, h, onBeforeUnmount, onMounted, ref, watch } from 'vue'
-import { PhArrowClockwise, PhMagnifyingGlass, PhTag } from '@phosphor-icons/vue'
+import { PhMagnifyingGlass, PhTag } from '@phosphor-icons/vue'
 import { NSelect, useDialog, useMessage } from 'naive-ui'
 import { commands } from '../../bindings.ts'
 import type {
+  Comic,
   ComicInFavorite,
+  DownloadFormat,
   FavoritesFolderIndex,
   GetFavoriteResult,
   LocalTag,
@@ -16,6 +18,7 @@ import { coverThumbUrl } from '../../reader/protocol.ts'
 import { tagExpandLabel, useTagCloudPaging } from '../../tagCloudPaging.ts'
 import ComicGrid from '../components/ComicGrid.vue'
 import ComicGridCard from '../components/ComicGridCard.vue'
+import FormatChooseSheet from '../components/FormatChooseSheet.vue'
 import ListStatus from '../components/ListStatus.vue'
 import MobilePager from '../components/MobilePager.vue'
 import PullRefreshBar from '../components/PullRefreshBar.vue'
@@ -27,7 +30,7 @@ import { LIST_PAGE_SIZE, pageCountOf, slicePage } from '../paging.ts'
 import { usePullRefresh } from '../usePullRefresh.ts'
 import { useScreenScroll } from '../useScrollHost.ts'
 import { retryResult } from '../netRetry.ts'
-import { registerSelectionExit } from '../selectionMode.ts'
+import { registerSelection } from '../selectionMode.ts'
 import { useSelection } from '../useSelection.ts'
 import type { DetailTarget, MobileScreen } from '../useNavStack.ts'
 
@@ -86,22 +89,70 @@ const failed = ref(false)
 const busyAction = ref<'download' | 'exportCbz' | 'exportPdf' | 'unfavorite' | ''>('')
 const batchDone = ref(0)
 const batchTotal = ref(0)
+/// 导出 PDF 前先逐本取详情核对「有没有已下载章节」，这段时间进度报「正在检查」
+const checkingPdfSkips = ref(false)
 const selectAllBusy = ref(false)
 const allFavoriteIds = ref<number[]>()
 const { selecting, selectedIds, selectedCount, isSelected, enter, toggle, setAll, invert, exit } =
   useSelection()
 
-// 选择模式下按返回键只退出选择模式（外壳的返回处理会先问这里）
-onMounted(() => {
-  registerSelectionExit(() => {
-    if (!selecting.value) {
-      return false
+// 选择模式下按返回键只退出选择模式（外壳按当前屏来问，别的屏不会顶掉这块登记）
+onMounted(() => registerSelection('favorite', { active: () => selecting.value, exit }))
+onBeforeUnmount(() => registerSelection('favorite'))
+
+/// 下载 / 导出共用通用格式弹层：选定格式后才开始批量操作
+const downloadSheetShowing = ref(false)
+const exportSheetShowing = ref(false)
+const downloadFormat = ref<DownloadFormat>('Jpeg')
+/// 导出格式只记住这次的选择，用来给面板高亮默认项
+const exportFormat = ref<'pdf' | 'cbz'>('pdf')
+
+/// 下载格式选项：顺序按枚举书写顺序，文案与详情页共用
+const DOWNLOAD_FORMATS: Record<DownloadFormat, { label: string; hintKey: string }> = {
+  Jpeg: { label: 'jpg', hintKey: 'mobile.downloadJpegHint' },
+  Png: { label: 'png', hintKey: 'mobile.downloadPngHint' },
+  Webp: { label: 'webp', hintKey: 'mobile.downloadWebpHint' },
+}
+const DOWNLOAD_FORMAT_ORDER = Object.keys(DOWNLOAD_FORMATS) as DownloadFormat[]
+const downloadFormatOptions = computed(() =>
+  DOWNLOAD_FORMAT_ORDER.map((format) => ({
+    value: format,
+    label: DOWNLOAD_FORMATS[format].label,
+    hint: t(DOWNLOAD_FORMATS[format].hintKey),
+  })),
+)
+/// PDF 只能用本地图片生成：提示里就写明没下载的会跳过，确认时再报具体本数
+const exportFormatOptions = computed(() => [
+  { value: 'pdf', label: 'PDF', hint: t('mobile.batchPdfHint') },
+  { value: 'cbz', label: 'CBZ', hint: t('mobile.exportCbzHint') },
+])
+
+function isDownloadFormat(value: string | null): value is DownloadFormat {
+  return value !== null && DOWNLOAD_FORMAT_ORDER.some((format) => format === value)
+}
+
+/// 上次选的下载格式与详情页共用同一个键：只决定面板打开时高亮哪一项
+const DOWNLOAD_FORMAT_KEY = 'mobile:downloadFormat'
+
+function rememberedDownloadFormat(): DownloadFormat {
+  try {
+    const saved = localStorage.getItem(DOWNLOAD_FORMAT_KEY)
+    if (isDownloadFormat(saved)) {
+      return saved
     }
-    exit()
-    return true
-  })
-})
-onBeforeUnmount(() => registerSelectionExit(undefined))
+  } catch {
+    // 忽略 localStorage 读取失败
+  }
+  return store.config?.downloadFormat ?? 'Jpeg'
+}
+
+function rememberDownloadFormat(format: DownloadFormat) {
+  try {
+    localStorage.setItem(DOWNLOAD_FORMAT_KEY, format)
+  } catch {
+    // 忽略 localStorage 写入失败
+  }
+}
 
 /// 标签快照：标签计数和 comicId -> 标签都由后端缓存提供，前端不自己算
 const tagIndex = ref<FavoritesFolderIndex | null>(null)
@@ -122,6 +173,10 @@ const tagCheckFailed = ref(0)
 const tagCheckConfirmed = new Set<number>()
 /// 本会话里已经明确取消过建立索引的收藏夹：点搜索框不再反复弹
 const indexPromptDismissed = new Set<number>()
+/// 下拉刷新自动更新索引的轻量进度：total 是这次要补标签的新收藏数，0 表示还在扫索引
+const indexRefreshing = ref(false)
+const indexRefreshDone = ref(0)
+const indexRefreshTotal = ref(0)
 /// 连点收藏夹/翻页时只认最后一次请求
 let requestId = 0
 
@@ -197,33 +252,27 @@ const folderOptions = computed(() =>
   }),
 )
 
-/// 进度文案复用桌面收藏夹：没选标签报「攒了多少」，选了标签报「核对/命中多少」
+/// 选中模式顶栏的进度：下载 / 导出都按本数报 x/y，PDF 先报「正在检查」
 const busyText = computed(() => {
   if (selectAllBusy.value) {
     return t('mobile.batchPreparing')
   }
-  if (busyAction.value === 'download') {
-    return t('mobile.batchProgress', {
-      action: t('mobile.batchDownloading'),
-      done: batchDone.value,
-      total: batchTotal.value,
-    })
+  if (busyAction.value === '') {
+    return ''
   }
-  if (busyAction.value === 'exportPdf') {
-    return t('mobile.batchProgress', {
-      action: t('mobile.batchExporting'),
-      done: batchDone.value,
-      total: batchTotal.value,
-    })
+  const progress = (action: string) =>
+    t('mobile.batchProgress', { action, done: batchDone.value, total: batchTotal.value })
+  if (busyAction.value === 'download') {
+    return progress(t('mobile.batchDownloading'))
   }
   if (busyAction.value === 'unfavorite') {
-    return t('mobile.batchProgress', {
-      action: t('favorite.unfavorite'),
-      done: batchDone.value,
-      total: batchTotal.value,
-    })
+    return progress(t('favorite.unfavorite'))
   }
-  return busyAction.value === 'exportCbz' ? t('mobile.batchExporting') : ''
+  return progress(
+    busyAction.value === 'exportPdf' && checkingPdfSkips.value
+      ? t('mobile.pdfChecking')
+      : t('mobile.batchExporting'),
+  )
 })
 
 const tagProgressText = computed(() => {
@@ -415,6 +464,72 @@ async function refreshTagData() {
   await loadFavoritesIndex()
   if (tagIndex.value !== null) {
     await loadFavoriteTags()
+  }
+}
+
+/// 下拉刷新时自动增量更新索引：只对「索引已建过 + 标签已建立」的收藏夹生效，
+/// 没建过索引的保持原来的首次建索引提示流程，不在这里自动建
+async function autoRefreshIndex() {
+  if (indexRefreshing.value || store.userProfile === undefined) {
+    return
+  }
+  // 索引是本地文件，先读一次：没建过就直接返回
+  const index = await commands.getFavoritesIndex(folderId.value)
+  if (index === null) {
+    return
+  }
+  tagIndex.value = index
+  await loadFavoriteTags()
+  // 标签还没建立过（一本都没核对）：不自动补，避免一次请求太多本
+  if (tagCached.value === 0) {
+    return
+  }
+
+  const targetFolder = folderId.value
+  const knownIds = new Set(tagIndexComics.value.map((comic) => comic.id))
+  indexRefreshing.value = true
+  indexRefreshDone.value = 0
+  indexRefreshTotal.value = 0
+  try {
+    const result = await commands.updateFavoritesIndex(targetFolder)
+    if (result.status === 'error') {
+      showError(result.error)
+      return
+    }
+    // 扫描期间换了收藏夹：结果已经属于别的目录，直接作废
+    if (folderId.value !== targetFolder) {
+      return
+    }
+    await loadFavoritesIndex()
+    await loadFavoriteTags()
+    // 新收藏还没有标签：用「补标签」同一套命令按本数报进度
+    const newIds = tagIndexComics.value
+      .filter(
+        (comic) => !knownIds.has(comic.id) && comicTags.value.get(comic.id) === undefined,
+      )
+      .slice(0, TAG_FETCH_BUDGET)
+      .map((comic) => comic.id)
+    indexRefreshTotal.value = newIds.length
+    for (let offset = 0; offset < newIds.length; offset += TAG_FETCH_CHUNK) {
+      if (folderId.value !== targetFolder) {
+        break
+      }
+      const chunk = newIds.slice(offset, offset + TAG_FETCH_CHUNK)
+      const fetched = await commands.fetchComicTags(chunk, chunk.length)
+      if (fetched.status === 'error') {
+        showError(fetched.error)
+        break
+      }
+      await loadFavoriteTags()
+      indexRefreshDone.value = Math.min(indexRefreshTotal.value, offset + chunk.length)
+      if (fetched.data.fetched === 0) {
+        break
+      }
+    }
+  } catch (error) {
+    console.error(error)
+  } finally {
+    indexRefreshing.value = false
   }
 }
 
@@ -660,19 +775,62 @@ async function invertSelection() {
   }
 }
 
-/// 下载选中的漫画：逐本调用原来的「一键下载漫画」命令，与桌面一致
-async function downloadSelected() {
+/// 批量操作按用户看到的顺序逐本处理：先按当前列表（筛选时是命中集）的展示顺序，
+/// 不在当前列表里的选中项（跨页等）接在后面，仍保持各自的选中顺序。
+function orderByListOrder(ids: number[]): number[] {
+  const shown = (filterActive.value ? filteredIndexComics.value : displayedComics.value).map(
+    (comic) => comic.id,
+  )
+  const position = new Map(shown.map((id, index) => [id, index]))
+  const inList = ids
+    .filter((id) => position.has(id))
+    .sort((left, right) => (position.get(left) ?? 0) - (position.get(right) ?? 0))
+  return [...inList, ...ids.filter((id) => !position.has(id))]
+}
+
+/// 点「下载」先弹格式面板：取消就什么都不做
+function openDownloadSheet() {
   if (selectedCount.value === 0 || busy.value) {
     return
   }
-  const comicIds = [...selectedIds.value]
+  downloadFormat.value = rememberedDownloadFormat()
+  downloadSheetShowing.value = true
+}
+
+/// 选定格式后才开始批量下载：后端 download_comic 只读 config.download_format，
+/// 整批只写一次配置，再逐本建下载任务
+async function downloadWithFormat(value: string) {
+  if (!isDownloadFormat(value) || selectedCount.value === 0 || busy.value) {
+    return
+  }
+  const format = value
   busyAction.value = 'download'
   batchDone.value = 0
-  batchTotal.value = comicIds.length
+  batchTotal.value = selectedCount.value
   let created = 0
   let alreadyDownloaded = 0
   let failed = 0
   try {
+    try {
+      const config = store.config
+      if (config !== undefined) {
+        config.downloadFormat = format
+        const saved = await commands.saveConfig(config)
+        if (saved.status === 'error') {
+          showError(saved.error)
+          return
+        }
+      }
+    } catch (error) {
+      // 浏览器预览没有后端：记日志，面板保持打开
+      console.error(error)
+      return
+    }
+    rememberDownloadFormat(format)
+    downloadSheetShowing.value = false
+    // 后端下载队列是 FIFO：按列表顺序逐本 enqueue，进度也按这个顺序走
+    const comicIds = orderByListOrder([...selectedIds.value])
+    batchTotal.value = comicIds.length
     for (const comicId of comicIds) {
       try {
         const result = await commands.downloadComic(comicId)
@@ -709,39 +867,111 @@ async function downloadSelected() {
   exit()
 }
 
-/// 批量导出 cbz：后端一边在线取图一边打包，不要求先下载
+/// 点「导出」先弹格式面板：PDF / cbz 二选一
+function openExportSheet() {
+  if (selectedCount.value === 0 || busy.value) {
+    return
+  }
+  exportSheetShowing.value = true
+}
+
+/// 选定格式后关面板，再按格式走各自的批量导出
+async function exportWithFormat(value: string) {
+  if (busy.value || (value !== 'pdf' && value !== 'cbz')) {
+    return
+  }
+  exportFormat.value = value
+  exportSheetShowing.value = false
+  if (value === 'pdf') {
+    await exportSelectedPdf()
+  } else {
+    await exportSelectedCbz()
+  }
+}
+
+/// 逐本导出 cbz：免下载直出，每本一个导出任务，失败只影响这一本
 async function exportSelectedCbz() {
   if (selectedCount.value === 0 || busy.value) {
     return
   }
-  const count = selectedCount.value
+  const comicIds = orderByListOrder([...selectedIds.value])
   busyAction.value = 'exportCbz'
+  batchDone.value = 0
+  batchTotal.value = comicIds.length
+  let exported = 0
+  let failed = 0
   try {
-    const result = await commands.exportCbzWithoutDownload([...selectedIds.value])
-    if (result.status === 'error') {
-      showError(result.error)
-      message.warning(t('mobile.batchFailed', { count }), { duration: 8000 })
-      return
+    for (const comicId of comicIds) {
+      try {
+        const result = await commands.exportCbzWithoutDownload([comicId])
+        if (result.status === 'error') {
+          failed += 1
+          console.error(result.error)
+        } else {
+          exported += 1
+        }
+      } catch (error) {
+        failed += 1
+        console.error(error)
+      }
+      batchDone.value += 1
     }
-    message.success(t('favorite.exportedMsg', { count }), { duration: 8000 })
-    exit()
   } finally {
     busyAction.value = ''
   }
+
+  const parts: string[] = []
+  if (exported > 0) {
+    parts.push(t('favorite.exportedMsg', { count: exported }))
+  }
+  if (failed > 0) {
+    parts.push(t('favorite.failedCount', { count: failed }))
+  }
+  if (parts.length === 0) {
+    parts.push(t('mobile.batchFailed', { count: comicIds.length }))
+  }
+  const summary = parts.join('，')
+  if (failed > 0) {
+    message.warning(summary, { duration: 8000 })
+  } else {
+    message.success(summary, { duration: 8000 })
+  }
+  if (exported > 0) {
+    exit()
+  }
 }
 
-/// 批量导出 pdf：只能导已经有本地章节的漫画，未下载的跳过并计数
+/// 导出 PDF 前把「未下载的会跳过」讲清楚：用户确认后才继续
+function confirmPdfSkips(count: number): Promise<boolean> {
+  return new Promise((resolve) => {
+    dialog.warning({
+      title: t('mobile.pdfSkipTitle'),
+      content: t('mobile.pdfSkipConfirm', { count }),
+      positiveText: t('mobile.pdfSkipContinue'),
+      negativeText: t('common.cancel'),
+      onPositiveClick: () => resolve(true),
+      onNegativeClick: () => resolve(false),
+      onClose: () => resolve(false),
+      onMaskClick: () => resolve(false),
+    })
+  })
+}
+
+/// 逐本导出 pdf：PDF 只能由本地图片生成，先取详情挑出有已下载章节的，
+/// 其余的跳过并在开始前提示本数
 async function exportSelectedPdf() {
   if (selectedCount.value === 0 || busy.value) {
     return
   }
-  const comicIds = [...selectedIds.value]
+  const comicIds = orderByListOrder([...selectedIds.value])
   busyAction.value = 'exportPdf'
+  checkingPdfSkips.value = true
   batchDone.value = 0
   batchTotal.value = comicIds.length
-  let exported = 0
+  const ready: Comic[] = []
   let skipped = 0
   let failed = 0
+  let exported = 0
   try {
     for (const comicId of comicIds) {
       try {
@@ -752,13 +982,31 @@ async function exportSelectedPdf() {
         } else if (!detail.data.chapterInfos.some((chapter) => chapter.isDownloaded === true)) {
           skipped += 1
         } else {
-          const result = await commands.exportPdf(detail.data)
-          if (result.status === 'error') {
-            failed += 1
-            console.error(result.error)
-          } else {
-            exported += 1
-          }
+          ready.push(detail.data)
+        }
+      } catch (error) {
+        failed += 1
+        console.error(error)
+      }
+      batchDone.value += 1
+    }
+
+    // 有会被跳过的就先问一句，取消就留在选中模式
+    if (skipped > 0 && !(await confirmPdfSkips(skipped))) {
+      return
+    }
+
+    checkingPdfSkips.value = false
+    batchDone.value = 0
+    batchTotal.value = ready.length
+    for (const comic of ready) {
+      try {
+        const result = await commands.exportPdf(comic)
+        if (result.status === 'error') {
+          failed += 1
+          console.error(result.error)
+        } else {
+          exported += 1
         }
       } catch (error) {
         failed += 1
@@ -768,6 +1016,7 @@ async function exportSelectedPdf() {
     }
   } finally {
     busyAction.value = ''
+    checkingPdfSkips.value = false
   }
 
   const parts: string[] = []
@@ -854,7 +1103,7 @@ async function runUnfavorite(comicIds: number[]) {
   }
 }
 
-/// 主动刷新 / 下拉刷新：回到第一页并丢掉旧的位置记忆
+/// 下拉刷新：回到第一页并丢掉旧的位置记忆；索引和标签都建过时顺手增量更新
 async function refresh() {
   clearListMemory(MEMORY_KEY)
   clearListCache(MEMORY_KEY)
@@ -865,6 +1114,15 @@ async function refresh() {
   if (tagsExpanded.value || filterActive.value) {
     await refreshTagData()
   }
+  // 后台进行，不挡住列表：进度显示在顶部那一小条
+  void autoRefreshIndex()
+  scrollToTop()
+}
+
+/// 加载失败后的重试：只重拉第一页，不触发索引更新
+async function retryLoad() {
+  page.value = 1
+  await load(1)
   scrollToTop()
 }
 
@@ -985,6 +1243,21 @@ onBeforeUnmount(() => {
   <section class="screen">
     <pull-refresh-bar :distance="pullDistance" :refreshing="refreshing" />
 
+    <!-- 下拉刷新自动更新索引时的轻量进度 -->
+    <div v-if="indexRefreshing" class="index-progress" role="status">
+      <span class="mini-spinner" />
+      <span>
+        {{
+          indexRefreshTotal > 0
+            ? t('mobile.indexUpdateProgress', {
+                done: indexRefreshDone,
+                total: indexRefreshTotal,
+              })
+            : t('mobile.indexUpdating')
+        }}
+      </span>
+    </div>
+
     <selection-bar
       v-if="selecting"
       :count="selectedCount"
@@ -996,14 +1269,11 @@ onBeforeUnmount(() => {
       <button type="button" :disabled="busy" @click="invertSelection">
         {{ t('mobile.invertSelection') }}
       </button>
-      <button class="primary" type="button" :disabled="busy" @click="downloadSelected">
+      <button class="primary" type="button" :disabled="busy" @click="openDownloadSheet">
         {{ t('favorite.download') }}
       </button>
-      <button class="primary" type="button" :disabled="busy" @click="exportSelectedCbz">
-        {{ t('favorite.exportCbz') }}
-      </button>
-      <button class="primary" type="button" :disabled="busy" @click="exportSelectedPdf">
-        {{ t('downloaded.exportPdf') }}
+      <button class="primary" type="button" :disabled="busy" @click="openExportSheet">
+        {{ t('comic.export') }}
       </button>
       <button class="danger" type="button" :disabled="busy" @click="unfavoriteSelected">
         {{ t('favorite.unfavorite') }}
@@ -1136,19 +1406,6 @@ onBeforeUnmount(() => {
         </div>
       </div>
 
-      <div class="meta-row">
-        <span class="count">
-          {{
-            filterActive
-              ? t('favorite.index.hitCount', { count: filteredIndexComics.length })
-              : t('favorite.totalCount', { count: total })
-          }}
-        </span>
-        <button class="refresh" type="button" :aria-label="t('common.refresh')" @click="refresh">
-          <ph-arrow-clockwise :size="16" />
-        </button>
-      </div>
-
       <list-status
         v-if="loading || failed || displayedComics.length === 0"
         :loading="loading"
@@ -1157,7 +1414,7 @@ onBeforeUnmount(() => {
         :loading-text="t('favorite.loadingFolder')"
         :failed-text="t('mobile.loadFailedApi', { api: t('tab.favorite') })"
         :empty-text="emptyText"
-        @retry="refresh" />
+        @retry="retryLoad" />
 
       <template v-else>
         <comic-grid>
@@ -1176,6 +1433,23 @@ onBeforeUnmount(() => {
         <mobile-pager :page="page" :page-count="pageCount" @update:page="changePage" />
       </template>
     </template>
+
+    <!-- 下载 / 导出格式面板：选定后才开始批量操作，取消则什么都不做 -->
+    <format-choose-sheet
+      v-model:showing="downloadSheetShowing"
+      :title="t('mobile.downloadChooseTitle')"
+      :options="downloadFormatOptions"
+      :selected="downloadFormat"
+      :busy="busy"
+      @confirm="downloadWithFormat" />
+
+    <format-choose-sheet
+      v-model:showing="exportSheetShowing"
+      :title="t('mobile.exportChooseTitle')"
+      :options="exportFormatOptions"
+      :selected="exportFormat"
+      :busy="busy"
+      @confirm="exportWithFormat" />
   </section>
 </template>
 
@@ -1393,26 +1667,14 @@ onBeforeUnmount(() => {
   }
 }
 
-.meta-row {
+.index-progress {
   display: flex;
   align-items: center;
-  justify-content: space-between;
-}
-
-.count {
-  color: #888;
-  font-size: 12px;
-}
-
-.refresh {
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  width: 28px;
-  height: 28px;
-  border: none;
-  border-radius: 50%;
-  background: #f2f2f2;
-  color: #666;
+  gap: 6px;
+  padding: 4px 10px;
+  border-radius: 999px;
+  background: #fff7f0;
+  color: #d96200;
+  font-size: 11px;
 }
 </style>

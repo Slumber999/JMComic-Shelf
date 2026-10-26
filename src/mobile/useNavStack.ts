@@ -3,7 +3,8 @@ import type { Ref } from 'vue'
 import { invoke, isTauri } from '@tauri-apps/api/core'
 import type { NovelMeta } from '../bindings.ts'
 import { searchModeActive, resetSearchMode } from './searchMode.ts'
-import { exitSelectionMode } from './selectionMode.ts'
+import { exitSelection, selectionActive } from './selectionMode.ts'
+import { nextBackAction } from './backPriority.ts'
 
 /// 菜单只列根屏；评论 / 详情 / 设置都是 push 进来的层级页
 /// 详情用一个屏：目标是漫画还是小说由 ScreenTarget 决定，外壳据此选渲染哪个详情
@@ -210,25 +211,36 @@ export function useNavStack(root: MobileScreen = 'search') {
     closeTopOverlay(after)
   }
 
+  /// 根屏返回：优先级固定为 选中模式 → 回搜索根屏 → 清搜索态 → 提示 / 退出（见 backPriority.ts）。
+  /// 一次返回只处理一层；选中与搜索这两个分支只改页面状态，不 pop、不 replaceState 历史条目。
   function handleRootBack() {
-    // 选择模式优先：返回只退出选择，不动屏幕栈
-    if (exitSelectionMode()) {
+    const action = nextBackAction({
+      selection: selectionActive(current.value),
+      atRoot: current.value === root,
+      search: searchModeActive.value,
+      exitHint: exitHintVisible.value,
+    })
+
+    if (action === 'selection') {
+      clearExitHint()
+      exitSelection(current.value)
       return
     }
-    if (exitHintVisible.value) {
+    if (action === 'root') {
+      clearExitHint()
+      replace(root)
+      return
+    }
+    if (action === 'search') {
+      clearExitHint()
+      resetSearchMode()
+      return
+    }
+    if (action === 'exit') {
       void exitApp()
       return
     }
     clearExitHint()
-    // 根屏返回优先回搜索页；已经在搜索页就先退出搜索模式，再一次才提示退出
-    if (current.value !== root) {
-      replace(root)
-      return
-    }
-    if (searchModeActive.value) {
-      resetSearchMode()
-      return
-    }
     exitHintVisible.value = true
     exitTimer = setTimeout(() => {
       exitHintVisible.value = false
@@ -248,7 +260,7 @@ export function useNavStack(root: MobileScreen = 'search') {
   }
 
   function handlePopState(event: PopStateEvent) {
-    // 浮层压在详情/根屏之上：这次返回只关最上面那层浮层，屏幕栈保持原样
+    // 返回优先级第 1 层：浮层压在详情/根屏之上，只关最上面那层，屏幕栈保持原样
     if (overlayLayers.length > 0 || suppressOverlayPop) {
       if (popOverlayByBack()) {
         return

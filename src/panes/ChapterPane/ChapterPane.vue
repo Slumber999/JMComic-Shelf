@@ -17,6 +17,7 @@ import { NButton, NEmpty, NIcon, useMessage } from 'naive-ui'
 import { localCoverUrl } from '../../reader/protocol.ts'
 import { getProgress, progressLabel } from '../../reader/progress.ts'
 import { useI18n } from '../../i18n.ts'
+import { openReaderForComic } from '../../reader/localReader.ts'
 
 export type ChapterPaneMode = 'download' | 'export'
 
@@ -82,14 +83,14 @@ const readTitle = computed(() =>
     : t('comic.continueReading', { title: progressText.value }),
 )
 
-/// 阅读：后端按ID打开是"本地优先"——下载过就读本地文件，没下载过就在线读；
+/// 阅读：和本地库存卡片走同一个入口——下载过 / 导出过 cbz 就先本地读，都没有才在线读；
 /// 阅读器自己会恢复到上次读到的位置
-function readComic() {
+async function readComic() {
   const comic = store.pickedComic
   if (comic === undefined) {
     return
   }
-  store.openReader({ comicId: comic.id })
+  await openReaderForComic(comic)
 }
 
 async function showComicDownloadDirInFileManager() {

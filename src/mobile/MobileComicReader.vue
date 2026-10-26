@@ -2,7 +2,7 @@
 import { computed, nextTick, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue'
 import { commands } from '../bindings.ts'
 import type { Comic, ReaderComic } from '../bindings.ts'
-import { PhColumns, PhGearSix, PhRows, PhX } from '@phosphor-icons/vue'
+import { PhColumns, PhHandSwipeLeft, PhHandSwipeRight, PhRows, PhX } from '@phosphor-icons/vue'
 import { useMessage } from 'naive-ui'
 import { useI18n } from '../i18n.ts'
 import { getProgress, markChapterRead, saveProgress as saveReaderProgress } from '../reader/progress.ts'
@@ -13,15 +13,14 @@ import type { CommentTarget } from '../comments/useComments.ts'
 import MobileCommentSheet from './components/MobileCommentSheet.vue'
 import ReaderProgressBar from './components/ReaderProgressBar.vue'
 import ReaderRail from './components/ReaderRail.vue'
-import { findExportedComic } from './localShelf.ts'
+import { findExportedComic, resolveLocalComic } from '../reader/localReader.ts'
 import { readerLoadingGif, warmReaderLoadingGif } from './readerLoadingGif.ts'
-import { readerHand } from './useReaderHand.ts'
+import { readerHand, setReaderHand } from './useReaderHand.ts'
 import { useOverlayLayer } from './useNavStack.ts'
 
 /// 手机专用阅读器：操作栏竖排在左右一侧、底部是可拖动进度条；双击缩放、swipe 翻页、单击切换控件
 const props = defineProps<{ comic?: Comic; comicId?: number; startChapter?: number }>()
 const showing = defineModel<boolean>('showing', { required: true })
-const emit = defineEmits<{ settings: [] }>()
 
 const { t } = useI18n()
 const message = useMessage()
@@ -77,6 +76,14 @@ const loadingChapter = computed(() => opening.value || preparing.value)
 const comicId = computed(() => props.comic?.id ?? props.comicId ?? 0)
 const comicTitle = computed(() => props.comic?.name ?? readerComic.value?.title ?? '')
 const handClass = computed(() => (readerHand.value === 'left' ? 'hand-left' : 'hand-right'))
+/// 底栏左右手切换：与设置页读写同一份 useReaderHand（localStorage 同步）
+const handIcon = computed(() => (readerHand.value === 'left' ? PhHandSwipeLeft : PhHandSwipeRight))
+const handLabel = computed(() =>
+  t(readerHand.value === 'left' ? 'mobile.readerHandLeft' : 'mobile.readerHandRight'),
+)
+function toggleHand() {
+  setReaderHand(readerHand.value === 'left' ? 'right' : 'left')
+}
 const modeLabel = computed(() =>
   readingMode.value === 'scroll' ? t('mobile.readerScrollShort') : t('mobile.readerPagedShort'),
 )
@@ -95,14 +102,20 @@ const pageUrls = computed<string[]>(() => {
 
 /// 挂载窗口：当前页前后各 6 页（13 页）都挂 src，连翻几页不用现下载
 const PAGE_MOUNT_WINDOW = 6
-/// 窗口内再挑这几页优先加载（当前页 + 后 5 页 + 前 1 页），连翻 5 页都等不到加载动画
+/// 系统内存吃紧后收窄的窗口：图片解码是内存大头，宁可翻回已缓存页也别被系统杀掉
+const PAGE_MOUNT_WINDOW_LOW = 2
+/// 运行时挂载窗口：低内存回调会把它压到 PAGE_MOUNT_WINDOW_LOW
+const mountWindow = ref<number>(PAGE_MOUNT_WINDOW)
+/// 窗口内再挑这几页优先加载（当前页 + 后 2 页 + 前 1 页）：eager 页越少，开章瞬间的解码峰值越低
 const PAGE_HOT_BEHIND = 1
-const PAGE_HOT_AHEAD = 5
+const PAGE_HOT_AHEAD = 2
 /// 窗口外再主动预取：往后 2 页、往前 1 页，更远的等滚动靠近
 const PAGE_PREFETCH_AHEAD = 2
 const PAGE_PREFETCH_BEHIND = 1
+/// 低内存后关掉预取，重新打开阅读器时恢复
+let prefetchEnabled = true
 function shouldMountPage(index: number): boolean {
-  return Math.abs(index - pageIndex.value) <= PAGE_MOUNT_WINDOW
+  return Math.abs(index - pageIndex.value) <= mountWindow.value
 }
 function isHotPage(index: number): boolean {
   return index >= pageIndex.value - PAGE_HOT_BEHIND && index <= pageIndex.value + PAGE_HOT_AHEAD
@@ -111,6 +124,30 @@ function isHotPage(index: number): boolean {
 /// 每页的加载状态：没有记录就是加载中
 const pageStates = ref<Record<number, 'ok' | 'failed'>>({})
 const currentPageState = computed(() => pageStates.value[pageIndex.value])
+/// 单页加载失败（多数是自定义协议 8s 超时先回了 504）：带 ?r=n 延迟重试两次。
+/// 后台取图/取封面成功后已经写进缓存，重试基本一次就能命中；别无限重试坏图
+const PAGE_RETRY_DELAY_MS = 1200
+const MAX_PAGE_RETRIES = 2
+const pageRetries = ref<Record<number, number>>({})
+
+function pageSrc(index: number, url: string): string {
+  const retry = pageRetries.value[index] ?? 0
+  return retry === 0 ? url : url + '?r=' + retry
+}
+
+function onPageError(index: number): void {
+  setPageState(index, 'failed')
+  const used = pageRetries.value[index] ?? 0
+  if (used >= MAX_PAGE_RETRIES) {
+    return
+  }
+  window.setTimeout(() => {
+    if (closed) {
+      return
+    }
+    pageRetries.value = { ...pageRetries.value, [index]: used + 1 }
+  }, PAGE_RETRY_DELAY_MS)
+}
 
 // ---------- 占位与禁漫娘动画 ----------
 
@@ -189,30 +226,13 @@ function onScrollPageLoad(index: number, event: Event) {
 
 // ---------- 控件显隐 ----------
 
-const BAR_HIDE_MS = 4000
-let hideTimer: number | undefined
-
-function clearHideTimer() {
-  if (hideTimer !== undefined) {
-    window.clearTimeout(hideTimer)
-    hideTimer = undefined
-  }
-}
-
-function showBar(autoHide = true) {
+/// 显隐只由「点正文空白区」的 toggleBar 控制：不自动淡出，翻页 / 切章 / 滚动也不改它
+function showBar() {
   barVisible.value = true
-  clearHideTimer()
-  if (autoHide) {
-    hideTimer = window.setTimeout(() => {
-      hideTimer = undefined
-      barVisible.value = false
-    }, BAR_HIDE_MS)
-  }
 }
 
 function hideBar() {
   barVisible.value = false
-  clearHideTimer()
 }
 
 function toggleBar() {
@@ -237,17 +257,18 @@ watch(
   { immediate: true },
 )
 
-/// 本地优先：下载目录里的（comic 直接给过来 / 后端按 ID 打开时先查下载目录）和导出目录里的 cbz
-/// 都不走在线章节；本地文件读不出来（例如只导出过 PDF）才回落到在线阅读。
+/// 本地优先：下载/导出卡片带来的 Comic 直接用，详情页只给 ID 时先看导出目录里的 cbz
+/// （和桌面详情页共用 resolveLocalComic）；本地文件读不出来（例如只导出过 PDF）才回落在在线阅读。
 async function openReaderLocalFirst(): Promise<ReaderComic | undefined> {
-  // 调用方已经拿到本地 Comic：先直接按本地文件打开
-  if (props.comic !== undefined) {
-    const local = await commands.openComicReader(props.comic)
-    if (local.status === 'ok') {
-      return local.data
+  const local =
+    props.comic !== undefined ? await resolveLocalComic(props.comic) : await findExportedComic(comicId.value)
+  if (local !== undefined) {
+    const localResult = await commands.openComicReader(local)
+    if (localResult.status === 'ok') {
+      return localResult.data
     }
     // 本地目录里没有可读图片：静默回落，不弹下载专用文案
-    console.error(local.error)
+    console.error(localResult.error)
   }
 
   let onlineResult = await commands.openReaderById(comicId.value)
@@ -260,28 +281,14 @@ async function openReaderLocalFirst(): Promise<ReaderComic | undefined> {
     onlineResult = await commands.openReaderById(comicId.value)
   }
 
-  // 后端已经按「下载目录优先」打开：全是本地章节就直接用，读图不经过网络
-  if (onlineResult.status === 'ok' && !onlineResult.data.chapters.some((chapter) => chapter.online)) {
-    return onlineResult.data
-  }
-
-  // 只剩在线章节：导出目录里有 cbz/图片的话优先读本地
-  const exported = await findExportedComic(comicId.value)
-  if (exported !== undefined) {
-    const local = await commands.openComicReader(exported)
-    if (local.status === 'ok') {
-      return local.data
-    }
-    console.error(local.error)
-  }
-
+  // 后端 open_reader_by_id 也是本地优先（下载目录 → 导出目录），成功就直接用
   if (onlineResult.status === 'ok') {
     return onlineResult.data
   }
 
   console.error(onlineResult.error)
   // 在线失败不该复用「请先确认已经下载完成」那句下载文案：按本地/在线分开提示
-  const triedLocal = props.comic !== undefined || exported !== undefined
+  const triedLocal = local !== undefined
   message.error(t(triedLocal ? 'mobile.readerOpenLocalFailed' : 'mobile.readerOpenOnlineFailed'), {
     duration: 6000,
   })
@@ -293,14 +300,17 @@ async function open() {
   closed = false
   readingMode.value = 'scroll'
   zoom.value = 1
+  // 每次打开都从正常窗口起步，低内存压小只影响当次阅读
+  mountWindow.value = PAGE_MOUNT_WINDOW
+  prefetchEnabled = true
   pageStates.value = {}
+  pageRetries.value = {}
   pageRatios.clear()
   pageIndex.value = 0
   chapterIndex.value = 0
   seekRatio.value = undefined
   seeking.value = false
   barVisible.value = true
-  clearHideTimer()
   warmReaderLoadingGif()
 
   const comic = await openReaderLocalFirst()
@@ -448,6 +458,7 @@ async function retryChapter() {
   }
   await nextTick()
   pageStates.value = {}
+  pageRetries.value = {}
   preloadAround()
   scrollToCurrentPage()
   markCurrentChapterRead()
@@ -484,6 +495,7 @@ async function goToChapter(index: number, page = 0) {
   if (closed) {
     return
   }
+  pageRetries.value = {}
   if (ready) {
     pageIndex.value = Math.min(Math.max(page, 0), Math.max(pageCount.value - 1, 0))
   }
@@ -587,6 +599,12 @@ function onScroll() {
 /// 主动预取：翻页模式取相邻 3 页；滚动模式取挂载窗口外的 ±1~2 页。
 /// 引用要留在 preloaded 里，换引用前不回收，否则正在下的图会被中断。
 function preloadAround() {
+  // 低内存过就不再预取：预取的图也会被解码，省下来的是真内存
+  if (!prefetchEnabled) {
+    preloaded.length = 0
+    return
+  }
+
   const chapter = currentChapter.value
   if (chapter === undefined) {
     return
@@ -599,10 +617,10 @@ function preloadAround() {
     }
   } else {
     for (let offset = 1; offset <= PAGE_PREFETCH_AHEAD; offset++) {
-      targets.push(pageIndex.value + PAGE_MOUNT_WINDOW + offset)
+      targets.push(pageIndex.value + mountWindow.value + offset)
     }
     for (let offset = 1; offset <= PAGE_PREFETCH_BEHIND; offset++) {
-      targets.push(pageIndex.value - PAGE_MOUNT_WINDOW - offset)
+      targets.push(pageIndex.value - mountWindow.value - offset)
     }
   }
 
@@ -618,6 +636,16 @@ function preloadAround() {
   }
   preloaded.length = 0
   preloaded.push(...images)
+}
+
+/// 系统低内存（MainActivity.onTrimMemory 转发过来）：丢掉预取引用、收窄挂载窗口，
+/// 让已解码但离视口远的图立刻被释放；不退回一张一张加载，只是把窗口从 ±6 压到 ±2
+function onLowMemory(): void {
+  prefetchEnabled = false
+  preloaded.length = 0
+  if (mountWindow.value > PAGE_MOUNT_WINDOW_LOW) {
+    mountWindow.value = PAGE_MOUNT_WINDOW_LOW
+  }
 }
 
 function setPageState(index: number, state: 'ok' | 'failed') {
@@ -920,10 +948,13 @@ watch(
 onMounted(() => {
   measureViewport()
   warmReaderLoadingGif()
+  // 原生侧低内存回调的入口（见 gen/android 的 MainActivity.onTrimMemory）
+  const host = window as Window & { __jmOnLowMemory?: () => void }
+  host.__jmOnLowMemory = onLowMemory
 })
 
 onBeforeUnmount(() => {
-  clearHideTimer()
+  delete (window as Window & { __jmOnLowMemory?: () => void }).__jmOnLowMemory
   resizeObserver?.disconnect()
   resizeObserver = undefined
   gifObserver?.disconnect()
@@ -970,14 +1001,14 @@ onBeforeUnmount(() => {
         :style="{ width: zoom * 100 + '%', height: zoom * 100 + '%' }">
         <img
           :key="pageUrls[pageIndex]"
-          :src="pageUrls[pageIndex]"
+          :src="pageSrc(pageIndex, pageUrls[pageIndex] ?? '')"
           class="paged-image"
           alt=""
           :draggable="false"
           fetchpriority="high"
           decoding="async"
           @load="setPageStateByUrl(pageUrls[pageIndex] ?? '', 'ok')"
-          @error="setPageStateByUrl(pageUrls[pageIndex] ?? '', 'failed')" />
+          @error="onPageError(pageIndex)" />
         <div v-if="currentPageState !== 'ok'" class="page-placeholder">
           <div v-if="showGif(pageIndex) && currentPageState !== 'failed'" class="page-gif" :style="gifStyle" />
           <span v-if="currentPageState === 'failed'" class="page-fail">{{ t('reader.imageFailed') }}</span>
@@ -996,7 +1027,7 @@ onBeforeUnmount(() => {
           <!-- 挂载窗口内才挂 src：近处 7 页 eager（连翻不等待），窗口其余页 lazy -->
           <img
             v-if="shouldMountPage(index)"
-            :src="url"
+            :src="pageSrc(index, url)"
             class="scroll-image"
             alt=""
             :fetchpriority="index === pageIndex ? 'high' : 'low'"
@@ -1004,7 +1035,7 @@ onBeforeUnmount(() => {
             :loading="isHotPage(index) ? 'eager' : 'lazy'"
             decoding="async"
             @load="onScrollPageLoad(index, $event)"
-            @error="setPageState(index, 'failed')" />
+            @error="onPageError(index)" />
           <div v-if="pageStates[index] !== 'ok'" class="page-placeholder">
             <div v-if="showGif(index) && pageStates[index] !== 'failed'" class="page-gif" :style="gifStyle" />
             <span v-if="pageStates[index] === 'failed'" class="page-fail">{{ t('reader.imageFailed') }}</span>
@@ -1054,9 +1085,10 @@ onBeforeUnmount(() => {
           <FavoriteButton :comic-id="comicId" :is-favorite="isFavorite" variant="icon" />
           <span>{{ t('favoriteButton.titleFavorite') }}</span>
         </div>
-        <button class="tool" type="button" @click="emit('settings')">
-          <ph-gear-six :size="22" />
-          <span>{{ t('mobile.menuSettings') }}</span>
+        <!-- 原来的设置入口改成左右手切换：图标与设置页共用 useReaderHand，一处改两处同步 -->
+        <button class="tool" type="button" :aria-label="handLabel" @click="toggleHand">
+          <component :is="handIcon" :size="22" />
+          <span>{{ handLabel }}</span>
         </button>
       </div>
     </div>

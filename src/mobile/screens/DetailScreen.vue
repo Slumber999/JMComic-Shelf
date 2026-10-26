@@ -10,14 +10,16 @@ import {
 } from '@phosphor-icons/vue'
 import { useMessage } from 'naive-ui'
 import { commands } from '../../bindings.ts'
-import type { Comic } from '../../bindings.ts'
+import type { Comic, DownloadFormat } from '../../bindings.ts'
 import { showError } from '../../errors.ts'
 import { splitAuthorNames } from '../../authorNames.ts'
 import { useI18n } from '../../i18n.ts'
 import { useStore } from '../../store.ts'
 import { getProgress, getReadChapters, progressLabel } from '../../reader/progress.ts'
 import { localCoverUrl } from '../../reader/protocol.ts'
+import { openReaderForComic } from '../../reader/localReader.ts'
 import FavoriteButton from '../../components/FavoriteButton.vue'
+import FormatChooseSheet from '../components/FormatChooseSheet.vue'
 import MobileCommentSheet from '../components/MobileCommentSheet.vue'
 import type { CommentTarget } from '../../comments/useComments.ts'
 import ListStatus from '../components/ListStatus.vue'
@@ -43,6 +45,9 @@ const chaptersRef = ref<HTMLElement>()
 /// 详情页的评论抽屉 / 导出格式选择层
 const commentsShowing = ref(false)
 const exportSheetShowing = ref(false)
+/// 下载格式面板：点「下载」先弹它，选完格式才开始下载
+const downloadSheetShowing = ref(false)
+const downloadFormat = ref<DownloadFormat>('Jpeg')
 const downloading = ref(false)
 const exporting = ref(false)
 const commentTarget = computed<CommentTarget | undefined>(() =>
@@ -104,6 +109,7 @@ async function load() {
   page.value = 1
   tagsExpanded.value = false
   exportSheetShowing.value = false
+  downloadSheetShowing.value = false
   // 刷新失败时保留已经加载的详情，只弹一条轻提示
   const hadData = comic.value !== undefined
   try {
@@ -131,20 +137,21 @@ async function load() {
 }
 
 /// 直接把起始章节交给阅读器；进度由阅读器自己写，不再先存进度再靠恢复
-function readChapter(index: number) {
+/// 和桌面详情页共用同一套本地优先判断：下载过 / 导出过 cbz 就先本地读
+async function readChapter(index: number) {
   const data = comic.value
   if (data === undefined) {
     return
   }
-  store.openReader({ comicId: data.id, chapterIndex: index })
+  await openReaderForComic(data, index)
 }
 
-/// 顶部阅读按钮：按后端「本地优先」逻辑打开，读到上次的位置
-function startReading() {
+/// 顶部阅读按钮：和本地库存卡片走同一个入口，读到上次的位置
+async function startReading() {
   if (comic.value === undefined) {
     return
   }
-  store.openReader({ comicId: comic.value.id })
+  await openReaderForComic(comic.value)
 }
 
 /// 收藏变更后重新取详情，标签 / 收藏状态跟着更新
@@ -175,14 +182,78 @@ async function copyComicId() {
   }
 }
 
-/// 下载：点了就直接建整本的下载任务，不再跳下载 / 导出页
-async function downloadNow() {
-  const data = comic.value
-  if (data === undefined || downloading.value) {
+/// 下载格式选项：Record<DownloadFormat, …> 保证 bindings 里有几种就列几种，增删格式会编译报错
+const DOWNLOAD_FORMATS: Record<DownloadFormat, { label: string; hintKey: string }> = {
+  Jpeg: { label: 'jpg', hintKey: 'mobile.downloadJpegHint' },
+  Png: { label: 'png', hintKey: 'mobile.downloadPngHint' },
+  Webp: { label: 'webp', hintKey: 'mobile.downloadWebpHint' },
+}
+/// 选项顺序就是枚举的书写顺序
+const DOWNLOAD_FORMAT_ORDER = Object.keys(DOWNLOAD_FORMATS) as DownloadFormat[]
+const downloadFormatOptions = computed(() =>
+  DOWNLOAD_FORMAT_ORDER.map((format) => ({
+    value: format,
+    label: DOWNLOAD_FORMATS[format].label,
+    hint: t(DOWNLOAD_FORMATS[format].hintKey),
+  })),
+)
+
+function isDownloadFormat(value: string | null): value is DownloadFormat {
+  return value !== null && DOWNLOAD_FORMAT_ORDER.some((format) => format === value)
+}
+
+/// 上次选的格式存 localStorage：只决定打开面板时默认选中哪一项，每次仍要用户确认
+const DOWNLOAD_FORMAT_KEY = 'mobile:downloadFormat'
+
+function rememberedDownloadFormat(): DownloadFormat {
+  try {
+    const saved = localStorage.getItem(DOWNLOAD_FORMAT_KEY)
+    if (isDownloadFormat(saved)) {
+      return saved
+    }
+  } catch {
+    // 忽略 localStorage 读取失败
+  }
+  return store.config?.downloadFormat ?? 'Jpeg'
+}
+
+function rememberDownloadFormat(format: DownloadFormat) {
+  try {
+    localStorage.setItem(DOWNLOAD_FORMAT_KEY, format)
+  } catch {
+    // 忽略 localStorage 写入失败
+  }
+}
+
+/// 下载：只负责弹格式面板，取消（遮罩 / 关闭）就什么都不做
+function openDownloadSheet() {
+  if (comic.value === undefined || downloading.value) {
     return
   }
+  downloadFormat.value = rememberedDownloadFormat()
+  downloadSheetShowing.value = true
+}
+
+/// 选定格式后才真正建任务：download_comic 不接受格式，后端只读 config.download_format，先写配置再下载
+async function downloadWithFormat(value: string) {
+  const data = comic.value
+  if (data === undefined || downloading.value || !isDownloadFormat(value)) {
+    return
+  }
+  const format = value
   downloading.value = true
+  downloadFormat.value = format
   try {
+    const config = store.config
+    if (config !== undefined) {
+      config.downloadFormat = format
+      const saved = await commands.saveConfig(config)
+      if (saved.status === 'error') {
+        showError(saved.error)
+        return
+      }
+    }
+    rememberDownloadFormat(format)
     const result = await retryResult(() => commands.downloadComic(data.id))
     if (result.status === 'error') {
       if (result.error.code === 'already-downloaded') {
@@ -192,7 +263,11 @@ async function downloadNow() {
       }
       return
     }
+    downloadSheetShowing.value = false
     message.success(t('mobile.downloadStarted'))
+  } catch (error) {
+    // 浏览器预览没有后端，保存配置 / 下载会直接抛错：记日志，面板保持打开
+    console.error(error)
   } finally {
     downloading.value = false
   }
@@ -323,7 +398,7 @@ async function changePage(next: number) {
           <ph-chat-circle-dots :size="22" />
           <span>{{ t('common.comments') }}</span>
         </button>
-        <button class="action" type="button" :disabled="downloading" @click="downloadNow">
+        <button class="action" type="button" :disabled="downloading" @click="openDownloadSheet">
           <ph-download-simple :size="22" />
           <span>{{ downloading ? t('mobile.downloadStarting') : t('common.download') }}</span>
         </button>
@@ -370,6 +445,15 @@ async function changePage(next: number) {
       v-if="commentTarget !== undefined"
       v-model:showing="commentsShowing"
       :target="commentTarget" />
+
+    <!-- 下载格式：每次点下载都先弹它，选完某一项才开始下载 -->
+    <format-choose-sheet
+      v-model:showing="downloadSheetShowing"
+      :title="t('mobile.downloadChooseTitle')"
+      :options="downloadFormatOptions"
+      :selected="downloadFormat"
+      :busy="downloading"
+      @confirm="downloadWithFormat" />
 
     <!-- 导出格式：选 PDF 还是 cbz，确认后直接开始 -->
     <teleport to="body">

@@ -1,7 +1,7 @@
 [package]
 name = "jmcomic-shelf"
 # 与 tauri.conf.json 的 version 保持一致，否则 exe 的文件属性会显示成旧版本
-version = "1.2.1"
+version = "1.2.2"
 description = "禁漫书架 (JMComic Shelf) - 禁漫天堂下载与本地书库客户端"
 authors = ["Slumber999"]
 edition = "2021"
@@ -76,3 +76,6 @@ reqwest = { version = "0.12.15", default-features = false, features = ["json", "
 
 [target.'cfg(target_os = "android")'.dependencies]
 reqwest = { version = "0.12.15", default-features = false, features = ["json", "cookies", "rustls-tls"] }
+# 导出 zip 到公共下载目录要用 JNI 调 Kotlin 助手（版本与 tauri 依赖的 jni 对齐，桌面端不编译这两个）
+jni = "0.21"
+ndk-context = "0.1"
