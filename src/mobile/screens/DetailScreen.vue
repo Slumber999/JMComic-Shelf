@@ -53,6 +53,15 @@ const exporting = ref(false)
 const commentTarget = computed<CommentTarget | undefined>(() =>
   comic.value === undefined ? undefined : { kind: 'comic', id: comic.value.id },
 )
+/// 评论抽屉的章节表：详情页有完整章节列表（带 chapterId），可直接切到任意一话
+const commentChapters = computed(() =>
+  (comic.value?.chapterInfos ?? []).map((info) => ({ title: info.chapterTitle, id: info.chapterId })),
+)
+/// 默认看读到的那一话；没有进度就是第 1 话
+const commentChapterIndex = computed(() => {
+  const current = comic.value
+  return current === undefined ? 0 : (getProgress(current.id)?.chapter ?? 0)
+})
 const favoriteComicId = computed(() => comic.value?.id ?? 0)
 const comicIsFavorite = computed(() => comic.value?.is_favorite ?? false)
 
@@ -444,7 +453,9 @@ async function changePage(next: number) {
     <MobileCommentSheet
       v-if="commentTarget !== undefined"
       v-model:showing="commentsShowing"
-      :target="commentTarget" />
+      :target="commentTarget"
+      :chapters="commentChapters"
+      :chapter-index="commentChapterIndex" />
 
     <!-- 下载格式：每次点下载都先弹它，选完某一项才开始下载 -->
     <format-choose-sheet

@@ -68,8 +68,8 @@ async function downloadCheckedChapters() {
       </n-radio-group>
       <n-button class="ml-auto" size="small" @click="props.reload">{{ t('common.refresh') }}</n-button>
       <n-button size="small" type="primary" @click="downloadCheckedChapters">
-          {{ t('chapterDownload.downloadChecked') }}
-        </n-button>
+        {{ t('chapterDownload.downloadChecked') }}
+      </n-button>
     </div>
 
     <SelectionArea ref="selectionAreaRef" :options="selectionOptions" @move="updateSelectedIds" @start="unselectAll" />

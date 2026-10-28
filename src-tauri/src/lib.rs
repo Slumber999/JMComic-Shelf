@@ -38,6 +38,7 @@ mod lines;
 mod reader_window;
 mod local_index;
 mod logger;
+mod measure;
 mod quick_reader;
 mod reader;
 mod responses;
@@ -45,14 +46,12 @@ mod storage;
 mod types;
 mod utils;
 
-/// 自定义协议的响应预算。
+/// 自定义协议的响应预算（只有 Android 用得到）。
 /// Android：wry 在 shouldInterceptRequest 里只等 10s（MAIN_PIPE_TIMEOUT），超时把
 /// `Err(Timeout)` unwrap 成 panic，release 的 panic=abort 直接退进程，所以自己先掐到 8s。
-/// 桌面：没有这个限制，留一个足够长的上限，正常慢请求行为不变。
-#[cfg(target_os = "android")]
+/// 桌面端不回在 UI 线程里等响应，改成工作线程算完自己 respond，所以不需要这个上限。
+#[cfg(mobile)]
 const PROTOCOL_RESPONSE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(8);
-#[cfg(not(target_os = "android"))]
-const PROTOCOL_RESPONSE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(300);
 
 fn generate_context() -> tauri::Context<Wry> {
     tauri::generate_context!()
@@ -77,7 +76,6 @@ fn restore_main_window_size(window: &tauri::WebviewWindow, width: u32, height: u
     ));
 }
 
-// TODO: 添加Panic Doc
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     // 最先装 panic hook：启动早期崩溃 / 阅读时的 native 崩溃都能留下记录
@@ -126,6 +124,7 @@ pub fn run() {
             get_comic_tags,
             get_weekly_info,
             get_weekly,
+            get_serialization,
             get_user_profile,
             get_sign_status,
             sign_in,
@@ -140,7 +139,7 @@ pub fn run() {
             update_downloaded_comics,
             update_exported_comics,
             show_path_in_file_manager,
-    show_config_dir_in_file_manager,
+            show_config_dir_in_file_manager,
             sync_favorite_folder,
             open_comic_reader,
             open_reader_by_id,
@@ -204,7 +203,7 @@ pub fn run() {
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_opener::init())
         // 阅读器用的自定义协议：comic://page/{token}/{index}
-        // 异步 + 独立线程处理，绝不阻塞主线程
+        // 封面（/cover、/local-cover）也走这里，见 covers.rs
         .register_asynchronous_uri_scheme_protocol("comic", |ctx, request, responder| {
             let app = ctx.app_handle().clone();
             let uri = request.uri().clone();
@@ -212,28 +211,69 @@ pub fn run() {
             let query = uri.query().map(str::to_string);
             let log_path = path.clone();
 
+            // 这个回调在 Windows 上跑在 WebView2 的 UI 线程（窗口线程）里：
+            // 只要在这里等网络/磁盘，整个窗口就不刷新、点击和 invoke 也排不上号——
+            // 「封面还没加载完就点阅读/详情会卡住、连点变未响应」就是这条路径。
+            // 所以桌面端把活交给工作线程，算完由它自己 respond（wry 内部会 PostMessage
+            // 回 UI 线程再 SetResponse，工作线程不会反过来等 UI 线程）。
+            #[cfg(desktop)]
+            {
+                let entered = measure::enter("protocol", &format!("path={log_path}"));
+                let worker_path = log_path.clone();
+                // responder 放在槽里：线程起不来（极端情况）时主线程还能回一个 504，
+                // 不能让这条请求永远挂着；线程起来后由工作线程取走并在算完时 respond。
+                let slot = std::sync::Arc::new(parking_lot::Mutex::new(Some(responder)));
+                let worker_slot = slot.clone();
+                let spawned = std::thread::Builder::new()
+                    .name("comic-proto".to_string())
+                    .spawn(move || {
+                        let response = covers::handle_cover_request(&app, &path, query.as_deref())
+                            .unwrap_or_else(|| reader::handle_request(&app, &path));
+                        measure::finish(
+                            "protocol-handle",
+                            entered,
+                            &format!("path={worker_path}"),
+                        );
+                        if let Some(responder) = worker_slot.lock().take() {
+                            responder.respond(response);
+                        }
+                    });
+                if let Err(err) = spawned {
+                    tracing::error!(message = %err, "comic:// 工作线程启动失败，先回 504");
+                    if let Some(responder) = slot.lock().take() {
+                        responder.respond(reader::timeout_response());
+                    }
+                }
+                // 到这里回调就返回了：UI 线程只花了这么点时间，封面/页图都在工作线程上跑
+                measure::finish("protocol-return", entered, &format!("path={log_path}"));
+            }
+
             // Android 上 wry 只等 10s，超时把 Err(Timeout) unwrap 成 panic，release 的
             // panic=abort 再把整个进程带走（设备上 16:32 的 SIGABRT 就是这条路径）。
             // 这里先按 PROTOCOL_RESPONSE_TIMEOUT 掐时间：超时回 504，取图/取封面继续在
-            // 后台跑并把结果写进缓存，前端重试一次就能命中；桌面这个上限很长，行为不变。
-            let (tx, rx) = std::sync::mpsc::channel();
-            std::thread::spawn(move || {
-                // 封面（/cover、/local-cover）先走 covers，其余都交给阅读器
-                let response = covers::handle_cover_request(&app, &path, query.as_deref())
-                    .unwrap_or_else(|| reader::handle_request(&app, &path));
-                // 主线程可能已经超时返回 504 并把 rx 丢掉，send 失败就算了
-                let _ = tx.send(response);
-            });
+            // 后台跑并把结果写进缓存，前端重试一次就能命中；这块只在 Android 上生效，
+            // 桌面端绝不在这条回调里等。
+            #[cfg(mobile)]
+            {
+                let (tx, rx) = std::sync::mpsc::channel();
+                std::thread::spawn(move || {
+                    // 封面（/cover、/local-cover）先走 covers，其余都交给阅读器
+                    let response = covers::handle_cover_request(&app, &path, query.as_deref())
+                        .unwrap_or_else(|| reader::handle_request(&app, &path));
+                    // 主线程可能已经超时返回 504 并把 rx 丢掉，send 失败就算了
+                    let _ = tx.send(response);
+                });
 
-            match rx.recv_timeout(PROTOCOL_RESPONSE_TIMEOUT) {
-                Ok(response) => responder.respond(response),
-                Err(_) => {
-                    tracing::warn!(
-                        path = %log_path,
-                        budget = ?PROTOCOL_RESPONSE_TIMEOUT,
-                        "comic:// 响应超时，先回 504（后台继续取，稍后重试即可命中缓存）"
-                    );
-                    responder.respond(reader::timeout_response());
+                match rx.recv_timeout(PROTOCOL_RESPONSE_TIMEOUT) {
+                    Ok(response) => responder.respond(response),
+                    Err(_) => {
+                        tracing::warn!(
+                            path = %log_path,
+                            budget = ?PROTOCOL_RESPONSE_TIMEOUT,
+                            "comic:// 响应超时，先回 504（后台继续取，稍后重试即可命中缓存）"
+                        );
+                        responder.respond(reader::timeout_response());
+                    }
                 }
             }
         })

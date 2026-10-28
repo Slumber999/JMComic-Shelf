@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed, h, onBeforeUnmount, onMounted, ref, watch } from 'vue'
-import { PhMagnifyingGlass, PhTag } from '@phosphor-icons/vue'
-import { NSelect, useDialog, useMessage } from 'naive-ui'
+import { PhFolderSimple, PhMagnifyingGlass, PhTag } from '@phosphor-icons/vue'
+import { NInput, NSelect, useDialog, useMessage } from 'naive-ui'
 import { commands } from '../../bindings.ts'
 import type {
   Comic,
@@ -18,6 +18,7 @@ import { coverThumbUrl } from '../../reader/protocol.ts'
 import { tagExpandLabel, useTagCloudPaging } from '../../tagCloudPaging.ts'
 import ComicGrid from '../components/ComicGrid.vue'
 import ComicGridCard from '../components/ComicGridCard.vue'
+import FavoriteGroupCard from '../components/FavoriteGroupCard.vue'
 import FormatChooseSheet from '../components/FormatChooseSheet.vue'
 import ListStatus from '../components/ListStatus.vue'
 import MobilePager from '../components/MobilePager.vue'
@@ -32,6 +33,8 @@ import { useScreenScroll } from '../useScrollHost.ts'
 import { retryResult } from '../netRetry.ts'
 import { registerSelection } from '../selectionMode.ts'
 import { useSelection } from '../useSelection.ts'
+import { useFavoriteGroups } from '../useFavoriteGroups.ts'
+import { useOverlayLayer } from '../useNavStack.ts'
 import type { DetailTarget, MobileScreen } from '../useNavStack.ts'
 
 /// 收藏夹服务端每页约 20 条（与桌面一致：一次并取两页 = 40 条）
@@ -93,8 +96,56 @@ const batchTotal = ref(0)
 const checkingPdfSkips = ref(false)
 const selectAllBusy = ref(false)
 const allFavoriteIds = ref<number[]>()
-const { selecting, selectedIds, selectedCount, isSelected, enter, toggle, setAll, invert, exit } =
+const { selecting, selectedIds, selectedCount, isSelected, enter, toggle, setAll, exit } =
   useSelection()
+
+/// 收藏分组：完全本地（localStorage），只引用 comicId，不参与收藏夹的内容与顺序
+const {
+  groups,
+  findFavoriteGroup,
+  createFavoriteGroup,
+  renameFavoriteGroup,
+  deleteFavoriteGroup,
+  addComicsToGroup,
+  removeComicsFromGroup,
+  setGroupMeta,
+} = useFavoriteGroups()
+const groupViewOpen = ref(false)
+const activeGroupId = ref('')
+const activeGroup = computed(() =>
+  activeGroupId.value === '' ? undefined : findFavoriteGroup(activeGroupId.value),
+)
+/// 分组视图的漫画：按 comicIds 顺序取收藏夹里的详情，已经不在收藏夹的跳过
+/// 组内漫画直接用建组/加入时记下的标题、作者快照渲染，不请求服务端
+const groupComics = computed(() => {
+  const group = activeGroup.value
+  if (group === undefined) {
+    return []
+  }
+  return group.comicIds.map((comicId) => {
+    const meta = group.meta[String(comicId)]
+    return {
+      id: comicId,
+      name: meta?.name ?? `JM${comicId}`,
+      author: meta?.author ?? '',
+    }
+  })
+})
+/// 分组抽屉只在「全部」收藏夹显示；展开状态只在本会话里，每次进来默认收起
+const showGroupDrawer = computed(() => folderId.value === 0)
+const groupsExpanded = ref(false)
+
+// 分组视图压在收藏夹这一屏里：返回键先收起分组，再走原来的屏幕返回
+useOverlayLayer(groupViewOpen)
+
+watch(groupViewOpen, (open) => {
+  if (open) {
+    return
+  }
+  // 退出分组视图：清掉选中与当前分组
+  activeGroupId.value = ''
+  exit()
+})
 
 // 选择模式下按返回键只退出选择模式（外壳按当前屏来问，别的屏不会顶掉这块登记）
 onMounted(() => registerSelection('favorite', { active: () => selecting.value, exit }))
@@ -442,8 +493,14 @@ function clearSearch() {
 }
 
 async function loadFavoritesIndex() {
-  tagIndex.value = await commands.getFavoritesIndex(folderId.value)
-  if (tagIndex.value === null) {
+  const targetFolder = folderId.value
+  const index = await commands.getFavoritesIndex(targetFolder)
+  // 读的时候换了收藏夹：这份结果属于上一个目录，丢掉
+  if (folderId.value !== targetFolder) {
+    return
+  }
+  tagIndex.value = index
+  if (index === null) {
     favoriteTags.value = []
     comicTags.value = new Map()
     tagTotal.value = 0
@@ -453,7 +510,11 @@ async function loadFavoritesIndex() {
 
 /// 读标签快照：纯本地读缓存文件，不发请求
 async function loadFavoriteTags() {
-  const snapshot = await commands.getFavoritesTags(folderId.value)
+  const targetFolder = folderId.value
+  const snapshot = await commands.getFavoritesTags(targetFolder)
+  if (folderId.value !== targetFolder) {
+    return
+  }
   favoriteTags.value = snapshot.tags
   comicTags.value = new Map(snapshot.comics.map((comic) => [comic.id, comic.tags]))
   tagTotal.value = snapshot.total
@@ -735,8 +796,246 @@ function onCardLongPress(comic: { id: number }) {
   enter(comic.id)
 }
 
-/// 全选/反选的范围：标签筛选时是命中集，否则是整个收藏夹（和桌面「全选」一致）
+/// 打开分组：取一次收藏夹全量数据，只显示组内的那几本；列表本身的顺序不动
+async function openGroup(groupId: string) {
+  // 多选 / 批量操作进行中不切视图，避免把选中项丢掉
+  if (busy.value || selecting.value) {
+    return
+  }
+  exit()
+  activeGroupId.value = groupId
+  groupViewOpen.value = true
+  void backfillGroupMeta(groupId)
+  scrollToTop()
+}
+
+/// 老分组（或建组时不在当前页的漫画）没有标题/作者快照：用本地收藏索引补上并落盘，
+/// 索引是本地文件，不联网。补不到的先用「JM号」占位。
+async function backfillGroupMeta(groupId: string) {
+  const group = findFavoriteGroup(groupId)
+  if (group === undefined || store.userProfile === undefined) {
+    return
+  }
+  const missing = group.comicIds.filter((id) => group.meta[String(id)] === undefined)
+  if (missing.length === 0) {
+    return
+  }
+  const index = await commands.getFavoritesIndex(0)
+  if (index === null || index.comics === undefined) {
+    return
+  }
+  const byId = new Map(index.comics.map((comic) => [comic.id, comic]))
+  const patch: Record<string, { name: string; author: string }> = {}
+  for (const comicId of missing) {
+    const hit = byId.get(comicId)
+    if (hit !== undefined) {
+      patch[String(comicId)] = { name: hit.name, author: hit.author }
+    }
+  }
+  if (Object.keys(patch).length === 0) {
+    return
+  }
+  setGroupMeta(groupId, patch)
+}
+
+function toggleGroupsDrawer() {
+  groupsExpanded.value = !groupsExpanded.value
+}
+
+/// 建组 / 加入时把标题和作者一起存下来，分组视图就不用再拉整个收藏夹
+function groupMetaFor(comicIds: number[]): Record<string, { name: string; author: string }> {
+  const meta: Record<string, { name: string; author: string }> = {}
+  const byId = new Map<number, { name: string; author: string }>()
+  for (const comic of comics.value) {
+    byId.set(comic.id, { name: comic.name, author: comic.author })
+  }
+  for (const comic of tagIndexComics.value) {
+    if (!byId.has(comic.id)) {
+      byId.set(comic.id, { name: comic.name, author: comic.author })
+    }
+  }
+  for (const comicId of comicIds) {
+    const hit = byId.get(comicId)
+    if (hit !== undefined) {
+      meta[String(comicId)] = hit
+    }
+  }
+  return meta
+}
+
+function closeGroupView() {
+  if (!groupViewOpen.value) {
+    return
+  }
+  groupViewOpen.value = false
+  scrollToTop()
+}
+
+/// 创建 / 重命名共用一个输入弹窗：默认值预填，确认时去掉首尾空格
+function promptGroupName(
+  title: string,
+  initial: string,
+  confirmText: string,
+  onConfirm: (name: string) => void,
+) {
+  let name = initial
+  dialog.warning({
+    title,
+    content: () =>
+      h(NInput, {
+        defaultValue: initial,
+        maxlength: 24,
+        placeholder: t('favorite.groups.namePlaceholder'),
+        'onUpdate:value': (value: string) => {
+          name = value
+        },
+      }),
+    positiveText: confirmText,
+    negativeText: t('common.cancel'),
+    onPositiveClick: () => {
+      const trimmed = name.trim()
+      if (trimmed === '') {
+        message.warning(t('favorite.groups.nameEmpty'))
+        return false
+      }
+      onConfirm(trimmed)
+      return true
+    },
+  })
+}
+
+/// 把当前选中的漫画收进新分组：只写本地，收藏夹内容与顺序都不变
+function createGroupFromSelection() {
+  if (selectedCount.value === 0 || busy.value) {
+    return
+  }
+  const comicIds = orderByListOrder([...selectedIds.value])
+  const defaultName = t('favorite.groups.defaultName', { n: groups.value.length + 1 })
+  promptGroupName(
+    t('favorite.groups.createTitle'),
+    defaultName,
+    t('favorite.groups.create'),
+    (name) => {
+      createFavoriteGroup(name, comicIds, groupMetaFor(comicIds))
+      // 建完顺手展开抽屉，能立刻看到新分组的四宫格
+      groupsExpanded.value = true
+      message.success(t('favorite.groups.createSuccess', { name, count: comicIds.length }))
+      exit()
+    },
+  )
+}
+
+/// 没有分组时「添加到分组」只提示一句，不弹空列表
+function showNoGroupHint() {
+  message.info(t('favorite.groups.noGroupsHint'))
+}
+
+/// 添加到已有分组：弹分组列表，点哪个就追加进哪个，重复的跳过并报本数
+function openAddToGroup() {
+  if (selectedCount.value === 0 || busy.value) {
+    return
+  }
+  if (groups.value.length === 0) {
+    showNoGroupHint()
+    return
+  }
+  const comicIds = orderByListOrder([...selectedIds.value])
+  const picker = dialog.warning({
+    title: t('favorite.groups.addTitle'),
+    content: () =>
+      h(
+        'div',
+        { style: 'display:flex;flex-direction:column;gap:6px' },
+        groups.value.map((group) =>
+          h(
+            'button',
+            {
+              type: 'button',
+              style:
+                'padding:8px 10px;border:1px solid #eee;border-radius:10px;background:#fafafa;color:#333;font-size:13px;text-align:left',
+              onClick: () => {
+                const result = addComicsToGroup(group.id, comicIds, groupMetaFor(comicIds))
+                picker.destroy()
+                exit()
+                if (result.added === 0) {
+                  message.info(
+                    t('favorite.groups.addSkippedAll', {
+                      name: group.name,
+                      skipped: result.skipped,
+                    }),
+                  )
+                  return
+                }
+                if (result.skipped > 0) {
+                  message.success(
+                    t('favorite.groups.addPartial', {
+                      name: group.name,
+                      added: result.added,
+                      skipped: result.skipped,
+                    }),
+                  )
+                  return
+                }
+                message.success(
+                  t('favorite.groups.addDone', { name: group.name, count: result.added }),
+                )
+              },
+            },
+            `${group.name}（${t('favorite.groups.count', { count: group.comicIds.length })}）`,
+          ),
+        ),
+      ),
+    positiveText: t('common.cancel'),
+  })
+}
+
+function renameActiveGroup() {
+  const group = activeGroup.value
+  if (group === undefined) {
+    return
+  }
+  promptGroupName(t('favorite.groups.renameTitle'), group.name, t('favorite.groups.save'), (name) => {
+    renameFavoriteGroup(group.id, name)
+    message.success(t('favorite.groups.renamed', { name }))
+  })
+}
+
+/// 删除分组只删本地记录：收藏夹里的漫画、顺序、分页都不受影响
+function deleteActiveGroup() {
+  const group = activeGroup.value
+  if (group === undefined) {
+    return
+  }
+  dialog.warning({
+    title: t('favorite.groups.deleteTitle'),
+    content: t('favorite.groups.deleteConfirm', { name: group.name }),
+    positiveText: t('favorite.groups.delete'),
+    negativeText: t('common.cancel'),
+    onPositiveClick: () => {
+      deleteFavoriteGroup(group.id)
+      groupViewOpen.value = false
+      message.success(t('favorite.groups.deleted', { name: group.name }))
+    },
+  })
+}
+
+/// 移除选中：只把 comicId 从分组里去掉，漫画仍在收藏夹里
+function removeSelectedFromGroup() {
+  const group = activeGroup.value
+  if (group === undefined || selectedCount.value === 0 || busy.value) {
+    return
+  }
+  const count = selectedIds.value.size
+  removeComicsFromGroup(group.id, [...selectedIds.value])
+  exit()
+  message.success(t('favorite.groups.removeDone', { count }))
+}
+
+/// 全选/反选的范围：分组视图是组内，标签筛选时是命中集，否则是整个收藏夹（和桌面「全选」一致）
 async function loadSelectionScope(): Promise<number[] | undefined> {
+  if (groupViewOpen.value) {
+    return groupComics.value.map((comic) => comic.id)
+  }
   if (filterActive.value) {
     return filteredIndexComics.value.map((comic) => comic.id)
   }
@@ -768,19 +1067,15 @@ async function selectAll() {
   }
 }
 
-async function invertSelection() {
-  const ids = await loadSelectionScope()
-  if (ids !== undefined) {
-    invert(ids)
-  }
-}
-
 /// 批量操作按用户看到的顺序逐本处理：先按当前列表（筛选时是命中集）的展示顺序，
 /// 不在当前列表里的选中项（跨页等）接在后面，仍保持各自的选中顺序。
 function orderByListOrder(ids: number[]): number[] {
-  const shown = (filterActive.value ? filteredIndexComics.value : displayedComics.value).map(
-    (comic) => comic.id,
-  )
+  const list = groupViewOpen.value
+    ? groupComics.value
+    : filterActive.value
+      ? filteredIndexComics.value
+      : displayedComics.value
+  const shown = list.map((comic) => comic.id)
   const position = new Map(shown.map((id, index) => [id, index]))
   const inList = ids
     .filter((id) => position.has(id))
@@ -811,20 +1106,9 @@ async function downloadWithFormat(value: string) {
   let alreadyDownloaded = 0
   let failed = 0
   try {
-    try {
-      const config = store.config
-      if (config !== undefined) {
-        config.downloadFormat = format
-        const saved = await commands.saveConfig(config)
-        if (saved.status === 'error') {
-          showError(saved.error)
-          return
-        }
-      }
-    } catch (error) {
-      // 浏览器预览没有后端：记日志，面板保持打开
-      console.error(error)
-      return
+    // 只改内存：MobileShell 的防抖保存会把这处改动一起写盘，失败也有统一提示
+    if (store.config !== undefined) {
+      store.config.downloadFormat = format
     }
     rememberDownloadFormat(format)
     downloadSheetShowing.value = false
@@ -1105,6 +1389,11 @@ async function runUnfavorite(comicIds: number[]) {
 
 /// 下拉刷新：回到第一页并丢掉旧的位置记忆；索引和标签都建过时顺手增量更新
 async function refresh() {
+  // 分组视图的数据是本地的，下拉刷新直接回顶即可
+  if (groupViewOpen.value) {
+    scrollToTop()
+    return
+  }
   clearListMemory(MEMORY_KEY)
   clearListCache(MEMORY_KEY)
   exit()
@@ -1147,10 +1436,8 @@ const savedState = (() => {
 
 if (typeof savedState?.folderId === 'number') {
   folderId.value = savedState.folderId
-  if (savedState.folderId === folderId.value) {
-    keyword.value = savedState.search ?? ''
-    activeKeyword.value = savedState.search ?? ''
-  }
+  keyword.value = savedState.search ?? ''
+  activeKeyword.value = savedState.search ?? ''
 }
 
 watch(
@@ -1174,6 +1461,7 @@ watch(
       activeKeyword.value = ''
       folderCounts.value = new Map()
       allFavoriteIds.value = undefined
+      groupViewOpen.value = false
       tagCheckConfirmed.clear()
       indexPromptDismissed.clear()
       tagFetchCancelled.value = true
@@ -1266,8 +1554,15 @@ onBeforeUnmount(() => {
       <button type="button" :disabled="busy" @click="selectAll">
         {{ t('mobile.selectAll') }}
       </button>
-      <button type="button" :disabled="busy" @click="invertSelection">
-        {{ t('mobile.invertSelection') }}
+      <button v-if="!groupViewOpen" type="button" :disabled="busy" @click="createGroupFromSelection">
+        {{ t('favorite.groups.create') }}
+      </button>
+      <!-- 没有分组时按钮禁用，外层接住点击给出提示（disabled 按钮自己不收点击） -->
+      <span v-if="!groupViewOpen && groups.length === 0" class="add-hint" @click="showNoGroupHint">
+        <button type="button" disabled>{{ t('favorite.groups.addTo') }}</button>
+      </span>
+      <button v-else-if="!groupViewOpen" type="button" :disabled="busy" @click="openAddToGroup">
+        {{ t('favorite.groups.addTo') }}
       </button>
       <button class="primary" type="button" :disabled="busy" @click="openDownloadSheet">
         {{ t('favorite.download') }}
@@ -1275,7 +1570,10 @@ onBeforeUnmount(() => {
       <button class="primary" type="button" :disabled="busy" @click="openExportSheet">
         {{ t('comic.export') }}
       </button>
-      <button class="danger" type="button" :disabled="busy" @click="unfavoriteSelected">
+      <button v-if="groupViewOpen" class="danger" type="button" :disabled="busy" @click="removeSelectedFromGroup">
+        {{ t('favorite.groups.removeSelected') }}
+      </button>
+      <button v-if="!groupViewOpen" class="danger" type="button" :disabled="busy" @click="unfavoriteSelected">
         {{ t('favorite.unfavorite') }}
       </button>
     </selection-bar>
@@ -1286,140 +1584,36 @@ onBeforeUnmount(() => {
     </div>
 
     <template v-else>
-      <div class="browser-row">
-        <n-select
-          class="folder-select"
-          size="medium"
-          :value="folderId"
-          :options="folderOptions"
-          :loading="folderCountsLoading"
-          :consistent-menu-width="false"
-          @update:value="selectFolder"
-          @update:show="onFolderDropdownShow"
-          @focus="onFolderDropdownShow(true)" />
-        <div class="search-box">
-          <ph-magnifying-glass :size="16" class="search-icon" />
-          <input
-            v-model="keyword"
-            class="search-input"
-            type="search"
-            enterkeyhint="search"
-            :placeholder="indexBuilding ? t('favorite.index.building') : t('favorite.index.searchPlaceholder')"
-            @focus="onSearchFocus"
-            @keyup.enter="applySearch" />
-          <button
-            v-if="keyword !== '' || activeKeyword !== ''"
-            class="search-clear"
-            type="button"
-            :aria-label="t('common.cancel')"
-            @click="clearSearch">
-            ×
-          </button>
+      <!-- 分组视图：只显示组内漫画，下载 / 导出 / 长按多选都沿用收藏夹那套 -->
+      <template v-if="groupViewOpen">
+        <div class="group-head">
+          <div class="group-head-row">
+            <button class="group-back" type="button" @click="closeGroupView">
+              ← {{ t('favorite.groups.back') }}
+            </button>
+            <span class="group-name" :title="activeGroup?.name">{{ activeGroup?.name }}</span>
+            <span class="group-total">
+              {{ t('favorite.groups.count', { count: activeGroup?.comicIds.length ?? 0 }) }}
+            </span>
+          </div>
+          <div class="group-manage">
+            <button type="button" @click="renameActiveGroup">
+              {{ t('favorite.groups.rename') }}
+            </button>
+            <button class="danger" type="button" @click="deleteActiveGroup">
+              {{ t('favorite.groups.delete') }}
+            </button>
+          </div>
         </div>
-      </div>
 
-      <div v-if="filterActive && tagIndex === null" class="index-hint">
-        <span>{{ t('favorite.index.noIndexHint') }}</span>
-        <button type="button" :disabled="indexBuilding" @click="promptBuildIndex(true)">
-          {{ indexBuilding ? t('favorite.index.building') : t('favorite.tags.buildIndex') }}
-        </button>
-      </div>
+        <!-- 分组内容全在本地（分组 + 快照），没有网络请求，所以只有空态一种占位 -->
+        <p v-if="groupComics.length === 0" class="group-view-empty">
+          {{ t('favorite.groups.empty') }}
+        </p>
 
-      <!-- 标签抽屉：默认收起，展开后才读索引与缓存；建立索引有确认和进度 -->
-      <div class="tag-drawer">
-        <button class="tag-toggle" type="button" :aria-expanded="tagsExpanded" @click="toggleTagsDrawer">
-          <ph-tag :size="14" />
-          <span>
-            {{
-              selectedTags.length > 0
-                ? t('mobile.tagsSelected', { count: selectedTags.length })
-                : t('mobile.tagFilter')
-            }}
-          </span>
-          <span class="drawer-action">
-            {{ tagsExpanded ? t('common.collapse') : t('common.expand') }}
-          </span>
-        </button>
-
-        <div v-if="tagsExpanded" class="tag-panel">
-          <template v-if="tagIndex === null">
-            <div class="tag-no-index">
-              <span>{{ t('favorite.tags.noIndex') }}</span>
-              <button type="button" :disabled="indexBuilding" @click="promptBuildIndex(true)">
-                {{ indexBuilding ? t('favorite.index.building') : t('favorite.tags.buildIndex') }}
-              </button>
-            </div>
-          </template>
-
-          <template v-else>
-            <tag-chips
-              v-if="favoriteTags.length > 0"
-              :tags="visibleFavoriteTags"
-              :selected="selectedTags"
-              @toggle="toggleTag" />
-            <p v-else class="tag-empty">{{ t('mobile.tagsEmptyHint') }}</p>
-            <div v-if="hasMoreFavoriteTags || canCollapseFavoriteTags" class="tag-more">
-              <button v-if="hasMoreFavoriteTags" type="button" @click="loadMoreFavoriteTags">
-                {{ tagExpandLabel(t, remainingFavoriteTags) }}
-              </button>
-              <button v-if="canCollapseFavoriteTags" type="button" @click="collapseFavoriteTags">
-                {{ t('common.collapse') }}
-              </button>
-            </div>
-
-            <div class="tag-status">
-              <template v-if="tagFetching">
-                <span class="fetching">
-                  <span class="mini-spinner" />
-                  {{
-                    tagFilterActive
-                      ? tagProgressText
-                      : t('favorite.tags.fetching', { done: tagCached, total: tagTotal })
-                  }}
-                </span>
-                <button type="button" @click="cancelTagFetch">
-                  {{ t('favorite.tags.cancelFetch') }}
-                </button>
-              </template>
-              <template v-else>
-                <span>{{ tagProgressText }}</span>
-                <button
-                  v-if="tagUnknownCount > 0"
-                  type="button"
-                  :disabled="indexBuilding"
-                  @click="requestTagFetch">
-                  {{
-                    tagFilterActive
-                      ? t('favorite.tags.checkMore')
-                      : t('favorite.tags.fetchButton', { count: tagUnknownCount })
-                  }}
-                </button>
-                <span v-if="tagCheckFailed > 0" class="tag-failed">
-                  {{ t('favorite.tags.fetchFailed', { count: tagCheckFailed }) }}
-                </span>
-              </template>
-              <button v-if="selectedTags.length > 0" type="button" @click="clearTagFilter">
-                {{ t('favorite.tags.clear') }}
-              </button>
-            </div>
-          </template>
-        </div>
-      </div>
-
-      <list-status
-        v-if="loading || failed || displayedComics.length === 0"
-        :loading="loading"
-        :failed="failed"
-        :empty="!loading && !failed"
-        :loading-text="t('favorite.loadingFolder')"
-        :failed-text="t('mobile.loadFailedApi', { api: t('tab.favorite') })"
-        :empty-text="emptyText"
-        @retry="retryLoad" />
-
-      <template v-else>
-        <comic-grid>
+        <comic-grid v-else>
           <comic-grid-card
-            v-for="(comic, index) in displayedComics"
+            v-for="(comic, index) in groupComics"
             :key="comic.id"
             :image="coverThumbUrl(comic.id)"
             :eager="index < 6"
@@ -1430,7 +1624,183 @@ onBeforeUnmount(() => {
             @select="onCardSelect(comic)"
             @longpress="onCardLongPress(comic)" />
         </comic-grid>
-        <mobile-pager :page="page" :page-count="pageCount" @update:page="changePage" />
+      </template>
+
+      <template v-else>
+        <div class="browser-row">
+          <n-select
+            class="folder-select"
+            size="medium"
+            :value="folderId"
+            :options="folderOptions"
+            :loading="folderCountsLoading"
+            :consistent-menu-width="false"
+            @update:value="selectFolder"
+            @update:show="onFolderDropdownShow"
+            @focus="onFolderDropdownShow(true)" />
+          <div class="search-box">
+            <ph-magnifying-glass :size="16" class="search-icon" />
+            <input
+              v-model="keyword"
+              class="search-input"
+              type="search"
+              enterkeyhint="search"
+              :placeholder="indexBuilding ? t('favorite.index.building') : t('favorite.index.searchPlaceholder')"
+              @focus="onSearchFocus"
+              @keyup.enter="applySearch" />
+            <button
+              v-if="keyword !== '' || activeKeyword !== ''"
+              class="search-clear"
+              type="button"
+              :aria-label="t('common.cancel')"
+              @click="clearSearch">
+              ×
+            </button>
+          </div>
+        </div>
+
+        <div v-if="filterActive && tagIndex === null" class="index-hint">
+          <span>{{ t('favorite.index.noIndexHint') }}</span>
+          <button type="button" :disabled="indexBuilding" @click="promptBuildIndex(true)">
+            {{ indexBuilding ? t('favorite.index.building') : t('favorite.tags.buildIndex') }}
+          </button>
+        </div>
+
+        <!-- 分组抽屉：默认收起，展开才占列表空间；只在「全部」收藏夹出现 -->
+        <div v-if="showGroupDrawer" class="group-drawer">
+          <button
+            class="group-toggle"
+            type="button"
+            :aria-expanded="groupsExpanded"
+            @click="toggleGroupsDrawer">
+            <ph-folder-simple :size="14" />
+            <span>{{ t('favorite.groups.toggle', { count: groups.length }) }}</span>
+            <span class="drawer-action">
+              {{ groupsExpanded ? t('common.collapse') : t('common.expand') }}
+            </span>
+          </button>
+
+          <div v-if="groupsExpanded" class="group-panel">
+            <div v-if="groups.length > 0" class="group-grid">
+              <favorite-group-card
+                v-for="group in groups"
+                :key="group.id"
+                :name="group.name"
+                :count="group.comicIds.length"
+                :comic-ids="group.comicIds.slice(0, 4)"
+                @open="openGroup(group.id)" />
+            </div>
+            <p v-else class="group-empty">{{ t('favorite.groups.emptyHint') }}</p>
+          </div>
+        </div>
+
+        <!-- 标签抽屉：默认收起，展开后才读索引与缓存；建立索引有确认和进度 -->
+        <div class="tag-drawer">
+          <button class="tag-toggle" type="button" :aria-expanded="tagsExpanded" @click="toggleTagsDrawer">
+            <ph-tag :size="14" />
+            <span>
+              {{
+                selectedTags.length > 0
+                  ? t('mobile.tagsSelected', { count: selectedTags.length })
+                  : t('mobile.tagFilter')
+              }}
+            </span>
+            <span class="drawer-action">
+              {{ tagsExpanded ? t('common.collapse') : t('common.expand') }}
+            </span>
+          </button>
+
+          <div v-if="tagsExpanded" class="tag-panel">
+            <template v-if="tagIndex === null">
+              <div class="tag-no-index">
+                <span>{{ t('favorite.tags.noIndex') }}</span>
+                <button type="button" :disabled="indexBuilding" @click="promptBuildIndex(true)">
+                  {{ indexBuilding ? t('favorite.index.building') : t('favorite.tags.buildIndex') }}
+                </button>
+              </div>
+            </template>
+
+            <template v-else>
+              <tag-chips
+                v-if="favoriteTags.length > 0"
+                :tags="visibleFavoriteTags"
+                :selected="selectedTags"
+                @toggle="toggleTag" />
+              <p v-else class="tag-empty">{{ t('mobile.tagsEmptyHint') }}</p>
+              <div v-if="hasMoreFavoriteTags || canCollapseFavoriteTags" class="tag-more">
+                <button v-if="hasMoreFavoriteTags" type="button" @click="loadMoreFavoriteTags">
+                  {{ tagExpandLabel(t, remainingFavoriteTags) }}
+                </button>
+                <button v-if="canCollapseFavoriteTags" type="button" @click="collapseFavoriteTags">
+                  {{ t('common.collapse') }}
+                </button>
+              </div>
+
+              <div class="tag-status">
+                <template v-if="tagFetching">
+                  <span class="fetching">
+                    <span class="mini-spinner" />
+                    {{
+                      tagFilterActive
+                        ? tagProgressText
+                        : t('favorite.tags.fetching', { done: tagCached, total: tagTotal })
+                    }}
+                  </span>
+                  <button type="button" @click="cancelTagFetch">
+                    {{ t('favorite.tags.cancelFetch') }}
+                  </button>
+                </template>
+                <template v-else>
+                  <span>{{ tagProgressText }}</span>
+                  <button
+                    v-if="tagUnknownCount > 0"
+                    type="button"
+                    :disabled="indexBuilding"
+                    @click="requestTagFetch">
+                    {{
+                      tagFilterActive
+                        ? t('favorite.tags.checkMore')
+                        : t('favorite.tags.fetchButton', { count: tagUnknownCount })
+                    }}
+                  </button>
+                  <span v-if="tagCheckFailed > 0" class="tag-failed">
+                    {{ t('favorite.tags.fetchFailed', { count: tagCheckFailed }) }}
+                  </span>
+                </template>
+                <button v-if="selectedTags.length > 0" type="button" @click="clearTagFilter">
+                  {{ t('favorite.tags.clear') }}
+                </button>
+              </div>
+            </template>
+          </div>
+        </div>
+
+        <list-status
+          v-if="loading || failed || displayedComics.length === 0"
+          :loading="loading"
+          :failed="failed"
+          :empty="!loading && !failed"
+          :loading-text="t('favorite.loadingFolder')"
+          :failed-text="t('mobile.loadFailedApi', { api: t('tab.favorite') })"
+          :empty-text="emptyText"
+          @retry="retryLoad" />
+
+        <template v-else>
+          <comic-grid>
+            <comic-grid-card
+              v-for="(comic, index) in displayedComics"
+              :key="comic.id"
+              :image="coverThumbUrl(comic.id)"
+              :eager="index < 6"
+              :title="comic.name"
+              :author="comic.author"
+              :selected="isSelected(comic.id)"
+              :selectable="selecting"
+              @select="onCardSelect(comic)"
+              @longpress="onCardLongPress(comic)" />
+          </comic-grid>
+          <mobile-pager :page="page" :page-count="pageCount" @update:page="changePage" />
+        </template>
       </template>
     </template>
 
@@ -1676,5 +2046,127 @@ onBeforeUnmount(() => {
   background: #fff7f0;
   color: #d96200;
   font-size: 11px;
+}
+
+/* 分组抽屉：与标签抽屉同一套观感，默认收起 */
+.group-drawer {
+  border-radius: 12px;
+  background: #fff;
+}
+
+.group-toggle {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  width: 100%;
+  padding: 9px 12px;
+  border: none;
+  border-radius: 12px;
+  background: none;
+  color: #555;
+  font-size: 13px;
+  text-align: left;
+}
+
+.group-panel {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 0 12px 12px;
+}
+
+.group-empty {
+  margin: 0;
+  color: #999;
+  font-size: 12px;
+}
+
+/* 分组视图的空态：居中一行，和列表页的占位观感一致 */
+.group-view-empty {
+  margin: 0;
+  padding: 64px 24px;
+  color: #888;
+  font-size: 13px;
+  text-align: center;
+}
+
+/* 「添加到分组」没有分组时：禁用按钮不收点击，由外层给出提示 */
+.add-hint {
+  display: inline-flex;
+  flex: 0 0 auto;
+}
+
+.add-hint > button {
+  pointer-events: none;
+}
+
+.group-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px;
+}
+
+/* 分组视图头部：返回全部、组名、本数和管理按钮 */
+.group-head {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 8px 10px;
+  border-radius: 12px;
+  background: #fff;
+}
+
+.group-head-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+
+.group-back {
+  flex: 0 0 auto;
+  padding: 5px 10px;
+  border: 1px solid #ffd0a6;
+  border-radius: 999px;
+  background: #fff7f0;
+  color: #d96200;
+  font-size: 12px;
+  white-space: nowrap;
+}
+
+.group-name {
+  overflow: hidden;
+  font-size: 14px;
+  font-weight: 600;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+.group-total {
+  flex: 0 0 auto;
+  margin-left: auto;
+  color: #999;
+  font-size: 11px;
+  white-space: nowrap;
+}
+
+.group-manage {
+  display: flex;
+  gap: 6px;
+}
+
+.group-manage button {
+  padding: 4px 10px;
+  border: 1px solid #e6e6e6;
+  border-radius: 999px;
+  background: #fafafa;
+  color: #555;
+  font-size: 11px;
+}
+
+.group-manage button.danger {
+  border-color: #ffd3cc;
+  background: #ffece8;
+  color: #d03030;
 }
 </style>

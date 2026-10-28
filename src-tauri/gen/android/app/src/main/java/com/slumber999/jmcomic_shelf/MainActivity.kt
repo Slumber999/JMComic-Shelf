@@ -1,6 +1,6 @@
-// 由 jm-tools/android-patch-android.ps1 注入 v3：返回键优先交给 WebView 历史、系统栏与应用同色（去蓝边）、
+// 由 jm-tools/android-patch-android.ps1 注入 v4：返回键优先交给 WebView 历史、系统栏与应用同色（去蓝边）、
 // 未捕获异常追加写入 filesDir/crash-java.log、启动时把上次崩溃/被系统杀死的原因 WARN 到 logcat（tag JMCRASH）、
-// 低内存时收窄阅读器挂载窗口。
+// 低内存时收窄阅读器挂载窗口、窗口方向锁定竖屏（Manifest 已声明，这里双保险）。
 // src-tauri/gen/android 是生成目录，重新 init 后必须再跑一次本脚本。
 package com.slumber999.jmcomic_shelf
 
@@ -8,6 +8,7 @@ import android.app.ActivityManager
 import android.app.ApplicationExitInfo
 import android.content.ComponentCallbacks2
 import android.content.Context
+import android.content.pm.ActivityInfo
 import android.os.Build
 import android.os.Bundle
 import android.util.Log
@@ -29,6 +30,9 @@ class MainActivity : TauriActivity() {
         reportCrashLogGrowth()
         installCrashHandler()
         super.onCreate(savedInstanceState)
+        // 双保险：Manifest 已声明 android:screenOrientation="portrait"，这里再锁一次，
+        // 防止某些 ROM 或父类在启动后把窗口方向改回去（只影响本应用，不碰系统旋转开关）
+        requestedOrientation = ActivityInfo.SCREEN_ORIENTATION_PORTRAIT
         applySystemBars()
         // onBackPressedDispatcher 在主线程分发返回：WebView 还能回退就回退，否则交回系统默认实现
         onBackPressedDispatcher.addCallback(

@@ -4,6 +4,7 @@ import { PhMagnifyingGlass, PhTag } from '@phosphor-icons/vue'
 import { commands } from '../../bindings.ts'
 import type {
   CategoryNode,
+  CategoryResp,
   Comic,
   ComicInSearch,
   CommandError,
@@ -11,6 +12,7 @@ import type {
   NovelMeta,
   SearchResult,
   SearchSort,
+  TagBlock,
 } from '../../bindings.ts'
 import { showError } from '../../errors.ts'
 import { useI18n } from '../../i18n.ts'
@@ -32,6 +34,7 @@ import { LIST_PAGE_SIZE, SEARCH_PAGE_SIZE, pageCountOf, slicePage } from '../pag
 import { usePullRefresh } from '../usePullRefresh.ts'
 import { searchModeActive, setSearchResetHandler } from '../searchMode.ts'
 import { useScreenScroll } from '../useScrollHost.ts'
+import { WEEKLY_DAYS, WEEKLY_TYPES, todayWeekday } from '../../weeklySerial.ts'
 import type { DetailTarget, MobileScreen, NovelTarget } from '../useNavStack.ts'
 
 /// 默认列表就是桌面分类树里的「最新A漫」：全部漫画按最近更新排序（c=0）
@@ -46,6 +49,18 @@ const DEFAULT_RANKING_ORDER = 'mv_w'
 /// 搜索历史与桌面同一个 key：点击复用、可清空
 const HISTORY_KEY = 'search:history'
 const MAX_HISTORY = 20
+/// 官方标签/分类本地缓存：进页面先用缓存渲染（0 延迟），后台再刷新
+const TAGS_CACHE_KEY = 'search:tagsCache'
+const CATEGORIES_CACHE_KEY = 'search:categoriesCache'
+/// 超过 24 小时算陈旧：仍然先显示缓存，只是会顺带后台刷新（不清空）
+const OFFICIAL_CACHE_TTL_MS = 24 * 60 * 60 * 1000
+/// 缓存只存渲染需要的字段，并设上限：标签分组/每组标签/单个标签名，超预算再从后往前丢
+const MAX_CACHED_TAG_BLOCKS = 40
+const MAX_CACHED_TAGS_PER_BLOCK = 200
+const MAX_CACHED_TAG_NAME_LENGTH = 60
+const MAX_CACHED_TAG_TITLE_LENGTH = 40
+const MAX_CACHED_CATEGORIES = 200
+const TAGS_CACHE_CHARS_BUDGET = 192 * 1024
 /// 首屏前 6 张不吃懒加载（两行），其余一律 lazy
 const EAGER_COVERS = 6
 /// 这三个标签在接口返回里位置靠后：前端把它们排到「English Manga」前面，其余顺序不动
@@ -53,7 +68,7 @@ const TAG_BEFORE_ENGLISH = ['禁漫去碼', '禁漫漢化組']
 const ENGLISH_MANGA_TAG = 'English Manga'
 
 /// idle = 空闲态（不预取任何列表）；其余都是结果态，结果区排在标签区下方
-type ListMode = 'idle' | 'latest' | 'category' | 'search' | 'novel' | 'ranking'
+type ListMode = 'idle' | 'latest' | 'category' | 'search' | 'novel' | 'ranking' | 'weekly'
 
 /// 列表数据缓存：同一份筛选条件回来时直接用，不再重拉第一页
 interface SearchCache {
@@ -76,6 +91,141 @@ function sortTags(tags: string[]): string[] {
   })
 }
 
+/// localStorage 里的一条缓存：savedAt 用来判断是否超过 24 小时
+interface OfficialCacheEntry<T> {
+  savedAt: number
+  data: T
+}
+
+/// 读缓存：JSON 坏了、结构不对、字段缺失都当作没有缓存（返回 undefined），不影响页面
+function readOfficialCache<T>(
+  key: string,
+  normalize: (raw: unknown) => T | undefined,
+): OfficialCacheEntry<T> | undefined {
+  try {
+    const raw = localStorage.getItem(key)
+    if (raw === null || raw === '') {
+      return undefined
+    }
+    const parsed: unknown = JSON.parse(raw)
+    if (parsed === null || typeof parsed !== 'object' || Array.isArray(parsed)) {
+      return undefined
+    }
+    const data = normalize((parsed as { data?: unknown }).data)
+    if (data === undefined) {
+      return undefined
+    }
+    const savedAtRaw = (parsed as { savedAt?: unknown }).savedAt
+    const savedAt =
+      typeof savedAtRaw === 'number' && Number.isFinite(savedAtRaw) ? savedAtRaw : 0
+    return { savedAt, data }
+  } catch {
+    return undefined
+  }
+}
+
+/// 标签缓存只认「分组标题 + 标签名」：坏字段跳过，去重并按上限截断
+function normalizeCachedTagBlocks(raw: unknown): TagBlock[] | undefined {
+  if (!Array.isArray(raw)) {
+    return undefined
+  }
+  const blocks: TagBlock[] = []
+  for (const item of raw) {
+    if (blocks.length >= MAX_CACHED_TAG_BLOCKS) {
+      break
+    }
+    if (item === null || typeof item !== 'object') {
+      continue
+    }
+    const content = (item as { content?: unknown }).content
+    if (!Array.isArray(content)) {
+      continue
+    }
+    const names: string[] = []
+    for (const value of content) {
+      if (typeof value !== 'string') {
+        continue
+      }
+      const name = value.trim()
+      const truncated =
+        name.length > MAX_CACHED_TAG_NAME_LENGTH ? name.slice(0, MAX_CACHED_TAG_NAME_LENGTH) : name
+      if (truncated === '' || names.includes(truncated)) {
+        continue
+      }
+      names.push(truncated)
+      if (names.length >= MAX_CACHED_TAGS_PER_BLOCK) {
+        break
+      }
+    }
+    if (names.length === 0) {
+      continue
+    }
+    const titleRaw = (item as { title?: unknown }).title
+    const title =
+      typeof titleRaw === 'string' ? titleRaw.trim().slice(0, MAX_CACHED_TAG_TITLE_LENGTH) : ''
+    blocks.push({ title, content: names })
+  }
+  return blocks.length > 0 ? blocks : undefined
+}
+
+/// 分类缓存只留按钮需要的 id/name/slug：子分类树和作品数体积大且搜索页不用
+function normalizeCachedCategories(raw: unknown): CategoryNode[] | undefined {
+  if (!Array.isArray(raw)) {
+    return undefined
+  }
+  const categories: CategoryNode[] = []
+  for (const item of raw) {
+    if (categories.length >= MAX_CACHED_CATEGORIES) {
+      break
+    }
+    if (item === null || typeof item !== 'object') {
+      continue
+    }
+    const node = item as { id?: unknown; name?: unknown; slug?: unknown }
+    if (typeof node.id !== 'number' || !Number.isFinite(node.id)) {
+      continue
+    }
+    if (typeof node.name !== 'string' || typeof node.slug !== 'string') {
+      continue
+    }
+    categories.push({
+      id: node.id,
+      name: node.name,
+      slug: node.slug,
+      totalAlbums: 0,
+      subCategories: [],
+    })
+  }
+  return categories.length > 0 ? categories : undefined
+}
+
+/// 按字符预算裁剪标签缓存：超了从后往前丢分组，保证 localStorage 写得进去
+function fitCachedTagBlocks(blocks: TagBlock[]): TagBlock[] {
+  const fitted: TagBlock[] = []
+  let chars = 0
+  for (const block of blocks) {
+    const entry: TagBlock = {
+      title: block.title,
+      content: block.content.slice(0, MAX_CACHED_TAGS_PER_BLOCK),
+    }
+    const size = JSON.stringify(entry).length + 1
+    if (chars + size > TAGS_CACHE_CHARS_BUDGET) {
+      break
+    }
+    fitted.push(entry)
+    chars += size
+  }
+  return fitted
+}
+
+function writeOfficialCache<T>(key: string, savedAt: number, data: T): void {
+  try {
+    localStorage.setItem(key, JSON.stringify({ savedAt, data }))
+  } catch {
+    // 配额满 / 隐私模式：旧缓存不动，界面继续用内存里的最新数据
+  }
+}
+
 const { t } = useI18n()
 const store = useStore()
 const message = useMessage()
@@ -83,8 +233,59 @@ const { scrollToTop } = useScreenScroll()
 const { save, restore } = useListMemory(MEMORY_KEY)
 const emit = defineEmits<{ navigate: [screen: MobileScreen, detail?: DetailTarget | NovelTarget] }>()
 
+/// 同步读缓存并在首次渲染前塞进 store：标签第一次画出来就有内容，不用等接口
+const cachedTags = readOfficialCache(TAGS_CACHE_KEY, normalizeCachedTagBlocks)
+const cachedCategories = readOfficialCache(CATEGORIES_CACHE_KEY, normalizeCachedCategories)
+/// 两个缓存里更早的时间戳决定整份官方数据是否陈旧（缺失也按陈旧处理）
+let officialCacheSavedAt: number | undefined
+if (cachedTags !== undefined) {
+  officialCacheSavedAt = cachedTags.savedAt
+}
+if (cachedCategories !== undefined) {
+  officialCacheSavedAt =
+    officialCacheSavedAt === undefined
+      ? cachedCategories.savedAt
+      : Math.min(officialCacheSavedAt, cachedCategories.savedAt)
+}
+if (
+  store.categoryResp === undefined &&
+  (cachedTags !== undefined || cachedCategories !== undefined)
+) {
+  store.categoryResp = {
+    categories: cachedCategories?.data ?? [],
+    blocks: cachedTags?.data ?? [],
+  }
+}
+
+/// 缓存缺失或超过 24 小时：仍然先显示旧缓存，只是会在后台刷一次
+function isOfficialCacheStale(): boolean {
+  return (
+    officialCacheSavedAt === undefined ||
+    Date.now() - officialCacheSavedAt > OFFICIAL_CACHE_TTL_MS
+  )
+}
+
+/// 请求成功才写缓存；空结果不覆盖旧缓存，避免接口抽风把标签清空
+function cacheOfficialTags(resp: CategoryResp): void {
+  const tags = fitCachedTagBlocks(normalizeCachedTagBlocks(resp.blocks) ?? [])
+  const categories = normalizeCachedCategories(resp.categories) ?? []
+  const savedAt = Date.now()
+  if (tags.length > 0) {
+    writeOfficialCache(TAGS_CACHE_KEY, savedAt, tags)
+  }
+  if (categories.length > 0) {
+    writeOfficialCache(CATEGORIES_CACHE_KEY, savedAt, categories)
+  }
+  if (tags.length > 0 || categories.length > 0) {
+    officialCacheSavedAt = savedAt
+  }
+}
+
 const keyword = ref('')
 const mode = ref<ListMode>('idle')
+/// 每周连载更新：类型与星期来自 weeklySerial.ts（接口 date 为 1..7，1=周一）
+const weeklyType = ref<string>('all')
+const weeklyDate = ref(todayWeekday())
 const activeQuery = ref('')
 const activeCategory = ref<CategoryNode>()
 const activeTag = ref<string>()
@@ -122,9 +323,22 @@ let handledPendingSearch = false
 /// 分类请求会缓存到 store，整个会话只拉一次
 const categoryResp = computed(() => store.categoryResp)
 /// 常驻按钮只放真正的一级分类；空 slug 的「最新A漫」等价于默认列表，不重复出现
-const topCategories = computed(() =>
-  (categoryResp.value?.categories ?? []).filter((category) => category.name !== '' && category.slug !== ''),
-)
+const topCategories = computed(() => {
+  const list = (categoryResp.value?.categories ?? []).filter(
+    (category) => category.name !== '' && category.slug !== '',
+  )
+  // 汉化组 / 去码这两项接口里排在后面，挪到 English Manga 之前（稳定排序，其余不动）
+  const before = list.filter((category) => TAG_BEFORE_ENGLISH.includes(category.name))
+  if (before.length === 0) {
+    return list
+  }
+  const rest = list.filter((category) => !TAG_BEFORE_ENGLISH.includes(category.name))
+  const englishIndex = rest.findIndex((category) => category.name === ENGLISH_MANGA_TAG)
+  if (englishIndex < 0) {
+    return list
+  }
+  return [...rest.slice(0, englishIndex), ...before, ...rest.slice(englishIndex)]
+})
 /// 标签云按接口分组展示，只把去码/汉化组提到 English Manga 前面，其余保持原顺序
 const tagBlocks = computed(() =>
   (categoryResp.value?.blocks ?? []).map((block) => ({ ...block, content: sortTags(block.content) })),
@@ -137,7 +351,14 @@ const isNovelMode = computed(() => mode.value === 'novel')
 const sortable = computed(
   () => mode.value === 'latest' || mode.value === 'category' || mode.value === 'search',
 )
-const listPageSize = computed(() => (isNovelMode.value ? LIST_PAGE_SIZE : SEARCH_PAGE_SIZE))
+/// 每周连载更新接口每页固定 40 条，其它列表用搜索页大小
+const WEEKLY_PAGE_SIZE = 40
+const listPageSize = computed(() => {
+  if (isNovelMode.value) {
+    return LIST_PAGE_SIZE
+  }
+  return mode.value === 'weekly' ? WEEKLY_PAGE_SIZE : SEARCH_PAGE_SIZE
+})
 const pageCount = computed(() =>
   pageCountOf(isNovelMode.value ? novels.value.length : total.value, listPageSize.value),
 )
@@ -156,6 +377,9 @@ const apiLabel = computed(() => {
   if (mode.value === 'novel') {
     return t('tab.novel')
   }
+  if (mode.value === 'weekly') {
+    return t('mobile.weeklyUpdate')
+  }
   return mode.value === 'ranking' ? t('tab.ranking') : t('tab.search')
 })
 const listTitle = computed(() => {
@@ -170,6 +394,9 @@ const listTitle = computed(() => {
   }
   if (mode.value === 'ranking') {
     return t('ranking.tabRanking')
+  }
+  if (mode.value === 'weekly') {
+    return t('mobile.weeklyUpdate')
   }
   return t('mobile.latestComics')
 })
@@ -254,6 +481,23 @@ async function load(nextPage: number) {
       results.value = []
       total.value = result.data.total
       page.value = 1
+      loaded.value = true
+      return
+    }
+
+    if (mode.value === 'weekly') {
+      const result = await retryResult(() =>
+        commands.getSerialization(weeklyType.value, weeklyDate.value, nextPage),
+      )
+      if (currentRequest !== requestId) return
+      if (result.status === 'error') {
+        handleLoadFailure(result.error, hadData)
+        return
+      }
+      // 每周更新的对象只用到 id / 名称 / 作者，卡片不区分具体类型
+      results.value = result.data.list as unknown as typeof results.value
+      total.value = result.data.total
+      page.value = nextPage
       loaded.value = true
       return
     }
@@ -364,14 +608,17 @@ function memoryContext(): string {
   })
 }
 
-/// 主动刷新 / 下拉刷新：重拉当前列表的第一页
+/// 主动刷新 / 下拉刷新：强制跳过缓存判断，重拉官方标签与当前列表的第一页
 async function refresh() {
+  const officialRefreshed = loadOfficialTags(true)
   if (isIdle.value) {
+    // 空闲态也要刷新官方标签：用户下拉就是想看最新的
+    await officialRefreshed
     return
   }
   clearListMemory(MEMORY_KEY)
   clearListCache(MEMORY_KEY)
-  await load(1)
+  await Promise.all([load(1), officialRefreshed])
   scrollToTop()
 }
 
@@ -400,6 +647,32 @@ function enterMode(next: ListMode) {
   total.value = 0
   page.value = 1
   historyOpen.value = false
+}
+
+function selectWeekly() {
+  enterMode('weekly')
+  void load(1)
+  scrollToTop()
+}
+
+function selectWeeklyType(value: string) {
+  if (weeklyType.value === value) {
+    return
+  }
+  weeklyType.value = value
+  enterMode('weekly')
+  void load(1)
+  scrollToTop()
+}
+
+function selectWeeklyDay(date: number) {
+  if (weeklyDate.value === date) {
+    return
+  }
+  weeklyDate.value = date
+  enterMode('weekly')
+  void load(1)
+  scrollToTop()
 }
 
 /// 「全部」：默认列表，与分类按钮同一形态（结果态）
@@ -501,6 +774,10 @@ function toggleTagDrawer() {
   tagManualOpen.value = !drawerOpen.value
   if (drawerOpen.value) {
     void loadLocalTags()
+    // 缓存陈旧才顺带后台刷新：新缓存直接用，展开标签不再发请求
+    if (isOfficialCacheStale()) {
+      void loadOfficialTags()
+    }
   }
 }
 
@@ -675,19 +952,46 @@ function resetToInitial() {
   scrollToTop()
 }
 
-async function loadCategories() {
-  if (store.categoryResp !== undefined) {
+/// 官方标签/分类：缓存已同步渲染，这里只负责后台刷新。
+/// force = 下拉刷新，跳过缓存判断与在途请求合并，始终请求最新
+let officialRequest: Promise<void> | undefined
+let officialRequestSeq = 0
+
+async function loadOfficialTags(force = false): Promise<void> {
+  if (!force && officialRequest !== undefined) {
+    await officialRequest
     return
   }
-  try {
-    const result = await commands.getCategories()
-    if (result.status === 'error') {
-      console.error(result.error)
-      return
+  const seq = ++officialRequestSeq
+  const task = (async () => {
+    try {
+      const result = await commands.getCategories()
+      // 期间又发起了更新的一次请求：旧结果丢掉
+      if (seq !== officialRequestSeq) {
+        return
+      }
+      if (result.status === 'error') {
+        console.error(result.error)
+        return
+      }
+      store.categoryResp = result.data
+      cacheOfficialTags(result.data)
+    } catch (error) {
+      // 断网/后端失败：保留缓存，不给用户弹错
+      console.error(error)
     }
-    store.categoryResp = result.data
-  } catch (error) {
-    console.error(error)
+  })()
+  if (force) {
+    await task
+    return
+  }
+  officialRequest = task
+  try {
+    await task
+  } finally {
+    if (officialRequest === task) {
+      officialRequest = undefined
+    }
   }
 }
 
@@ -822,8 +1126,8 @@ async function restoreCache(scrollTop?: number): Promise<boolean> {
 onMounted(async () => {
   setSearchResetHandler(resetToInitial)
   loadHistory()
-  // 分类树只影响按钮行，别挡住首屏；恢复「分类记忆」时才必须等它
-  void loadCategories()
+  // 官方标签/分类：缓存已在 setup 里同步渲染，这里只在后台刷新（失败保留缓存）
+  void loadOfficialTags()
   // 标签区默认展开，本地标签也要跟着读一次
   if (drawerOpen.value) {
     void loadLocalTags()
@@ -835,8 +1139,9 @@ onMounted(async () => {
   if (saved === undefined || savedState === undefined) {
     return
   }
-  if (savedState.mode === 'category') {
-    await loadCategories()
+  if (savedState.mode === 'category' && (store.categoryResp?.categories.length ?? 0) === 0) {
+    // 有缓存分类就直接恢复；完全没有时才等这一次请求
+    await loadOfficialTags()
   }
   if (!applySavedState(savedState)) {
     mode.value = 'idle'
@@ -925,23 +1230,31 @@ onBeforeUnmount(() => {
           {{ t('tab.ranking') }}
         </button>
         <button
-          v-for="category in topCategories"
-          :key="category.id"
           class="category-chip"
-          :class="{ active: activeCategory?.id === category.id }"
+          :class="{ active: mode === 'weekly' }"
           type="button"
-          @click="selectCategory(category)">
-          {{ category.name }}
+          @click="selectWeekly">
+          {{ t('mobile.weeklyUpdate') }}
         </button>
-        <!-- 官方标签「禁漫去碼」：全局筛选，点它时分类让位（两者互斥） -->
-        <button
-          class="category-chip unrated"
-          :class="{ active: mode === 'search' && activeQuery === UNRATED_TAG }"
-          type="button"
-          :title="t('mobile.unratedHint')"
-          @click="toggleUnrated">
-          {{ t('mobile.unrated') }}
-        </button>
+        <template v-for="category in topCategories" :key="category.id">
+          <!-- 官方标签「禁漫去碼」：固定在 English Manga 前，和分类互斥 -->
+          <button
+            v-if="category.name === ENGLISH_MANGA_TAG"
+            class="category-chip unrated"
+            :class="{ active: mode === 'search' && activeQuery === UNRATED_TAG }"
+            type="button"
+            :title="t('mobile.unratedHint')"
+            @click="toggleUnrated">
+            {{ t('mobile.unrated') }}
+          </button>
+          <button
+            class="category-chip"
+            :class="{ active: activeCategory?.id === category.id }"
+            type="button"
+            @click="selectCategory(category)">
+            {{ category.name }}
+          </button>
+        </template>
       </div>
 
       <!-- 排行榜：第一排类型（与首页分类同源，'0' = 全部），第二排周期；两排都单选，组合起来请求 -->
@@ -973,6 +1286,32 @@ onBeforeUnmount(() => {
             type="button"
             @click="selectRankingOrder(item.value)">
             {{ item.label }}
+          </button>
+        </div>
+      </template>
+
+      <!-- 每周连载更新：类型（全部/日漫/韩漫）+ 星期（周一..周日） -->
+      <template v-if="mode === 'weekly'">
+        <div class="category-bar sub">
+          <button
+            v-for="item in WEEKLY_TYPES"
+            :key="item.value"
+            class="category-chip sm"
+            :class="{ active: weeklyType === item.value }"
+            type="button"
+            @click="selectWeeklyType(item.value)">
+            {{ t(item.labelKey) }}
+          </button>
+        </div>
+        <div class="category-bar sub">
+          <button
+            v-for="day in WEEKLY_DAYS"
+            :key="day.date"
+            class="category-chip sm"
+            :class="{ active: weeklyDate === day.date }"
+            type="button"
+            @click="selectWeeklyDay(day.date)">
+            {{ t(day.labelKey) }}
           </button>
         </div>
       </template>

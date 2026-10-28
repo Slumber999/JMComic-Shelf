@@ -1,7 +1,9 @@
 <script setup lang="ts">
-import { NCard } from 'naive-ui'
+import { computed, ref } from 'vue'
+import { NCard, NSpin } from 'naive-ui'
 import { showError } from '../errors.ts'
 import { CategoryRespData, CategorySubRespData, commands } from '../bindings.ts'
+import { openComicDetail } from '../openComicDetail.ts'
 import { useStore } from '../store.ts'
 import IconButton from './IconButton.vue'
 import FavoriteButton from './FavoriteButton.vue'
@@ -38,13 +40,21 @@ function onFavoriteChanged() {
   emit('favoriteChanged')
 }
 
+/// 正在取详情：卡片上盖一层 spinner，同时挡住重复点击（连点只发一次 get_comic）
+const picking = ref(false)
+/// 正在打开阅读器：同一个目标打开过程中按钮禁用 + spinner
+const openingReader = computed(() => store.isOpeningReader({ comicId: props.comicId }))
+
 async function pickComic() {
-  const result = await commands.getComic(props.comicId)
-  if (result.status === 'error') {
-    console.error(result.error)
+  if (picking.value) {
     return
   }
-  store.pickComic(result.data)
+  picking.value = true
+  try {
+    await openComicDetail(props.comicId)
+  } finally {
+    picking.value = false
+  }
 }
 
 function downloadComic() {
@@ -77,13 +87,14 @@ async function startExportCbz() {
 
 function readComic() {
   // 没下载过也能开：后端会走在线阅读
-  store.openReader({ comicId: props.comicId })
+  // 打开过程中再点直接忽略（store 里也按目标去重，双保险）
+  if (openingReader.value) {
+    return
+  }
+  void store.openReader({ comicId: props.comicId })
 }
 
 async function showComicDownloadDirInFileManager() {
-  if (store.config === undefined) {
-    return
-  }
   const result = await commands.showPathInFileManager(props.comicDownloadDir)
   if (result.status === 'error') {
     console.error(result.error)
@@ -119,6 +130,13 @@ function onCoverPointerEnter(event: PointerEvent) {
         @click="pickComic"
         @pointerenter="onCoverPointerEnter"
         @pointerleave="unhoverCover" />
+      <!-- 取详情期间盖一层 spinner：点击后立刻有反馈，同时挡住连点 -->
+      <div
+        v-if="picking"
+        class="absolute inset-0 z-10 flex items-center justify-center rounded bg-white/60"
+        aria-busy="true">
+        <n-spin :size="16" />
+      </div>
       <div :class="layout === 'list' ? 'flex flex-col w-full justify-between' : 'flex flex-col w-full'">
         <div class="flex flex-col">
           <span
@@ -156,8 +174,13 @@ function onCoverPointerEnter(event: PointerEvent) {
           <IconButton :title="t('comic.downloadAllChapters')" @click="downloadComic">
             <PhDownloadSimple :size="20" />
           </IconButton>
-          <IconButton :title="t('comic.read')" @click="readComic">
-            <PhBookOpen :size="20" />
+          <IconButton
+            :title="t('comic.read')"
+            :disabled="openingReader"
+            :aria-busy="openingReader"
+            @click="readComic">
+            <n-spin v-if="openingReader" :size="14" />
+            <PhBookOpen v-else :size="20" />
           </IconButton>
           <FavoriteButton :comic-id="comicId" :is-favorite="isFavorite" @favorite-changed="onFavoriteChanged" />
         </div>

@@ -9,7 +9,7 @@ import MobileNovelReader from './MobileNovelReader.vue'
 import LoadingSpinner from '../components/LoadingSpinner.vue'
 import { commands } from '../bindings.ts'
 import type { Config, SignStatus } from '../bindings.ts'
-import { showError, setErrorNotifier } from '../errors.ts'
+import { markAuthReady, showError, setErrorNotifier } from '../errors.ts'
 import { listenLogErrors } from '../logNotifications.ts'
 import { setLocale, useI18n } from '../i18n.ts'
 import { useStore } from '../store.ts'
@@ -161,15 +161,16 @@ watch(
 const signedToday = ref<boolean>()
 const signStatus = ref<SignStatus>()
 const signingIn = ref(false)
-/// 顶栏入口的连点窗口：200ms 内的重复点按只认第一次，快速连点压不出两层
+/// 顶栏入口的连点窗口：200ms 内的重复点按只认第一次，快速连点压不出两层。
+/// 按入口分别计时：先点历史再点下载不该被当成连点吞掉
 const BAR_TAP_GUARD_MS = 200
-let lastBarTapAt = 0
-function barTapAllowed() {
+const lastBarTapAt = new Map<string, number>()
+function barTapAllowed(key: string) {
   const now = performance.now()
-  if (now - lastBarTapAt < BAR_TAP_GUARD_MS) {
+  if (now - (lastBarTapAt.get(key) ?? 0) < BAR_TAP_GUARD_MS) {
     return false
   }
-  lastBarTapAt = now
+  lastBarTapAt.set(key, now)
   return true
 }
 
@@ -214,18 +215,22 @@ function goBarScreen(screen: 'history' | 'tasks') {
   push(screen)
 }
 
-/// 顶栏历史入口：页面跳转，不做 toggle
+/// 顶栏历史入口：再点一次关闭（与任务页一致），关闭只退回自己这一层
 function openHistory() {
-  if (!barTapAllowed()) {
+  if (!barTapAllowed('history')) {
     return
   }
   closeBarPanel()
+  if (current.value === 'history') {
+    pop()
+    return
+  }
   goBarScreen('history')
 }
 
 /// 顶栏下载入口：任务页可开可关，关闭只退回自己这一层
 function toggleTasks() {
-  if (!barTapAllowed()) {
+  if (!barTapAllowed('tasks')) {
     return
   }
   closeBarPanel()
@@ -441,6 +446,7 @@ onMounted(async () => {
       console.error(result.error)
       return
     }
+    markAuthReady()
     store.userProfile = result.data
     message.success(t('app.autoLoginSuccess'))
   }

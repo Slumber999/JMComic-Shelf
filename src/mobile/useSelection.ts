@@ -30,23 +30,10 @@ export function useSelection() {
     selectedIds.value = new Set(ids)
   }
 
-  /// 反选：只翻转给定范围内的 id，范围外已选中的保持不变
-  function invert(ids: number[]) {
-    const next = new Set(selectedIds.value)
-    for (const id of ids) {
-      if (next.has(id)) {
-        next.delete(id)
-      } else {
-        next.add(id)
-      }
-    }
-    selectedIds.value = next
-  }
-
   function exit() {
     selecting.value = false
     selectedIds.value = new Set()
   }
 
-  return { selecting, selectedIds, selectedCount, isSelected, enter, toggle, setAll, invert, exit }
+  return { selecting, selectedIds, selectedCount, isSelected, enter, toggle, setAll, exit }
 }

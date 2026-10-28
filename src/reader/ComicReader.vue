@@ -60,6 +60,8 @@ let scrollRaf = 0
 const pageUrl = readerPageUrl
 
 const chapters = computed(() => readerComic.value?.chapters ?? [])
+/// 评论抽屉的章节表：跟着阅读器章节顺序，默认看当前这一话的评论
+const commentChapters = computed(() => chapters.value.map((chapter) => ({ title: chapter.title })))
 const currentChapter = computed(() => chapters.value[chapterIndex.value])
 const pageCount = computed(() => currentChapter.value?.pageCount ?? 0)
 /// 打开 + 准备章节都算加载中：这段里 pageCount 还是 0，不能当成"没有图片"
@@ -772,7 +774,9 @@ onBeforeUnmount(() => {
     <CommentDrawer
       v-if="commentTarget !== undefined"
       v-model:showing="commentDrawerShowing"
-      :target="commentTarget" />
+      :target="commentTarget"
+      :chapters="commentChapters"
+      :chapter-index="chapterIndex" />
   </div>
 </template>
 

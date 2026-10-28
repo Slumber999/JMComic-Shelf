@@ -23,7 +23,7 @@ const COVER_PREVIEW_KEY = 'view:coverPreview'
 export const COVER_PREVIEW_SCALE_MIN = 2
 export const COVER_PREVIEW_SCALE_MAX = 3
 const COVER_PREVIEW_SCALE_KEY = 'view:coverPreviewScale'
-import { computed, ref } from 'vue'
+import { computed, nextTick, reactive, ref } from 'vue'
 
 export const useStore = defineStore('store', () => {
   const config = ref<Config>()
@@ -56,6 +56,8 @@ export const useStore = defineStore('store', () => {
   const downloadedComics = ref<Comic[]>([])
   // 阅读器目标：传 comic = 本地优先；只传 comicId = 可以从网络读；chapterIndex 可选（手机端直接定位章节）
   const readerTarget = ref<{ comic?: Comic; comicId?: number; chapterIndex?: number }>()
+  /// 正在打开的阅读目标：同一目标在打开过程中反复点只走一次（连点 5 次不再堆命令）
+  const openingReaderKeys = reactive(new Set<string>())
   // 小说阅读目标：与 readerTarget 并列的另一套，同一时间只会显示其中一个
   const novelReaderTarget = ref<NovelReaderTarget>()
   // 官方分类树 + 常用标签：整个会话只拉一次，避免重复请求和选项抖动
@@ -95,15 +97,45 @@ export const useStore = defineStore('store', () => {
     currentTabName.value = 'chapter'
   }
 
+  /// 阅读目标的去重键：同一本 + 同一章节算同一个目标
+  function readerKey(target: { comic?: Comic; comicId?: number; chapterIndex?: number }): string {
+    return `${target.comic?.id ?? target.comicId ?? 0}:${target.chapterIndex ?? ''}`
+  }
+
+  /// 这个目标是不是正在打开：卡片 / 详情页的阅读按钮用它显示 spinner 并禁用
+  function isOpeningReader(target: { comic?: Comic; comicId?: number; chapterIndex?: number }): boolean {
+    return openingReaderKeys.has(readerKey(target))
+  }
+
   /// 打开阅读器：设置里开了「阅读器独立窗口」就开新窗口，否则用现在这种内嵌浮层。
   /// chapterIndex 是可选的起始章节（手机端用）；不传时阅读器按原有逻辑恢复进度
-  function openReader(target: { comic?: Comic; comicId?: number; chapterIndex?: number }) {
-    // 独立窗口的目标结构里没有章节字段：指定了起始章节就走内嵌阅读器，手机端才能直接定位
-    if (config.value?.splitReader === true && target.chapterIndex === undefined) {
-      void commands.openReaderWindow({ comic: target.comic ?? null, comicId: target.comicId ?? null })
+  async function openReader(target: { comic?: Comic; comicId?: number; chapterIndex?: number }) {
+    const key = readerKey(target)
+    // 同一个目标正在打开：直接忽略重复点击（按钮也会被禁用，这里再兜一层）
+    if (openingReaderKeys.has(key)) {
       return
     }
-    readerTarget.value = target
+    openingReaderKeys.add(key)
+    try {
+      // 独立窗口的目标结构里没有章节字段：指定了起始章节就走内嵌阅读器，手机端才能直接定位
+      if (config.value?.splitReader === true && target.chapterIndex === undefined) {
+        const result = await commands.openReaderWindow({
+          comic: target.comic ?? null,
+          comicId: target.comicId ?? null,
+        })
+        // 独立窗口没开成功（比如移动端不支持）就退回内嵌浮层，保证点了一定有反应
+        if (result.status === 'error') {
+          readerTarget.value = target
+        }
+        return
+      }
+      readerTarget.value = target
+      // 等阅读器挂上去再放开按钮，别让用户以为没点上
+      await nextTick()
+    } finally {
+      // 再留一点时间让阅读器自己的 loading 交接，然后恢复按钮
+      window.setTimeout(() => openingReaderKeys.delete(key), 600)
+    }
   }
 
   /// 打开小说阅读器：和漫画一样，开了「阅读器独立窗口」就走独立窗口。
@@ -121,33 +153,38 @@ export const useStore = defineStore('store', () => {
     novelReaderTarget.value = target
   }
 
-  function setLocalLibrarySource(source: LocalLibrarySource) {
-    localLibrarySource.value = source
+  /// 视图偏好读写：localStorage 不可用（隐私模式）时静默跳过，界面照常跑
+  function readPreference(key: string): string | undefined {
     try {
-      localStorage.setItem(LOCAL_LIBRARY_SOURCE_KEY, source)
+      return localStorage.getItem(key) ?? undefined
     } catch {
-      // 忽略 localStorage 写入失败
+      return undefined
     }
   }
 
-  function loadLocalLibrarySource() {
+  function writePreference(key: string, value: string): void {
     try {
-      const saved = localStorage.getItem(LOCAL_LIBRARY_SOURCE_KEY)
-      if (saved === 'DownloadDir' || saved === 'ExportDir') {
-        localLibrarySource.value = saved
-      }
+      localStorage.setItem(key, value)
     } catch {
-      // 忽略 localStorage 读取失败
+      // 忽略 localStorage 写入失败：内存里仍然生效
+    }
+  }
+
+  function setLocalLibrarySource(source: LocalLibrarySource) {
+    localLibrarySource.value = source
+    writePreference(LOCAL_LIBRARY_SOURCE_KEY, source)
+  }
+
+  function loadLocalLibrarySource() {
+    const saved = readPreference(LOCAL_LIBRARY_SOURCE_KEY)
+    if (saved === 'DownloadDir' || saved === 'ExportDir') {
+      localLibrarySource.value = saved
     }
   }
 
   function setComicLayout(layout: ComicLayout) {
     comicLayout.value = layout
-    try {
-      localStorage.setItem(COMIC_LAYOUT_KEY, layout)
-    } catch {
-      // 忽略 localStorage 写入失败
-    }
+    writePreference(COMIC_LAYOUT_KEY, layout)
   }
 
   function setGridSize(size: GridSize) {
@@ -156,54 +193,38 @@ export const useStore = defineStore('store', () => {
     }
     const previous = gridSize.value
     gridSize.value = size
-    try {
-      localStorage.setItem(GRID_SIZE_KEY, size)
-    } catch {
-      // 忽略 localStorage 写入失败
-    }
+    writePreference(GRID_SIZE_KEY, size)
     // 主窗口大小跟着档位走
     void resizeMainWindowForGridSize(previous, size)
   }
 
   function setCoverPreview(enabled: boolean) {
     coverPreview.value = enabled
-    try {
-      localStorage.setItem(COVER_PREVIEW_KEY, enabled ? '1' : '0')
-    } catch {
-      // 忽略 localStorage 写入失败
-    }
+    writePreference(COVER_PREVIEW_KEY, enabled ? '1' : '0')
   }
 
   function setCoverPreviewScale(scale: number) {
     const clamped = Math.min(COVER_PREVIEW_SCALE_MAX, Math.max(COVER_PREVIEW_SCALE_MIN, scale))
     coverPreviewScale.value = clamped
-    try {
-      localStorage.setItem(COVER_PREVIEW_SCALE_KEY, String(clamped))
-    } catch {
-      // 忽略 localStorage 写入失败
-    }
+    writePreference(COVER_PREVIEW_SCALE_KEY, String(clamped))
   }
 
   function loadViewPreferences() {
-    try {
-      const layout = localStorage.getItem(COMIC_LAYOUT_KEY)
-      if (layout === 'list' || layout === 'grid') {
-        comicLayout.value = layout
-      }
-      const gridSizeSaved = localStorage.getItem(GRID_SIZE_KEY)
-      if (gridSizeSaved === 'small' || gridSizeSaved === 'medium' || gridSizeSaved === 'large') {
-        gridSize.value = gridSizeSaved
-      }
-      const preview = localStorage.getItem(COVER_PREVIEW_KEY)
-      if (preview === '0' || preview === '1') {
-        coverPreview.value = preview === '1'
-      }
-      const scale = Number.parseFloat(localStorage.getItem(COVER_PREVIEW_SCALE_KEY) ?? '')
-      if (Number.isFinite(scale) && scale >= COVER_PREVIEW_SCALE_MIN && scale <= COVER_PREVIEW_SCALE_MAX) {
-        coverPreviewScale.value = scale
-      }
-    } catch {
-      // 忽略 localStorage 读取失败
+    const layout = readPreference(COMIC_LAYOUT_KEY)
+    if (layout === 'list' || layout === 'grid') {
+      comicLayout.value = layout
+    }
+    const gridSizeSaved = readPreference(GRID_SIZE_KEY)
+    if (gridSizeSaved === 'small' || gridSizeSaved === 'medium' || gridSizeSaved === 'large') {
+      gridSize.value = gridSizeSaved
+    }
+    const preview = readPreference(COVER_PREVIEW_KEY)
+    if (preview === '0' || preview === '1') {
+      coverPreview.value = preview === '1'
+    }
+    const scale = Number.parseFloat(readPreference(COVER_PREVIEW_SCALE_KEY) ?? '')
+    if (Number.isFinite(scale) && scale >= COVER_PREVIEW_SCALE_MIN && scale <= COVER_PREVIEW_SCALE_MAX) {
+      coverPreviewScale.value = scale
     }
   }
 
@@ -234,6 +255,7 @@ export const useStore = defineStore('store', () => {
     downloadedComics,
     readerTarget,
     openReader,
+    isOpeningReader,
     novelReaderTarget,
     openNovelReader,
     categoryResp,

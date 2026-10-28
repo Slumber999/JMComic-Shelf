@@ -1,8 +1,9 @@
 <script setup lang="tsx">
-import { computed, onMounted, ref, watch } from 'vue'
-import { setErrorNotifier, showError } from './errors.ts'
+import { onBeforeUnmount, onMounted, ref, watch } from 'vue'
+import { markAuthReady, setErrorNotifier, showError } from './errors.ts'
 import { listenLogErrors } from './logNotifications.ts'
 import { commands } from './bindings.ts'
+import type { Config } from './bindings.ts'
 import { NAvatar, NButton, NIcon, NTabPane, NTabs, useMessage, useNotification } from 'naive-ui'
 import LoginDialog from './dialogs/LoginDialog.vue'
 import SearchPane from './panes/SearchPane.vue'
@@ -10,20 +11,20 @@ import ChapterPane from './panes/ChapterPane/ChapterPane.vue'
 import ProgressesPane from './panes/ProgressesPane/ProgressesPane.vue'
 import FavoritePane from './panes/FavoritePane.vue'
 import AboutDialog from './dialogs/AboutDialog.vue'
-import { PhGearSix, PhInfo, PhUser, PhBookmarkSimple } from '@phosphor-icons/vue'
+import { PhClockCounterClockwise, PhGearSix, PhInfo, PhUser } from '@phosphor-icons/vue'
 import DownloadedPane from './panes/DownloadedPane/DownloadedPane.vue'
-import HistoryPane from './panes/HistoryPane.vue'
 import { useStore } from './store.ts'
 import { getCurrentWindow } from '@tauri-apps/api/window'
 import RankingPane from './panes/RankingPane.vue'
 import CommentsPane from './panes/CommentsPane.vue'
+import WeeklySerialPane from './panes/WeeklySerialPane.vue'
+import HistoryPopover from './dialogs/HistoryPopover.vue'
 import NovelPane from './panes/NovelPane.vue'
 import ComicReader from './reader/ComicReader.vue'
 import NovelReader from './reader/NovelReader.vue'
 import DownloadStatusBar from './components/DownloadStatusBar.vue'
 import CoverPreview from './components/CoverPreview.vue'
 import SettingsDialog from './dialogs/SettingsDialog/SettingsDialog.vue'
-import { lastProgress, progressLabel } from './reader/progress.ts'
 import LoadingSpinner from './components/LoadingSpinner.vue'
 import { useI18n } from './i18n.ts'
 import { useNotifications } from './notifications/useNotifications.ts'
@@ -39,12 +40,10 @@ const message = useMessage()
 setErrorNotifier(useNotification())
 listenLogErrors()
 
-
 const readerShowing = ref<boolean>(false)
 /// 小说阅读浮层：与漫画阅读器并列，跟 store.novelReaderTarget 一起开关
 const novelReaderShowing = ref<boolean>(false)
 const loginDialogShowing = ref<boolean>(false)
-
 
 // 任何页面把 store.readerTarget 设上就会打开阅读器
 watch(
@@ -78,42 +77,46 @@ watch(novelReaderShowing, (value) => {
     store.novelReaderTarget = undefined
   }
 })
-// 继续阅读：跳到上次读到的地方（本地有就读本地，没有就从网上读）
-const resuming = ref<boolean>(false)
-const lastRead = computed(() => lastProgress())
-const lastReadTitle = computed(() => {
-  const last = lastRead.value
-  if (last === undefined) {
-    return ''
-  }
-  const comicTitle =
-    last.progress.comicTitle !== ''
-      ? last.progress.comicTitle
-      : (store.downloadedComics.find((comic) => comic.id === last.comicId)?.name ??
-        t('app.fallbackComicName', { id: last.comicId }))
-  return t('app.continueReadingWith', { title: comicTitle, progress: progressLabel(last.progress) })
-})
+/// 浏览历史：顶部按钮下的下拉面板（只读展示，点条目走 openComicDetail）
+const historyPanelShowing = ref<boolean>(false)
 
-async function continueReading() {
-  const last = lastRead.value
-  if (last === undefined) {
+/// 顶栏下拉面板一次只能开一个：点按钮切换；点面板外关闭
+const historyPanelRef = ref<HTMLElement | undefined>(undefined)
+
+/// 面板宽 320：优先与按钮左边缘对齐；右边放不下就右对齐（不超出窗口）
+const HISTORY_PANEL_WIDTH = 320
+const historyPanelLeft = ref<number>(0)
+
+function toggleHistoryPanel() {
+  const next = !historyPanelShowing.value
+  if (next) {
+    const wrapper = historyPanelRef.value as HTMLElement | undefined
+    const button = wrapper?.querySelector('button')
+    const rect = button?.getBoundingClientRect()
+    const wrapperLeft = wrapper?.getBoundingClientRect().left ?? 0
+    if (rect !== undefined) {
+      const maxLeft = window.innerWidth - HISTORY_PANEL_WIDTH - 8
+      // 先按按钮左边缘对齐，右边放不下再往左收
+      const absoluteLeft = Math.max(8, Math.min(rect.left, maxLeft))
+      historyPanelLeft.value = absoluteLeft - wrapperLeft
+    }
+  }
+  historyPanelShowing.value = next
+}
+
+function onDocumentPointerDown(event: PointerEvent) {
+  if (!historyPanelShowing.value) {
     return
   }
-
-  resuming.value = true
-  try {
-    let comics = store.downloadedComics
-    if (comics.length === 0) {
-      // 还没进过本地库存页，先取一次本地漫画列表
-      comics = await commands.getLocalComics(store.localLibrarySource)
-    }
-    const comic = comics.find((item) => item.id === last.comicId)
-    // 本地没有（比如换过目录）就用漫画id从网上读
-    store.openReader(comic !== undefined ? { comic } : { comicId: last.comicId })
-  } finally {
-    resuming.value = false
+  const target = event.target as Node | null
+  if (historyPanelRef.value !== undefined && target !== null && historyPanelRef.value.contains(target)) {
+    return
   }
+  historyPanelShowing.value = false
 }
+
+onMounted(() => document.addEventListener('pointerdown', onDocumentPointerDown, true))
+onBeforeUnmount(() => document.removeEventListener('pointerdown', onDocumentPointerDown, true))
 
 const aboutDialogShowing = ref<boolean>(false)
 const settingsDialogShowing = ref<boolean>(false)
@@ -229,26 +232,54 @@ async function signInNow() {
   }
 }
 
+/// 读配置：IPC 偶尔在窗口刚起来时失败，重试一次；仍失败只能停在加载页（没有配置发不出命令）
+async function loadConfig(): Promise<Config | undefined> {
+  for (let attempt = 0; attempt < 2; attempt += 1) {
+    try {
+      return await commands.getConfig()
+    } catch (error) {
+      console.error('读取配置失败', error)
+      await new Promise((resolve) => window.setTimeout(resolve, 300))
+    }
+  }
+  return undefined
+}
+
+/// 主窗口尺寸监听：退出时解绑，注册失败只记日志
+let unlistenResize: (() => void) | undefined
+onBeforeUnmount(() => unlistenResize?.())
+
 onMounted(async () => {
   // 屏蔽浏览器右键菜单
   document.oncontextmenu = (event) => {
     event.preventDefault()
   }
-  // 获取配置（记下来，避免这次赋值又触发一次"没变化"的保存）
-  store.config = await commands.getConfig()
-  lastSavedConfig = JSON.stringify(store.config)
+  const config = await loadConfig()
+  if (config === undefined) {
+    return
+  }
+  // 记下这份配置，避免这次赋值又触发一次"没变化"的保存
+  store.config = config
+  lastSavedConfig = JSON.stringify(config)
   // 界面语言跟着配置走
-  setLocale(store.config.language)
+  setLocale(config.language)
 
   // 主窗口尺寸跟着配置走
-  void getCurrentWindow().onResized(rememberWindowSize)
+  void getCurrentWindow()
+    .onResized(rememberWindowSize)
+    .then((unlisten) => {
+      unlistenResize = unlisten
+    })
+    .catch((error: unknown) => console.error('监听窗口尺寸失败', error))
   // 开着自动登录、并且记住过账号密码时，才尝试登录
   if (store.config.autoLogin && store.config.username !== '' && store.config.password !== '') {
     const result = await commands.login(store.config.username, store.config.password)
     if (result.status === 'error') {
+      // 启动阶段自动登录失败多为网络还没热起来：只记日志，不弹给用户
       console.error(result.error)
       return
     }
+    markAuthReady()
     store.userProfile = result.data
     message.success(t('app.autoLoginSuccess'))
   }
@@ -294,21 +325,23 @@ onMounted(async () => {
           class="pointer-events-none absolute right-0.5 top-0.5 h-2 w-2 rounded-full bg-red-500"
           :title="t('account.notificationNew')" />
       </span>
-      <n-button
-        v-if="lastRead !== undefined"
-        size="small"
-        type="primary"
-        secondary
-        :loading="resuming"
-        :title="lastReadTitle"
-        @click="continueReading">
-        <template #icon>
-          <n-icon size="18">
-            <PhBookmarkSimple />
-          </n-icon>
-        </template>
-        {{ t('app.continueReading') }}
-      </n-button>
+      <!-- 浏览历史：自己控制的下拉面板（naive-ui 弹层在窄窗口里定位不稳） -->
+      <div class="relative" ref="historyPanelRef">
+        <n-button size="small" @click="toggleHistoryPanel">
+          <template #icon>
+            <n-icon size="18">
+              <PhClockCounterClockwise />
+            </n-icon>
+          </template>
+          {{ t('tab.history') }}
+        </n-button>
+        <div
+          v-if="historyPanelShowing"
+          class="absolute top-full mt-1 z-50"
+          :style="{ left: historyPanelLeft + 'px' }">
+          <HistoryPopover :active="historyPanelShowing" @close="historyPanelShowing = false" />
+        </div>
+      </div>
       <div v-if="store.userProfile !== undefined" class="flex items-center gap-1 ml-auto overflow-hidden">
         <!-- 签到按钮只在「已登录且今天还没签到」时占位，签完（v-if 转 false）整块从布局里移除 -->
         <n-button v-if="signedToday === false" size="small" :loading="signingIn" @click="signInNow">
@@ -368,6 +401,14 @@ onMounted(async () => {
       </n-tab-pane>
       <n-tab-pane
         class="h-full overflow-auto p-0!"
+        name="serial"
+        :tab="t('mobile.weeklyUpdate')"
+        :key="locale"
+        display-directive="show">
+        <WeeklySerialPane />
+      </n-tab-pane>
+      <n-tab-pane
+        class="h-full overflow-auto p-0!"
         name="novel"
         :tab="t('tab.novel')"
         :key="locale"
@@ -381,14 +422,6 @@ onMounted(async () => {
         :key="locale"
         display-directive="show">
         <DownloadedPane />
-      </n-tab-pane>
-      <n-tab-pane
-        class="h-full overflow-auto p-0!"
-        name="history"
-        :tab="t('tab.history')"
-        :key="locale"
-        display-directive="show">
-        <HistoryPane />
       </n-tab-pane>
       <n-tab-pane
         class="h-full overflow-auto p-0!"

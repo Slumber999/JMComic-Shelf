@@ -26,6 +26,12 @@ interface CommentsCache {
 
 const CACHE_KEY = 'comments'
 
+/// 每轮「加载更多」至少补足这么多条可见评论：后端一页约 30 条，屏蔽词多时一页只剩两三条，
+/// 所以和桌面端一样连续翻页，过滤后凑够一批再一起显示（桌面端一批 40 条，手机屏幕小取 15 条）
+const BATCH_VISIBLE = 15
+/// 一轮最多连续拉 5 个后端页（约 150 条）：关键词太狠时不会无限请求
+const MAX_SCAN_PAGES = 5
+
 const { t } = useI18n()
 const message = useMessage()
 const { host, scrollToTop } = useScreenScroll()
@@ -38,6 +44,10 @@ const page = ref(1)
 const loading = ref(false)
 const finished = ref(false)
 const failed = ref(false)
+/// 本轮连续补页仍凑不够时提示「已扫描 N 条，命中 K 条」；只针对这一轮，下一轮重新统计
+const scanNotice = ref<{ scanned: number; blocked: number }>()
+/// 补页还没结束就下拉刷新：这一轮收尾后再从第一页重建，别把旧响应写回刚清空的列表
+const rebuildPending = ref(false)
 
 /// 与评论抽屉共用同一份关键词，嵌套回复的过滤由 filterComments 处理（只隐藏命中的那条）
 const { keywords } = useCommentKeywords()
@@ -47,36 +57,78 @@ const visibleComments = computed(() => filtered.value.comments)
 const blockedCount = computed(() => filtered.value.blocked)
 
 async function load(reset = false) {
-  if (loading.value) return
+  if (loading.value) {
+    // 刷新撞上正在补页：等这一轮收尾后由 refresh 重建
+    if (reset) rebuildPending.value = true
+    return
+  }
 
   loading.value = true
   failed.value = false
-  const nextPage = reset ? 1 : page.value + 1
+  scanNotice.value = undefined
   // 已经有内容时失败只弹轻提示，不把列表清空
   const hadData = rawComments.value.length > 0
+  /// 这一轮累积的原始评论：被屏蔽的也留着，「已屏蔽」按扫过的条数统计
+  const merged: Comment[] = reset ? [] : [...rawComments.value]
+  /// 跨页按 CID 去重：官方页码越界时会重复返回最后一页，别把同一条评论拉两遍
+  const seen = new Set(merged.map((comment) => comment.CID))
+  let nextPage = reset ? 1 : page.value + 1
+  let added = 0
+  let scanned = 0
+  let blocked = 0
+  let scannedPages = 0
 
   try {
-    // 全站评论没有漫画 id，传 null 走后端的全站接口
-    const result = await retryResult(() => commands.getComments(null, nextPage))
-    if (result.status === 'error') {
-      if (hadData) {
-        message.warning(t('mobile.loadMoreFailedApi', { api: t('tab.comments') }))
-      } else {
-        showError(result.error)
-        failed.value = true
+    // 循环补页直到过滤后凑够一批可见评论，或达到页数上限 / 官方列表到底
+    while (added < BATCH_VISIBLE && scannedPages < MAX_SCAN_PAGES && !finished.value) {
+      if (rebuildPending.value) break
+
+      // 全站评论没有漫画 id，传 null 走后端的全站接口
+      const result = await retryResult(() => commands.getComments(null, nextPage, null))
+      if (result.status === 'error') {
+        if (scannedPages === 0 && !hadData) {
+          showError(result.error)
+          failed.value = true
+        } else {
+          message.warning(t('mobile.loadMoreFailedApi', { api: t('tab.comments') }))
+        }
+        break
       }
-      return
+
+      scannedPages++
+      const data = result.data
+      const list = data.list ?? []
+      total.value = data.total ?? total.value
+      if (list.length === 0) {
+        finished.value = true
+        break
+      }
+
+      const fresh = list.filter((comment) => !seen.has(comment.CID))
+      if (fresh.length === 0) {
+        finished.value = true
+        break
+      }
+      for (const comment of fresh) seen.add(comment.CID)
+
+      merged.push(...fresh)
+      scanned += fresh.length
+      const pageFiltered = filterComments(fresh, keywords.value)
+      blocked += pageFiltered.blocked
+      added += pageFiltered.comments.length
+
+      page.value = nextPage
+      nextPage++
+      if (total.value > 0 && merged.length >= total.value) {
+        finished.value = true
+      }
     }
 
-    const data = result.data
-    const list = data.list ?? []
-    const seen = new Set(rawComments.value.map((comment) => comment.CID))
-    rawComments.value = reset
-      ? list
-      : [...rawComments.value, ...list.filter((comment) => !seen.has(comment.CID))]
-    total.value = data.total ?? rawComments.value.length
-    page.value = nextPage
-    finished.value = list.length === 0 || rawComments.value.length >= total.value
+    if (!finished.value && scannedPages >= MAX_SCAN_PAGES && added < BATCH_VISIBLE) {
+      // 连续 5 页也凑不够：提示关键词可能太严格，本轮到此为止，不无限翻页
+      scanNotice.value = { scanned, blocked }
+      finished.value = true
+    }
   } catch (error) {
     console.error(error)
     if (hadData) {
@@ -85,7 +137,16 @@ async function load(reset = false) {
       failed.value = true
     }
   } finally {
+    if (!rebuildPending.value) {
+      rawComments.value = merged
+      // 后端 total 可能偏小：已扫到的原始条数不能比它少
+      total.value = Math.max(total.value, merged.length)
+    }
     loading.value = false
+    if (rebuildPending.value) {
+      rebuildPending.value = false
+      void refresh()
+    }
   }
 }
 
@@ -105,7 +166,14 @@ async function refresh() {
   total.value = 0
   page.value = 1
   finished.value = false
+  failed.value = false
+  scanNotice.value = undefined
   scrollToTop()
+  if (loading.value) {
+    // 正在补页：这一轮结束后再重建，旧响应不会写回刚清空的列表
+    rebuildPending.value = true
+    return
+  }
   await load(true)
 }
 
@@ -186,14 +254,19 @@ onBeforeUnmount(() => {
       </button>
     </div>
 
+    <p v-if="scanNotice !== undefined" class="notice">
+      {{ t('comments.scanLimit', { scanned: scanNotice.scanned, blocked: scanNotice.blocked }) }}
+    </p>
+
     <button
       v-if="!finished && rawComments.length > 0"
       class="load-more"
       type="button"
       :disabled="loading"
       @click="load(false)">
-      {{ t('comments.loadMore') }}
+      {{ loading ? t('mobile.loading') : t('comments.loadMore') }}
     </button>
+    <p v-else-if="finished && visibleComments.length > 0" class="no-more">{{ t('comments.noMore') }}</p>
 
     <comment-block-sheet v-model:showing="blockSettingsShowing" />
   </section>
@@ -311,6 +384,22 @@ onBeforeUnmount(() => {
   margin-left: auto;
 }
 
+.notice {
+  margin: 0;
+  color: #d96200;
+  font-size: 12px;
+  line-height: 1.5;
+  text-align: center;
+}
+
+.no-more {
+  margin: 0;
+  color: #aaa;
+  font-size: 12px;
+  line-height: 1.5;
+  text-align: center;
+}
+
 .retry {
   margin-left: 6px;
   padding: 4px 12px;
@@ -330,5 +419,10 @@ onBeforeUnmount(() => {
   background: #fff;
   color: #d96200;
   font-size: 13px;
+}
+
+.load-more:disabled {
+  border-color: #eee;
+  color: #aaa;
 }
 </style>

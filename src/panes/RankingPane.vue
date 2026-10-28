@@ -8,6 +8,7 @@ import { useGridColumns } from '../comicGrid.ts'
 import LoadingSpinner from '../components/LoadingSpinner.vue'
 import { useStore } from '../store.ts'
 import { useI18n } from '../i18n.ts'
+import { showError } from '../errors.ts'
 
 const store = useStore()
 const { t } = useI18n()
@@ -52,19 +53,31 @@ const loading = computed(() =>
   currentView.value === 'ranking' ? rankingLoading.value : weeklyLoading.value,
 )
 
+/// 连点榜种/周期/翻页时只认最后一次请求：旧响应晚到不许覆盖新结果
+let rankingRequestId = 0
+
 async function getRanking() {
+  const current = ++rankingRequestId
   rankingLoading.value = true
-  const result = await commands.getRanking(rankingCategory.value, rankingOrder.value, rankingPage.value)
-  rankingLoading.value = false
-  if (result.status === 'error') {
-    console.error(result.error)
-    return
+  try {
+    const result = await commands.getRanking(rankingCategory.value, rankingOrder.value, rankingPage.value)
+    if (current !== rankingRequestId) {
+      return
+    }
+    if (result.status === 'error') {
+      showError(result.error)
+      return
+    }
+    rankingResult.value = result.data
+  } finally {
+    if (current === rankingRequestId) {
+      rankingLoading.value = false
+    }
   }
-  rankingResult.value = result.data
 }
 
+/// 换榜种/周期/页码：先把列表滚回顶部，失败时保留旧数据（别让整块变成空白）
 async function reloadRanking() {
-  rankingResult.value = undefined
   await getRanking()
   await nextTick()
   scrollListToTop(listRef.value)
@@ -101,16 +114,26 @@ watch(
   },
 )
 
-async function getWeekly() {
-  weeklyLoading.value = true
-  const result = await commands.getWeekly(selectedCategoryId.value, currentWeeklyTypeId.value)
-  weeklyLoading.value = false
-  if (result.status === 'error') {
-    console.error(result.error)
-    return
-  }
+let weeklyRequestId = 0
 
-  store.getWeeklyResult = result.data
+async function getWeekly() {
+  const current = ++weeklyRequestId
+  weeklyLoading.value = true
+  try {
+    const result = await commands.getWeekly(selectedCategoryId.value, currentWeeklyTypeId.value)
+    if (current !== weeklyRequestId) {
+      return
+    }
+    if (result.status === 'error') {
+      showError(result.error)
+      return
+    }
+    store.getWeeklyResult = result.data
+  } finally {
+    if (current === weeklyRequestId) {
+      weeklyLoading.value = false
+    }
+  }
 }
 
 onMounted(async () => {
@@ -118,14 +141,19 @@ onMounted(async () => {
 
   const result = await commands.getWeeklyInfo()
   if (result.status === 'error') {
-    console.error(result.error)
+    showError(result.error)
     return
   }
 
   weeklyInfo.value = result.data
 
-  selectedCategoryId.value = result.data.categories[0].id
-  currentWeeklyTypeId.value = result.data.type[result.data.type.length - 1].id
+  // 接口没给分类/类型时不做默认选中：留空显示，别在空数组上取下标
+  const firstCategory = result.data.categories[0]
+  const lastType = result.data.type[result.data.type.length - 1]
+  if (firstCategory !== undefined && lastType !== undefined) {
+    selectedCategoryId.value = firstCategory.id
+    currentWeeklyTypeId.value = lastType.id
+  }
 })
 </script>
 

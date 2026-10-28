@@ -25,6 +25,9 @@ use crate::{
 /// 页面内存缓存上限（字节）：命中缓存的翻页是零IO的
 const PAGE_CACHE_BUDGET: usize = 256 * 1024 * 1024;
 
+/// 单页读取上限：cbz 里声明的大小不可信，坏条目声明天文数字会一次性分配把进程带走
+const MAX_CBZ_PAGE_BYTES: u64 = 32 * 1024 * 1024;
+
 /// 阅读器状态：章节登记表 + 页面内存缓存
 #[derive(Default)]
 pub struct ReaderState {
@@ -142,9 +145,16 @@ impl ChapterSource {
                 let file = File::open(path).wrap_err(format!("打开cbz`{}`失败", path.display()))?;
                 let mut archive = zip::ZipArchive::new(file)
                     .wrap_err(format!("解析cbz`{}`失败", path.display()))?;
-                let mut entry = archive.by_name(name).wrap_err("在cbz中找不到该页")?;
+                let entry = archive.by_name(name).wrap_err("在cbz中找不到该页")?;
+                // 上限只防坏包：cbz 里声明的尺寸不可信，坏条目声明天文数字会一口气分配把进程带走
+                if entry.size() > MAX_CBZ_PAGE_BYTES {
+                    return Err(eyre!("cbz 里的图片过大：{}", entry.size()));
+                }
                 let mut buffer = Vec::with_capacity(usize::try_from(entry.size()).unwrap_or(0));
-                entry.read_to_end(&mut buffer).wrap_err("读取cbz中的图片失败")?;
+                entry
+                    .take(MAX_CBZ_PAGE_BYTES)
+                    .read_to_end(&mut buffer)
+                    .wrap_err("读取cbz中的图片失败")?;
                 Ok((Bytes::from(buffer), content_type_of(name)))
             }
             ChapterSource::Remote { .. } => Err(eyre!("在线章节请使用 read_remote_page")),
@@ -547,8 +557,16 @@ fn content_type_of(page_name: &str) -> &'static str {
 
 /// 自定义协议 `comic` 的处理函数
 /// - `/page/{token}/{index}` 返回某一页的图片字节
-/// - 命中内存缓存时零IO；未命中时后台线程读取（不阻塞主线程）
+/// - 命中内存缓存时零IO；未命中时由协议工作线程读取（桌面端不在 UI 线程上，见 lib.rs）
 pub fn handle_request(app: &AppHandle, path: &str) -> tauri::http::Response<Vec<u8>> {
+    // 取图的进入/完成时间与线程：卡顿时要能看出它是不是和命令抢同一个线程
+    let entered = crate::measure::enter("reader-page", &format!("path={path}"));
+    let response = handle_request_inner(app, path);
+    crate::measure::finish("reader-page", entered, &format!("path={path}"));
+    response
+}
+
+fn handle_request_inner(app: &AppHandle, path: &str) -> tauri::http::Response<Vec<u8>> {
     let Some((token, index)) = parse_page_path(path) else {
         return not_found("unknown path");
     };

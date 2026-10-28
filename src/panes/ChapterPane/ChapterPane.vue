@@ -18,6 +18,7 @@ import { localCoverUrl } from '../../reader/protocol.ts'
 import { getProgress, progressLabel } from '../../reader/progress.ts'
 import { useI18n } from '../../i18n.ts'
 import { openReaderForComic } from '../../reader/localReader.ts'
+import { openComicDetail } from '../../openComicDetail.ts'
 
 export type ChapterPaneMode = 'download' | 'export'
 
@@ -32,6 +33,15 @@ const commentsShowing = ref<boolean>(false)
 const commentTarget = computed<CommentTarget | undefined>(() =>
   store.pickedComic === undefined ? undefined : { kind: 'comic', id: store.pickedComic.id },
 )
+/// 评论抽屉的章节表：详情页有完整章节列表（带 chapterId），可直接切到任意一话
+const commentChapters = computed(() =>
+  (store.pickedComic?.chapterInfos ?? []).map((info) => ({ title: info.chapterTitle, id: info.chapterId })),
+)
+/// 默认看读到的那一话；没有进度就是第 1 话
+const commentChapterIndex = computed(() => {
+  const comic = store.pickedComic
+  return comic === undefined ? 0 : (getProgress(comic.id)?.chapter ?? 0)
+})
 
 /// 点禁漫号复制，方便贴到浏览器或反馈里
 async function copyComicId() {
@@ -54,18 +64,13 @@ watch(
   },
 )
 
+
+/// 收藏状态等变了以后重取一次详情：仍走唯一入口 openComicDetail，不再维护第二套取详情逻辑
 async function reloadPickedComic() {
   if (store.pickedComic === undefined) {
     return
   }
-
-  const result = await commands.getComic(store.pickedComic.id)
-  if (result.status === 'error') {
-    console.error(result.error)
-    return
-  }
-
-  store.pickedComic = result.data
+  await openComicDetail(store.pickedComic.id)
 }
 
 /// 上次读到哪儿（有进度时按钮就显示「继续阅读」）
@@ -82,12 +87,18 @@ const readTitle = computed(() =>
     ? t('comic.openReader')
     : t('comic.continueReading', { title: progressText.value }),
 )
+/// 这本漫画的阅读器是不是正在打开：按钮转圈 + 禁用，连点只走一次
+const openingReader = computed(() =>
+  store.pickedComic === undefined
+    ? false
+    : store.isOpeningReader({ comicId: store.pickedComic.id }),
+)
 
 /// 阅读：和本地库存卡片走同一个入口——下载过 / 导出过 cbz 就先本地读，都没有才在线读；
 /// 阅读器自己会恢复到上次读到的位置
 async function readComic() {
   const comic = store.pickedComic
-  if (comic === undefined) {
+  if (comic === undefined || openingReader.value) {
     return
   }
   await openReaderForComic(comic)
@@ -139,7 +150,14 @@ async function showComicDownloadDirInFileManager() {
           </div>
           <span class="text-gray"><tag-links :tags="store.pickedComic.tags" /></span>
           <div class="flex items-center gap-2 mt-auto">
-            <n-button size="small" type="primary" secondary :title="readTitle" @click="readComic">
+            <n-button
+              size="small"
+              type="primary"
+              secondary
+              :title="readTitle"
+              :loading="openingReader"
+              :disabled="openingReader"
+              @click="readComic">
               <template #icon>
                 <n-icon>
                   <PhBookOpen />
@@ -187,7 +205,9 @@ async function showComicDownloadDirInFileManager() {
       <CommentDrawer
         v-if="commentTarget !== undefined"
         v-model:showing="commentsShowing"
-        :target="commentTarget" />
+        :target="commentTarget"
+        :chapters="commentChapters"
+        :chapter-index="commentChapterIndex" />
     </template>
   </div>
 </template>

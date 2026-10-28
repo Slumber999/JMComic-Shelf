@@ -21,6 +21,9 @@ const SIGN_NOT_LOGGED_IN: &str = "登录态无效或已过期，请重新登录"
 
 /// 评论归属：官方 /forum 按 mode 区分——全站/漫画是 `mode=all`（漫画多带 aid），
 /// 小说是 `mode=novel` + nid。注意带 `mode=all` 时官方会直接忽略 nid，只会回全站评论
+///
+/// 官方评论没有单独的章节参数，评论是按「章节（photo）」归档的，章节 id 就填在 aid 里；
+/// 整本 id 恰好等于第 1 话的 id，所以「整本评论」实际只是第 1 话的评论
 #[derive(Debug, Clone, Copy)]
 enum CommentTarget {
     All,
@@ -48,6 +51,16 @@ impl CommentTarget {
             }
         }
         serde_json::Value::Object(query)
+    }
+}
+
+/// 选评论归属：章节 id 优先（官方只有 aid 一个字段，章节 id 也填这里），
+/// 其次漫画 id，都不传就是全站最新评论
+fn comment_target(aid: Option<i64>, chapter_id: Option<i64>) -> CommentTarget {
+    match (aid, chapter_id) {
+        (_, Some(chapter_id)) => CommentTarget::Comic(chapter_id),
+        (Some(aid), None) => CommentTarget::Comic(aid),
+        (None, None) => CommentTarget::All,
     }
 }
 
@@ -83,6 +96,8 @@ const FAST_FAIL_MS: u128 = 500;
 
 /// 同线路快速重试前的间隔：给服务端的瞬时故障一点恢复时间
 const FAST_RETRY_DELAY: Duration = Duration::from_millis(400);
+/// 所有线路都失败后的最后一次同线路尝试（仅 GET、仅慢失败）
+const LAST_RESORT_RETRY_DELAY: Duration = Duration::from_millis(600);
 
 /// 有界快速重试的唯一判定：GET（幂等）+ 快速失败（耗时 < FAST_FAIL_MS）+ 本次请求还没重试过。
 /// - POST 一律不重试：重复评论 / 签到 / 收藏比失败更糟
@@ -288,8 +303,13 @@ impl JmClient {
         // 只有 GET 才把「不是 JSON」当成这次尝试失败：POST 重发可能造成重复提交
         let check_json = expect_json && method == reqwest::Method::GET;
 
-        // 冷启动还不知道哪条线路能用：候选并发抢跑，避免「第一条挂掉的线路先等 2s 超时」
-        if !lines::has_active_api_line() && candidates.len() > 1 {
+        // 冷启动还不知道哪条线路能用：候选并发抢跑，避免「第一条挂掉的线路先等 2s 超时」。
+        // 只有 GET 能抢跑：同一条 POST 并发发到多条线路会被服务端执行两次
+        // （收藏被反切回来、重复签到就是这条路径），POST 仍然按顺序换线
+        if !lines::has_active_api_line()
+            && candidates.len() > 1
+            && method == reqwest::Method::GET
+        {
             if let Some((domain, status, body)) = race_cold_start(
                 self.api_client.clone(),
                 candidates.clone(),
@@ -344,6 +364,14 @@ impl JmClient {
                         retried = true;
                         log_fast_retry(domain, elapsed_ms, reason, &detail);
                         tokio::time::sleep(FAST_RETRY_DELAY).await;
+                        continue;
+                    }
+                    // 最后一条线路也慢失败（多半是超时）：GET 再给它一次机会。
+                    // 网络抖动时这一下往往就通了，用户不必看到报错。
+                    if last_candidate && method == reqwest::Method::GET && !retried && elapsed_ms >= 500 {
+                        retried = true;
+                        log_fast_retry(domain, elapsed_ms, reason, &detail);
+                        tokio::time::sleep(LAST_RESORT_RETRY_DELAY).await;
                         continue;
                     }
                     // 慢失败 / POST / 已经重试过：走原来的换线逻辑
@@ -851,13 +879,22 @@ impl JmClient {
         .await
     }
 
-    /// 漫画评论：aid 传漫画 id 就是单本评论，不传就是全站最新评论
+    /// 漫画评论：aid 传漫画 id 就是整本评论，不传就是全站最新评论
     /// （官方 App 接口 /forum，只读；发评论走的是网页端接口，App 接口不支持）
     ///
+    /// chapter_id 传某一话的章节 id 时取这一话的评论：官方没有章节参数，
+    /// 评论本身按章节（photo）归档，章节 id 直接当 aid 用（实测同一本第 2/3/4 话
+    /// 的总数各不相同，且与整本的不同）。chapter_id 优先于 aid。
+    ///
     /// 官方接口每页固定 10 条、且不接受页大小参数，这里并发拉 3 页合成 30 条一页
-    #[instrument(level = "error", skip_all, fields(aid = ?aid, page = page))]
-    pub async fn get_comments(&self, aid: Option<i64>, page: i64) -> eyre::Result<CommentPage> {
-        let target = aid.map_or(CommentTarget::All, CommentTarget::Comic);
+    #[instrument(level = "error", skip_all, fields(aid = ?aid, chapter_id = ?chapter_id, page = page))]
+    pub async fn get_comments(
+        &self,
+        aid: Option<i64>,
+        page: i64,
+        chapter_id: Option<i64>,
+    ) -> eyre::Result<CommentPage> {
+        let target = comment_target(aid, chapter_id);
         self.get_comments_by_target(target, page).await
     }
 
@@ -1219,6 +1256,30 @@ impl JmClient {
         .await
     }
 
+    /// 每周连载更新：type = all / manga / hanman，date = 0..6（周一..周日），page 从 1 开始
+    #[instrument(level = "error", skip_all, fields(type_id = type_id, date = date, page = page))]
+    pub async fn get_serialization(
+        &self,
+        type_id: &str,
+        date: i64,
+        page: i64,
+    ) -> eyre::Result<GetWeeklyRespData> {
+        let query = json!({
+            "type": type_id,
+            "date": date,
+            "page": page,
+        });
+        self.request_decrypted(
+            reqwest::Method::GET,
+            ApiPath::GetSerialization,
+            Some(query),
+            None,
+            "获取连载更新失败",
+            "将解密后的data字段解析为GetWeeklyRespData",
+        )
+        .await
+    }
+
     #[instrument(level = "error", skip_all, fields(aid = aid))]
     pub async fn toggle_favorite_comic(&self, aid: i64) -> eyre::Result<ToggleFavoriteRespData> {
         let form = json!({
@@ -1253,9 +1314,10 @@ impl JmClient {
                 None,
             )
             .await?;
-        // 这个接口即使操作没生效也可能返回 code 200，要自己看 status
-        let action_resp_data: FavoriteFolderActionRespData =
-            serde_json::from_str(&data).unwrap_or_default();
+        // 这个接口即使操作没生效也可能返回 code 200，要自己看 status：
+        // 解析不出来（限流页、错误页）就是没成功，不能按默认值当成功放过去
+        let action_resp_data: FavoriteFolderActionRespData = serde_json::from_str(&data)
+            .wrap_err("移动收藏夹失败：响应解析失败")?;
         if !action_resp_data.status.is_empty() && action_resp_data.status != "ok" {
             return Err(eyre!(
                 "移动收藏夹失败: {}",
@@ -1384,5 +1446,29 @@ mod retry_tests {
         assert!(!should_fast_retry(&reqwest::Method::POST, 10, false));
         // 一个请求只重试一次
         assert!(!should_fast_retry(&reqwest::Method::GET, 10, true));
+    }
+}
+
+#[cfg(test)]
+mod comment_tests {
+    use super::*;
+
+    /// 官方没有章节参数：章节 id 必须落到 aid 上，且 chapter_id 优先于 aid
+    #[test]
+    fn chapter_comment_uses_chapter_id_as_aid() {
+        assert!(matches!(
+            comment_target(Some(1044827), Some(1044832)),
+            CommentTarget::Comic(1044832)
+        ));
+        assert!(matches!(
+            comment_target(Some(1044827), None),
+            CommentTarget::Comic(1044827)
+        ));
+        assert!(matches!(comment_target(None, None), CommentTarget::All));
+
+        let query = CommentTarget::Comic(1044832).to_query(2);
+        assert_eq!(query["mode"], "all");
+        assert_eq!(query["aid"], 1044832);
+        assert_eq!(query["page"], 2);
     }
 }

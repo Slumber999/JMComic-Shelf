@@ -145,11 +145,12 @@ async getComic(aid: number) : Promise<Result<Comic, CommandError>> {
 }
 },
 /**
- * 漫画评论（只读）：aid 传漫画 id 就是单本评论，不传就是全站最新评论
+ * 漫画评论（只读）：aid 传漫画 id 就是整本评论，不传就是全站最新评论；
+ * chapter_id 传某一话的章节 id 时取这一话的评论（官方评论按章节归档）
  */
-async getComments(aid: number | null, page: number) : Promise<Result<CommentPage, CommandError>> {
+async getComments(aid: number | null, page: number, chapterId: number | null) : Promise<Result<CommentPage, CommandError>> {
     try {
-    return { status: "ok", data: await TAURI_INVOKE("get_comments", { aid, page }) };
+    return { status: "ok", data: await TAURI_INVOKE("get_comments", { aid, page, chapterId }) };
 } catch (e) {
     if(e instanceof Error) throw e;
     else return { status: "error", error: e  as any };
@@ -322,6 +323,14 @@ async getWeeklyInfo() : Promise<Result<GetWeeklyInfoRespData, CommandError>> {
 async getWeekly(categoryId: string, typeId: string) : Promise<Result<GetWeeklyResult, CommandError>> {
     try {
     return { status: "ok", data: await TAURI_INVOKE("get_weekly", { categoryId, typeId }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+async getSerialization(typeId: string, date: number, page: number) : Promise<Result<GetWeeklyResult, CommandError>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("get_serialization", { typeId, date, page }) };
 } catch (e) {
     if(e instanceof Error) throw e;
     else return { status: "error", error: e  as any };
@@ -537,7 +546,7 @@ async exportCbzChaptersWithoutDownload(comic: Comic, chapterIds: number[]) : Pro
 }
 },
 /**
- * 打包一本本地漫画成 zip（章节做文件夹），写到下载目录下，返回 zip 的完整路径；同名 zip 覆盖
+ * 打包一本漫画成 zip，返回保存位置（桌面是完整路径，Android 是 `Download/禁漫书架/{文件名}`）；同名 zip 直接覆盖
  */
 async exportComicZip(comicId: number, source: LocalLibrarySource) : Promise<Result<string, CommandError>> {
     try {

@@ -75,6 +75,8 @@ fn now_ms() -> u128 {
 
 fn measure(line: String) {
     crate::android_log::log_line("JMCOVER", &line);
+    // 桌面端没有 logcat：同一份时间线也写进 debug 日志（Android 顺手进文件，方便对照）
+    tracing::debug!("{line}");
 }
 
 /// 简单的LRU：用IndexMap的插入顺序当访问顺序，超预算就从最旧的开始淘汰
@@ -150,7 +152,8 @@ fn cover_response(
     let entered = now_ms();
     let inflight = INFLIGHT.fetch_add(1, Ordering::SeqCst) + 1;
     measure(format!(
-        "cover-enter id={comic_id} w={width} t0={entered} inflight={inflight}"
+        "cover-enter id={comic_id} w={width} t0={entered} inflight={inflight} thread={}",
+        crate::measure::thread_name(),
     ));
     let outcome = cover_payload(app, comic_id, local_dir, width);
     INFLIGHT.fetch_sub(1, Ordering::SeqCst);
@@ -158,21 +161,23 @@ fn cover_response(
     match outcome {
         Ok(payload) => {
             measure(format!(
-                "cover id={comic_id} w={width} t0={entered} t1={} src={} bytes={} wait_ms={} net_ms={} total_ms={} inflight={inflight}",
+                "cover id={comic_id} w={width} t0={entered} t1={} src={} bytes={} wait_ms={} net_ms={} total_ms={} inflight={inflight} thread={}",
                 now_ms(),
                 payload.src,
                 payload.bytes.len(),
                 payload.wait_ms,
                 payload.net_ms,
                 now_ms().saturating_sub(entered),
+                crate::measure::thread_name(),
             ));
             image_response(payload.bytes, payload.content_type)
         }
         Err(err) => {
             measure(format!(
-                "cover id={comic_id} t0={entered} t1={} src=fail total_ms={} message={err}",
+                "cover id={comic_id} t0={entered} t1={} src=fail total_ms={} thread={} message={err}",
                 now_ms(),
                 now_ms().saturating_sub(entered),
+                crate::measure::thread_name(),
             ));
             tracing::error!(message = %err, "获取封面失败");
             not_found("fetch cover failed")
@@ -360,8 +365,11 @@ fn write_thumb_disk(app: &AppHandle, comic_id: i64, width: u32, bytes: &[u8]) {
     let Some(path) = thumb_disk_path(app, comic_id, width) else {
         return;
     };
-    // 先写临时文件再改名：并发读时不会读到半个文件
-    let tmp = path.with_extension("jpg.tmp");
+    // 先写临时文件再改名：并发读时不会读到半个文件。
+    // 临时名带进程 + 序号：同一张封面的并发请求各写各的，不会互相截断后 rename 出半个 JPEG
+    static TEMP_SEQ: AtomicUsize = AtomicUsize::new(0);
+    let unique = TEMP_SEQ.fetch_add(1, Ordering::Relaxed);
+    let tmp = path.with_extension(format!("jpg.{}.{}.tmp", std::process::id(), unique));
     if std::fs::write(&tmp, bytes).is_ok() {
         let _ = std::fs::rename(&tmp, &path);
     }

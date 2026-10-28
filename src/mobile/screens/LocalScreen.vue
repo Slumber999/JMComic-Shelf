@@ -5,7 +5,7 @@ let tagsExpandedInSession = false
 
 <script setup lang="ts">
 import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
-import { PhArrowClockwise, PhTag } from '@phosphor-icons/vue'
+import { PhArrowClockwise, PhArrowsDownUp, PhTag } from '@phosphor-icons/vue'
 import { useDialog, useMessage } from 'naive-ui'
 import { commands } from '../../bindings.ts'
 import type { Comic, LocalLibrarySource, LocalTag } from '../../bindings.ts'
@@ -34,7 +34,7 @@ const MEMORY_KEY = 'local'
 /// 用 320 会被放大 2~3 倍显得糊
 const LOCAL_COVER_WIDTH = 720
 
-const { t } = useI18n()
+const { t, locale } = useI18n()
 const store = useStore()
 const { scrollToTop } = useScreenScroll()
 const { save, restore } = useListMemory(MEMORY_KEY)
@@ -62,7 +62,7 @@ const tagsExpanded = ref(tagsExpandedInSession)
 watch(tagsExpanded, (value) => {
   tagsExpandedInSession = value
 })
-const { selecting, selectedIds, selectedCount, isSelected, enter, toggle, setAll, invert, exit } =
+const { selecting, selectedIds, selectedCount, isSelected, enter, toggle, setAll, exit } =
   useSelection()
 const {
   exporting: zipExporting,
@@ -110,7 +110,79 @@ function sortByFavoriteOrder(list: Comic[], order: Map<number, number>): Comic[]
   })
 }
 
-const orderedComics = computed(() => sortByFavoriteOrder(comics.value, favoriteOrder.value))
+/// 排序方式：只作用于「下载的」页签。收藏顺序 = 按收藏索引（最新收藏在前）；
+/// 下载顺序 = 后端 get_local_comics 返回的原始顺序——后端 get_downloaded_comics 已经按
+/// 元数据文件的 mtime 倒序返回（本地索引里没有单独的下载时间字段，Comic 上也没有），
+/// 所以这里直接沿用后端顺序，不自己猜 mtime
+const SORT_MODE_KEY = 'local:sortMode'
+type LocalSortMode = 'favorite' | 'download'
+
+function readSortMode(): LocalSortMode {
+  try {
+    const saved = localStorage.getItem(SORT_MODE_KEY)
+    if (saved === 'favorite' || saved === 'download') {
+      return saved
+    }
+  } catch {
+    // 忽略 localStorage 读取失败（隐私模式）：按默认的收藏顺序
+  }
+  return 'favorite'
+}
+
+const sortMode = ref<LocalSortMode>(readSortMode())
+
+/// 后端返回时的名次（0 = 最新下载 / 最近更新元数据的那本）；列表重载时一起更新，
+/// 排序只读这份名次，所以不会被收藏顺序的重排影响
+const downloadOrder = ref<Map<number, number>>(new Map())
+
+/// 按下载顺序倒序：名次越小越靠前；缺名次的保持相对顺序排最后
+function sortByDownloadOrder(list: Comic[], order: Map<number, number>): Comic[] {
+  if (order.size === 0) {
+    return list
+  }
+  return [...list].sort((a, b) => {
+    const left = order.get(a.id) ?? Number.MAX_SAFE_INTEGER
+    const right = order.get(b.id) ?? Number.MAX_SAFE_INTEGER
+    return left - right
+  })
+}
+
+/// 「导出的」页签不提供下载顺序：索引里没有下载时间，那里保持原来的收藏顺序
+const activeSortMode = computed<LocalSortMode>(() =>
+  store.localLibrarySource === 'DownloadDir' ? sortMode.value : 'favorite',
+)
+
+const orderedComics = computed(() =>
+  activeSortMode.value === 'download'
+    ? sortByDownloadOrder(comics.value, downloadOrder.value)
+    : sortByFavoriteOrder(comics.value, favoriteOrder.value),
+)
+
+/// 按钮上直接写当前排序方式（不只靠图标），点一下在两种之间切换。
+/// 文案只放在这里：这是移动端本地库存专属的排序，不改桌面共用的 locales（桌面用不到）
+const sortLabels = computed(() => {
+  const zhTW = locale.value === 'zh-TW'
+  return {
+    favorite: zhTW ? '收藏順序' : '收藏顺序',
+    download: zhTW ? '下載順序' : '下载顺序',
+  }
+})
+
+/// 只有「下载的」页签能切：换排序后回到第一页，否则停在原页码上看不出顺序变了
+function toggleSortMode() {
+  if (store.localLibrarySource !== 'DownloadDir') {
+    return
+  }
+  sortMode.value = sortMode.value === 'favorite' ? 'download' : 'favorite'
+  try {
+    localStorage.setItem(SORT_MODE_KEY, sortMode.value)
+  } catch {
+    // 忽略 localStorage 写入失败
+  }
+  page.value = 1
+  scrollToTop()
+}
+
 const filteredComics = computed(() => {
   if (selectedTags.value.length === 0) {
     return orderedComics.value
@@ -130,6 +202,8 @@ async function load() {
   try {
     const list = await commands.getLocalComics(store.localLibrarySource)
     comics.value = list
+    // 后端按元数据 mtime 倒序返回：把这份名次留给「下载顺序」排序用
+    downloadOrder.value = new Map(list.map((comic, position) => [comic.id, position]))
     // 外壳的「继续阅读」也用这份库存
     store.downloadedComics = list
     page.value = 1
@@ -215,10 +289,6 @@ function selectAll() {
   setAll(filteredComics.value.map((comic) => comic.id))
 }
 
-function invertSelection() {
-  invert(filteredComics.value.map((comic) => comic.id))
-}
-
 /// 删除不可撤销：先确认，再逐本调用后端的删除命令（会直接删磁盘目录）
 function confirmDelete() {
   if (selectedCount.value === 0 || deleting.value) {
@@ -279,7 +349,7 @@ async function exportSelectedZip() {
   if (selectedCount.value === 0 || deleting.value || zipExporting.value) {
     return
   }
-  // 按列表显示顺序（收藏顺序）逐本打包，和用户看到的顺序一致
+  // 按列表显示顺序（当前排序方式）逐本打包，和用户看到的顺序一致
   const targets = orderedComics.value.filter((comic) => selectedIds.value.has(comic.id))
   if (targets.length === 0) {
     exit()
@@ -369,9 +439,6 @@ onBeforeUnmount(() => save(page.value, context.value))
       <button type="button" :disabled="deleting || zipExporting" @click="selectAll">
         {{ t('mobile.selectAll') }}
       </button>
-      <button type="button" :disabled="deleting || zipExporting" @click="invertSelection">
-        {{ t('mobile.invertSelection') }}
-      </button>
       <button class="primary" type="button" :disabled="deleting || zipExporting" @click="exportSelectedZip">
         {{ t('mobile.zipExport') }}
       </button>
@@ -440,9 +507,24 @@ onBeforeUnmount(() => save(page.value, context.value))
             : t('downloaded.totalCount', { count: comics.length })
         }}
       </span>
-      <button class="refresh" type="button" :aria-label="t('common.refresh')" @click="refresh">
-        <ph-arrow-clockwise :size="16" />
-      </button>
+      <div class="tools">
+        <!-- 排序按钮：只给「下载的」页签（「导出的」保持收藏顺序），放在刷新左边 -->
+        <button
+          v-if="store.localLibrarySource === 'DownloadDir'"
+          class="sort"
+          :class="{ active: sortMode === 'download' }"
+          type="button"
+          :aria-pressed="sortMode === 'download'"
+          :aria-label="`${t('mobile.sortFilter')}：${sortLabels[sortMode]}`"
+          :title="`${t('mobile.sortFilter')}：${sortLabels[sortMode]}`"
+          @click="toggleSortMode">
+          <ph-arrows-down-up :size="14" />
+          <span>{{ sortLabels[sortMode] }}</span>
+        </button>
+        <button class="refresh" type="button" :aria-label="t('common.refresh')" @click="refresh">
+          <ph-arrow-clockwise :size="16" />
+        </button>
+      </div>
     </div>
 
     <list-status
@@ -562,11 +644,41 @@ onBeforeUnmount(() => save(page.value, context.value))
   display: flex;
   align-items: center;
   justify-content: space-between;
+  gap: 8px;
 }
 
 .count {
   color: #888;
   font-size: 12px;
+}
+
+.tools {
+  display: flex;
+  flex: 0 0 auto;
+  align-items: center;
+  gap: 6px;
+}
+
+/* 当前排序方式直接写在按钮上（收藏顺序 / 下载顺序），不只靠图标状态 */
+.sort {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  height: 28px;
+  padding: 0 9px;
+  border: 1px solid #e6e6e6;
+  border-radius: 999px;
+  background: #fff;
+  color: #555;
+  font-size: 11px;
+  white-space: nowrap;
+}
+
+.sort.active {
+  border-color: #ff7a00;
+  background: #fff2e6;
+  color: #d96200;
+  font-weight: 600;
 }
 
 .refresh {

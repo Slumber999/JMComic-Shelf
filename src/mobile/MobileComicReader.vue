@@ -18,7 +18,7 @@ import { readerLoadingGif, warmReaderLoadingGif } from './readerLoadingGif.ts'
 import { readerHand, setReaderHand } from './useReaderHand.ts'
 import { useOverlayLayer } from './useNavStack.ts'
 
-/// 手机专用阅读器：操作栏竖排在左右一侧、底部是可拖动进度条；双击缩放、swipe 翻页、单击切换控件
+/// 手机专用阅读器：操作栏竖排在左右一侧、底部是可拖动进度条；swipe 翻页、单击切换控件
 const props = defineProps<{ comic?: Comic; comicId?: number; startChapter?: number }>()
 const showing = defineModel<boolean>('showing', { required: true })
 
@@ -34,7 +34,6 @@ const pageIndex = ref<number>(0)
 const readingMode = ref<ReadingMode>('scroll')
 const opening = ref<boolean>(false)
 const preparing = ref<boolean>(false)
-const zoom = ref<1 | 2>(1)
 const isFavorite = ref<boolean>(false)
 const commentDrawerShowing = ref<boolean>(false)
 const chapterSheetShowing = ref<boolean>(false)
@@ -91,6 +90,8 @@ const modeIcon = computed(() => (readingMode.value === 'scroll' ? PhRows : PhCol
 const commentTarget = computed<CommentTarget | undefined>(() =>
   comicId.value === 0 ? undefined : { kind: 'comic', id: comicId.value },
 )
+/// 评论抽屉的章节表：跟着阅读器章节顺序，默认看当前这一话的评论
+const commentChapters = computed(() => chapters.value.map((chapter) => ({ title: chapter.title })))
 
 const pageUrls = computed<string[]>(() => {
   const chapter = currentChapter.value
@@ -201,7 +202,7 @@ function ratioKey(index: number): string {
 
 function pageHeight(index: number): number {
   const ratio = pageRatios.get(ratioKey(index)) ?? PLACEHOLDER_RATIO
-  const width = (viewportWidth.value || 360) * zoom.value
+  const width = viewportWidth.value || 360
   return Math.round(width * ratio)
 }
 
@@ -217,7 +218,7 @@ function onScrollPageLoad(index: number, event: Event) {
       const container = scrollContainer.value
       const page = image.closest<HTMLElement>('[data-page-index]')
       if (container !== undefined && page !== null && page.offsetTop < container.scrollTop) {
-        container.scrollTop += (ratio - before) * (viewportWidth.value || 360) * zoom.value
+        container.scrollTop += (ratio - before) * (viewportWidth.value || 360)
       }
     }
   }
@@ -299,7 +300,7 @@ async function open() {
   opening.value = true
   closed = false
   readingMode.value = 'scroll'
-  zoom.value = 1
+  
   // 每次打开都从正常窗口起步，低内存压小只影响当次阅读
   mountWindow.value = PAGE_MOUNT_WINDOW
   prefetchEnabled = true
@@ -395,7 +396,7 @@ async function close() {
   pageRatios.clear()
   seekRatio.value = undefined
   seeking.value = false
-  zoom.value = 1
+  
   await commands.closeReader()
 }
 
@@ -488,7 +489,7 @@ async function goToChapter(index: number, page = 0) {
 
   chapterIndex.value = Math.min(Math.max(index, 0), count - 1)
   pageIndex.value = 0
-  zoom.value = 1
+  
   pageStates.value = {}
 
   const ready = await ensureChapterReady(chapterIndex.value)
@@ -665,7 +666,7 @@ function setMode(mode: ReadingMode) {
     return
   }
   readingMode.value = mode
-  zoom.value = 1
+  
   // 换模式后预取窗口也跟着换（翻页模式预取相邻 3 页）
   preloadAround()
   void nextTick(() => {
@@ -733,9 +734,8 @@ function onSeek(ratio: number) {
   showBar()
 }
 
-// ---------- 手势：双击缩放 > swipe 翻页 > 单击切控件（边缘 15% 翻页） ----------
+// ---------- 手势：swipe 翻页 > 单击切控件（边缘 15% 翻页） ----------
 
-const DOUBLE_TAP_MS = 280
 const SWIPE_THRESHOLD = 50
 const DIRECTION_THRESHOLD = 8
 const TAP_MAX_MOVE = 10
@@ -751,10 +751,6 @@ interface PointerGesture {
 }
 
 let gesture: PointerGesture | undefined
-let tapTimer: number | undefined
-let lastTapAt = 0
-let lastTapX = 0
-let lastTapY = 0
 
 function onPointerDown(event: PointerEvent) {
   if (event.pointerType === 'mouse' && event.button !== 0) {
@@ -764,10 +760,6 @@ function onPointerDown(event: PointerEvent) {
   if (gesture !== undefined) {
     gesture = undefined
     return
-  }
-  if (tapTimer !== undefined) {
-    window.clearTimeout(tapTimer)
-    tapTimer = undefined
   }
   gesture = {
     id: event.pointerId,
@@ -806,7 +798,6 @@ function onPointerUp(event: PointerEvent) {
   // swipe：翻页模式 1x 时生效，放大后横向拖动用来平移图片
   if (
     readingMode.value === 'paged' &&
-    zoom.value === 1 &&
     current.axis === 'x' &&
     Math.abs(dx) >= SWIPE_THRESHOLD &&
     Math.abs(dx) > Math.abs(dy) * 1.2
@@ -831,31 +822,9 @@ function onPointerCancel(event: PointerEvent) {
   }
 }
 
-/// 单击动作延迟到双击窗口之后再执行，第二击能取消它
+/// 单击立即响应（双击缩放已移除，不再需要延迟判定）
 function handleTap(event: PointerEvent) {
-  const now = Date.now()
-  const isDouble =
-    now - lastTapAt <= DOUBLE_TAP_MS &&
-    Math.hypot(event.clientX - lastTapX, event.clientY - lastTapY) <= 30
-
-  if (isDouble) {
-    lastTapAt = 0
-    if (tapTimer !== undefined) {
-      window.clearTimeout(tapTimer)
-      tapTimer = undefined
-    }
-    void toggleZoom(event.clientX, event.clientY)
-    return
-  }
-
-  lastTapAt = now
-  lastTapX = event.clientX
-  lastTapY = event.clientY
-  const x = event.clientX
-  tapTimer = window.setTimeout(() => {
-    tapTimer = undefined
-    onSingleTap(x)
-  }, DOUBLE_TAP_MS)
+  onSingleTap(event.clientX)
 }
 
 function onSingleTap(clientX: number) {
@@ -864,7 +833,6 @@ function onSingleTap(clientX: number) {
   if (
     container !== undefined &&
     readingMode.value === 'paged' &&
-    zoom.value === 1 &&
     pageCount.value > 0
   ) {
     const rect = container.getBoundingClientRect()
@@ -881,32 +849,6 @@ function onSingleTap(clientX: number) {
   toggleBar()
 }
 
-/// 1x / 2x：内容宽度翻倍（paged 连高度一起），放大点尽量停在手指下方
-async function toggleZoom(clientX: number, clientY: number) {
-  if (loadingChapter.value || pageCount.value === 0) {
-    return
-  }
-
-  const container = scrollContainer.value
-  const previous = zoom.value
-  const next: 1 | 2 = previous === 1 ? 2 : 1
-  const rect = container?.getBoundingClientRect()
-  const px = rect === undefined ? 0 : clientX - rect.left
-  const py = rect === undefined ? 0 : clientY - rect.top
-  const beforeLeft = container?.scrollLeft ?? 0
-  const beforeTop = container?.scrollTop ?? 0
-
-  zoom.value = next
-  await nextTick()
-
-  if (container === undefined) {
-    return
-  }
-  container.scrollLeft = (beforeLeft + px) * (next / previous) - px
-  container.scrollTop = (beforeTop + py) * (next / previous) - py
-  showBar()
-}
-
 // ---------- 生命周期 ----------
 
 watch(pageUrls, () => {
@@ -915,7 +857,6 @@ watch(pageUrls, () => {
 })
 
 watch(readingMode, () => {
-  zoom.value = 1
   void nextTick(() => {
     scrollToCurrentPage()
     syncGifObserver()
@@ -959,10 +900,6 @@ onBeforeUnmount(() => {
   resizeObserver = undefined
   gifObserver?.disconnect()
   gifObserver = undefined
-  if (tapTimer !== undefined) {
-    window.clearTimeout(tapTimer)
-    tapTimer = undefined
-  }
   if (scrollRaf !== 0) {
     cancelAnimationFrame(scrollRaf)
     scrollRaf = 0
@@ -976,7 +913,7 @@ onBeforeUnmount(() => {
     <div
       ref="scrollContainer"
       class="reader-scroll"
-      :class="[readingMode, { zoomed: zoom > 1 }]"
+      :class="readingMode"
       @pointerdown="onPointerDown"
       @pointermove="onPointerMove"
       @pointerup="onPointerUp"
@@ -998,7 +935,7 @@ onBeforeUnmount(() => {
       <div
         v-else-if="readingMode === 'paged'"
         class="paged-track"
-        :style="{ width: zoom * 100 + '%', height: zoom * 100 + '%' }">
+        >
         <img
           :key="pageUrls[pageIndex]"
           :src="pageSrc(pageIndex, pageUrls[pageIndex] ?? '')"
@@ -1018,9 +955,10 @@ onBeforeUnmount(() => {
 
       <!-- 上下滑动：每页先按固定占位高度（3:4）排好，图片加载后换成真实比例 -->
       <template v-else>
+        <!-- key 带上章节 token：换本就重建节点，避免沿用上一本的旧图 -->
         <div
           v-for="(url, index) in pageUrls"
-          :key="index"
+          :key="(currentChapter?.token ?? 0) + '-' + index"
           :data-page-index="index"
           class="scroll-page"
           :style="{ height: pageHeight(index) + 'px' }">
@@ -1120,7 +1058,9 @@ onBeforeUnmount(() => {
     <MobileCommentSheet
       v-if="commentTarget !== undefined"
       v-model:showing="commentDrawerShowing"
-      :target="commentTarget" />
+      :target="commentTarget"
+      :chapters="commentChapters"
+      :chapter-index="chapterIndex" />
   </div>
 </template>
 
@@ -1144,7 +1084,7 @@ onBeforeUnmount(() => {
   background: #fff;
   overscroll-behavior: contain;
   -webkit-overflow-scrolling: touch;
-  /* 关掉浏览器双击缩放，双击留给阅读器自己的 1x/2x */
+  /* 关掉浏览器自带的双击缩放 */
   touch-action: manipulation;
   scrollbar-width: thin;
   scrollbar-color: rgb(0 0 0 / 30%) transparent;
@@ -1163,12 +1103,8 @@ onBeforeUnmount(() => {
   display: flex;
   align-items: flex-start;
   justify-content: flex-start;
-  /* 翻页 1x 时横向滑动留给翻页；纵向留给浏览器 */
-  touch-action: pan-y;
-}
-
-.reader-scroll.paged.zoomed {
-  touch-action: pan-x pan-y;
+  /* 横向滑动留给翻页、纵向留给浏览器；两指缩放仍交给浏览器 */
+  touch-action: pan-y pinch-zoom;
 }
 
 .center-hint {
@@ -1196,6 +1132,7 @@ onBeforeUnmount(() => {
   flex: 0 0 auto;
   align-items: center;
   justify-content: center;
+  min-height: 100%;
   box-sizing: border-box;
   /* 底部给固定栏（进度条 + 按钮排）让位 */
   padding-bottom: 124px;

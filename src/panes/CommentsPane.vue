@@ -68,7 +68,7 @@ async function loadBatch(): Promise<void> {
       }
 
       const page = store.commentsPage
-      const result = await commands.getComments(null, page)
+      const result = await commands.getComments(null, page, null)
       if (result.status === 'error') {
         console.error(result.error)
         showError(result.error)

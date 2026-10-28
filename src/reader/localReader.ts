@@ -53,10 +53,24 @@ export async function resolveLocalComic(comic: Comic): Promise<Comic | undefined
   return findExportedComic(comic.id)
 }
 
+/// 正在打开的目标：连点卡片/详情页按钮时只走一次「查本地 + 发命令」，
+/// 否则每次点击都会重复扫一遍导出目录（封面加载慢的时候最容易被连点放大）
+const opening = new Map<string, Promise<void>>()
+
 /// 详情页与本地库存卡片共用的阅读入口：本地有（下载/导出 cbz）就先本地读，找不到再按 ID 在线读。
 /// chapterIndex 给移动端从某一话直接进阅读器用；桌面不传，按原逻辑恢复上次读到的位置。
 export async function openReaderForComic(comic: Comic, chapterIndex?: number): Promise<void> {
-  const local = await resolveLocalComic(comic)
-  const target = local === undefined ? { comicId: comic.id } : { comic: local }
-  useStore().openReader(chapterIndex === undefined ? target : { ...target, chapterIndex })
+  const key = `${comic.id}:${chapterIndex ?? ''}`
+  const pending = opening.get(key)
+  if (pending !== undefined) {
+    return pending
+  }
+
+  const task = (async () => {
+    const local = await resolveLocalComic(comic)
+    const target = local === undefined ? { comicId: comic.id } : { comic: local }
+    await useStore().openReader(chapterIndex === undefined ? target : { ...target, chapterIndex })
+  })().finally(() => opening.delete(key))
+  opening.set(key, task)
+  return task
 }

@@ -5,7 +5,7 @@ import { NButton, NCheckbox, NDialog, NModal, NTooltip, useMessage } from 'naive
 import FloatLabelInput from '../components/FloatLabelInput.vue'
 import { useStore } from '../store.ts'
 import { useI18n } from '../i18n.ts'
-import { showError } from '../errors.ts'
+import { markAuthReady, showError } from '../errors.ts'
 
 const store = useStore()
 const { t } = useI18n()
@@ -17,9 +17,11 @@ const showing = defineModel<boolean>('showing', { required: true })
 const username = ref<string>(store.config?.username ?? '')
 const password = ref<string>(store.config?.password ?? '')
 const remember = ref<boolean>(username.value !== '' && password.value !== '')
+/// 正在登录：回车与「确定」可能同时触发，这里只放一次请求过去
+const submitting = ref<boolean>(false)
 
 async function onLogin() {
-  if (store.config === undefined) {
+  if (store.config === undefined || submitting.value) {
     return
   }
   if (username.value === '') {
@@ -31,18 +33,24 @@ async function onLogin() {
     return
   }
 
-  const result = await commands.login(username.value, password.value)
-  if (result.status === 'error') {
-    showError(result.error)
-    return
+  submitting.value = true
+  try {
+    const result = await commands.login(username.value, password.value)
+    if (result.status === 'error') {
+      showError(result.error)
+      return
+    }
+    markAuthReady()
+    store.userProfile = result.data
+    message.success(t('login.success'))
+    if (remember.value) {
+      store.config.username = username.value
+      store.config.password = password.value
+    }
+    showing.value = false
+  } finally {
+    submitting.value = false
   }
-  store.userProfile = result.data
-  message.success(t('login.success'))
-  if (remember.value) {
-    store.config.username = username.value
-    store.config.password = password.value
-  }
-  showing.value = false
 }
 
 function clearUsernameAndPasswordInConfig() {
@@ -61,6 +69,7 @@ function clearUsernameAndPasswordInConfig() {
       :showIcon="false"
       :title="t('login.title')"
       :positive-text="t('login.submit')"
+      :loading="submitting"
       @positive-click="onLogin"
       @close="showing = false"
       @keydown.enter="onLogin">
