@@ -57,15 +57,24 @@ function close() {
   flex-direction: column;
   gap: 10px;
   width: 100%;
+  max-height: 86vh;
+  overflow-y: auto;
+  overscroll-behavior: contain;
   padding: 14px 16px calc(18px + env(safe-area-inset-bottom));
   border-radius: 16px 16px 0 0;
   background: #fff;
 }
 
+/* 内容超高时整层滚动，标题与关闭按钮钉在顶部 */
 .sheet-head {
+  position: sticky;
+  top: -14px;
+  z-index: 1;
   display: flex;
   align-items: center;
   justify-content: space-between;
+  padding: 14px 0 0;
+  background: #fff;
 }
 
 .sheet-title {

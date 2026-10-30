@@ -72,8 +72,9 @@ function choose(choice: 'skip' | 'pick' | 'all') {
   display: flex;
   flex-wrap: wrap;
   gap: 6px;
-  max-height: 22vh;
+  max-height: 18vh;
   overflow-y: auto;
+  overscroll-behavior: contain;
 }
 
 .batch-name {

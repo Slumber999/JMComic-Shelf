@@ -175,6 +175,9 @@ const pickQueue = ref<number[]>([])
 const pickIndex = ref(0)
 const pickComic = ref<Comic>()
 const pickDefaultIds = ref<number[]>([])
+/// 逐本选择时的「第 x / y 本」
+const pickTotal = ref(0)
+const pickCurrent = ref(0)
 /// 取详情期间先挡住重复点击（批量前要先知道每本有几章）
 const preparing = ref(false)
 /// 详情缓存：同一本再操作一次不用重新请求
@@ -1192,6 +1195,7 @@ function onBatchChoice(choice: 'skip' | 'pick' | 'all') {
   pickQueue.value = pendingPlans.value
     .map((plan, index) => (plan.comic.chapterInfos.length > 1 ? index : -1))
     .filter((index) => index >= 0)
+  pickTotal.value = pickQueue.value.length
   nextPick()
 }
 
@@ -1203,10 +1207,17 @@ function nextPick() {
   }
   const plan = pendingPlans.value[index]
   pickIndex.value = index
+  pickCurrent.value = pickTotal.value - pickQueue.value.length
   pickComic.value = plan.comic
   pickDefaultIds.value = plan.ids
   pickShowing.value = true
 }
+
+const pickStepText = computed(() =>
+  pickTotal.value > 1
+    ? t('mobile.chapterChooseStep', { current: pickCurrent.value, total: pickTotal.value })
+    : undefined,
+)
 
 const pickChapters = computed<ChapterOption[]>(() =>
   (pickComic.value?.chapterInfos ?? []).map((chapter) => ({
@@ -1952,6 +1963,8 @@ onBeforeUnmount(() => {
       :mode="batchSheetMode"
       :chapters="pickChapters"
       :default-selected="pickDefaultIds"
+      :comic-name="pickComic.name"
+      :step-text="pickStepText"
       @confirm="onChapterPick" />
 
     <!-- 下载 / 导出格式面板：选定后才开始批量操作，取消则什么都不做 -->

@@ -17,6 +17,10 @@ const props = defineProps<{
   chapters: ChapterOption[]
   /// 打开时默认勾选
   defaultSelected: number[]
+  /// 逐本选择时显示漫画名
+  comicName?: string
+  /// 逐本选择时的「第 x / y 本」
+  stepText?: string
   busy?: boolean
 }>()
 
@@ -83,6 +87,10 @@ function confirm() {
 
 <template>
   <mobile-sheet :showing="showing" :title="title" @update:showing="emit('update:showing', $event)">
+    <div v-if="comicName !== undefined" class="choose-comic">
+      <span class="choose-comic-name" :title="comicName">{{ comicName }}</span>
+      <span v-if="stepText !== undefined" class="choose-comic-step">{{ stepText }}</span>
+    </div>
     <div class="choose-head">
       <span class="choose-count">{{ t('mobile.chapterChooseCount', { count: checkedCount, total: chapters.length }) }}</span>
       <button class="choose-all" type="button" @click="toggleAll">
@@ -114,6 +122,28 @@ function confirm() {
 </template>
 
 <style scoped>
+.choose-comic {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  min-width: 0;
+}
+
+.choose-comic-name {
+  overflow: hidden;
+  color: #333;
+  font-size: 13px;
+  font-weight: 600;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.choose-comic-step {
+  flex: 0 0 auto;
+  color: #999;
+  font-size: 11px;
+}
+
 .choose-head {
   display: flex;
   align-items: center;

@@ -129,6 +129,7 @@ export default {
     chapterChooseDownloadTitle: '選擇要下載的章節',
     chapterChooseExportTitle: '選擇要匯出的章節',
     chapterChooseCount: '已選 {count} / {total} 話',
+    chapterChooseStep: '第 {current}/{total} 本',
     downloadSelected: '下載選中的 {count} 話',
     exportSelected: '匯出選中的 {count} 話',
     startFailed: '沒能開始，請稍後重試',
