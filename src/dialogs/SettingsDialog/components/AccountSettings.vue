@@ -6,6 +6,7 @@ import { showError } from '../../../errors.ts'
 import { useStore } from '../../../store.ts'
 import LoginDialog from '../../LoginDialog.vue'
 import { useI18n } from '../../../i18n.ts'
+import { clearFavoriteFolderCache } from '../../../favoriteFolders.ts'
 import { novelParagraphs } from '../../../reader/novelText.ts'
 import { useNotifications } from '../../../notifications/useNotifications.ts'
 
@@ -57,6 +58,8 @@ async function logout() {
   }
 
   store.userProfile = undefined
+  // 收藏夹缓存按账号隔离
+  clearFavoriteFolderCache()
   if (store.config !== undefined) {
     store.config.username = ''
     store.config.password = ''

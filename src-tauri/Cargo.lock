@@ -2176,7 +2176,7 @@ dependencies = [
 
 [[package]]
 name = "jmcomic-shelf"
-version = "1.2.3"
+version = "1.2.4"
 dependencies = [
  "aes",
  "base64 0.22.1",

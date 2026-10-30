@@ -6,7 +6,6 @@ import {
   PhCheck,
   PhDownloadSimple,
   PhExport,
-  PhX,
 } from '@phosphor-icons/vue'
 import { useMessage } from 'naive-ui'
 import { commands } from '../../bindings.ts'
@@ -20,6 +19,8 @@ import { localCoverUrl } from '../../reader/protocol.ts'
 import { openReaderForComic } from '../../reader/localReader.ts'
 import FavoriteButton from '../../components/FavoriteButton.vue'
 import FormatChooseSheet from '../components/FormatChooseSheet.vue'
+import ChapterChooseSheet from '../components/ChapterChooseSheet.vue'
+import type { ChapterOption } from '../components/ChapterChooseSheet.vue'
 import MobileCommentSheet from '../components/MobileCommentSheet.vue'
 import type { CommentTarget } from '../../comments/useComments.ts'
 import ListStatus from '../components/ListStatus.vue'
@@ -45,6 +46,11 @@ const chaptersRef = ref<HTMLElement>()
 /// 详情页的评论抽屉 / 导出格式选择层
 const commentsShowing = ref(false)
 const exportSheetShowing = ref(false)
+/// 章节选择层（多章漫画）
+const chapterSheetShowing = ref(false)
+const chapterSheetMode = ref<'download' | 'export'>('download')
+/// 这次要处理的章节
+const pickedChapterIds = ref<number[]>([])
 /// 下载格式面板：点「下载」先弹它，选完格式才开始下载
 const downloadSheetShowing = ref(false)
 const downloadFormat = ref<DownloadFormat>('Jpeg')
@@ -66,6 +72,14 @@ const favoriteComicId = computed(() => comic.value?.id ?? 0)
 const comicIsFavorite = computed(() => comic.value?.is_favorite ?? false)
 
 const chapterInfos = computed(() => comic.value?.chapterInfos ?? [])
+/// 章节面板的选项
+const chapterOptions = computed<ChapterOption[]>(() =>
+  chapterInfos.value.map((chapter) => ({
+    id: chapter.chapterId,
+    title: chapter.chapterTitle,
+    downloaded: chapter.isDownloaded === true,
+  })),
+)
 const pageCount = computed(() => pageCountOf(chapterInfos.value.length, LIST_PAGE_SIZE))
 const pageChapters = computed(() =>
   slicePage(chapterInfos.value, page.value, LIST_PAGE_SIZE).map((chapter, index) => ({
@@ -207,6 +221,18 @@ const downloadFormatOptions = computed(() =>
   })),
 )
 
+/// 导出格式选项：和下载面板同一个 sheet 外壳，只是列出 PDF / CBZ
+const exportFormatOptions = computed(() => [
+  { value: 'pdf', label: 'PDF', hint: t('mobile.exportPdfHint') },
+  { value: 'cbz', label: 'CBZ', hint: t('mobile.exportCbzHint') },
+])
+
+function exportWithFormat(value: string) {
+  if (value === 'pdf' || value === 'cbz') {
+    void exportAs(value)
+  }
+}
+
 function isDownloadFormat(value: string | null): value is DownloadFormat {
   return value !== null && DOWNLOAD_FORMAT_ORDER.some((format) => format === value)
 }
@@ -234,11 +260,51 @@ function rememberDownloadFormat(format: DownloadFormat) {
   }
 }
 
-/// 下载：只负责弹格式面板，取消（遮罩 / 关闭）就什么都不做
-function openDownloadSheet() {
+/// 多章先选章节，单章直接进格式面板
+function startDownload() {
   if (comic.value === undefined || downloading.value) {
     return
   }
+  const pending = chapterOptions.value.filter((chapter) => !chapter.downloaded).map((chapter) => chapter.id)
+  if (pending.length === 0) {
+    message.info(t('error.already-downloaded'))
+    return
+  }
+  pickedChapterIds.value = pending
+  if (chapterOptions.value.length <= 1) {
+    openDownloadFormatSheet()
+    return
+  }
+  chapterSheetMode.value = 'download'
+  chapterSheetShowing.value = true
+}
+
+/// 导出同理
+function startExport() {
+  if (comic.value === undefined || exporting.value || chapterOptions.value.length === 0) {
+    return
+  }
+  pickedChapterIds.value = chapterOptions.value.map((chapter) => chapter.id)
+  if (chapterOptions.value.length <= 1) {
+    exportSheetShowing.value = true
+    return
+  }
+  chapterSheetMode.value = 'export'
+  chapterSheetShowing.value = true
+}
+
+/// 选完章节后弹格式面板
+function onChaptersChosen(ids: number[]) {
+  pickedChapterIds.value = ids
+  chapterSheetShowing.value = false
+  if (chapterSheetMode.value === 'download') {
+    openDownloadFormatSheet()
+    return
+  }
+  exportSheetShowing.value = true
+}
+
+function openDownloadFormatSheet() {
   downloadFormat.value = rememberedDownloadFormat()
   downloadSheetShowing.value = true
 }
@@ -263,13 +329,12 @@ async function downloadWithFormat(value: string) {
       }
     }
     rememberDownloadFormat(format)
-    const result = await retryResult(() => commands.downloadComic(data.id))
-    if (result.status === 'error') {
-      if (result.error.code === 'already-downloaded') {
-        message.info(t('error.already-downloaded'))
-      } else {
-        showError(result.error)
-      }
+    // 只建选中章节的任务
+    try {
+      await commands.createDownloadTasks(data, pickedChapterIds.value)
+    } catch (error) {
+      console.error(error)
+      message.warning(t('mobile.startFailed'))
       return
     }
     downloadSheetShowing.value = false
@@ -285,11 +350,15 @@ async function downloadWithFormat(value: string) {
 /// 导出：先选格式（PDF / cbz），确认后直接开始，不跳页
 async function exportAs(format: 'pdf' | 'cbz') {
   const data = comic.value
-  if (data === undefined || exporting.value) {
+  const ids = pickedChapterIds.value
+  if (data === undefined || exporting.value || ids.length === 0) {
     return
   }
-  // PDF 只能由本地图片生成，没有已下载章节就先说明白
-  if (format === 'pdf' && !data.chapterInfos.some((chapter) => chapter.isDownloaded === true)) {
+  // PDF 只能由本地图片生成：选中的章节一本都没下载就先说明白
+  const anyDownloaded = chapterOptions.value.some(
+    (chapter) => ids.includes(chapter.id) && chapter.downloaded,
+  )
+  if (format === 'pdf' && !anyDownloaded) {
     message.warning(t('mobile.pdfNoDownloaded'))
     return
   }
@@ -298,8 +367,8 @@ async function exportAs(format: 'pdf' | 'cbz') {
   try {
     const result =
       format === 'pdf'
-        ? await retryResult(() => commands.exportPdf(data))
-        : await retryResult(() => commands.exportCbzWithoutDownload([data.id]))
+        ? await retryResult(() => commands.exportPdfChapters(data, ids))
+        : await retryResult(() => commands.exportCbzChaptersWithoutDownload(data, ids))
     if (result.status === 'error') {
       showError(result.error)
       return
@@ -407,11 +476,11 @@ async function changePage(next: number) {
           <ph-chat-circle-dots :size="22" />
           <span>{{ t('common.comments') }}</span>
         </button>
-        <button class="action" type="button" :disabled="downloading" @click="openDownloadSheet">
+        <button class="action" type="button" :disabled="downloading" @click="startDownload">
           <ph-download-simple :size="22" />
           <span>{{ downloading ? t('mobile.downloadStarting') : t('common.download') }}</span>
         </button>
-        <button class="action" type="button" :disabled="exporting" @click="exportSheetShowing = true">
+        <button class="action" type="button" :disabled="exporting" @click="startExport">
           <ph-export :size="22" />
           <span>{{ t('comic.export') }}</span>
         </button>
@@ -466,27 +535,23 @@ async function changePage(next: number) {
       :busy="downloading"
       @confirm="downloadWithFormat" />
 
-    <!-- 导出格式：选 PDF 还是 cbz，确认后直接开始 -->
-    <teleport to="body">
-      <div v-if="exportSheetShowing" class="sheet-mask" @click.self="exportSheetShowing = false">
-        <div class="export-sheet" role="dialog" aria-modal="true">
-          <div class="sheet-head">
-            <span class="sheet-title">{{ t('mobile.exportChooseTitle') }}</span>
-            <button class="sheet-close" type="button" :aria-label="t('common.cancel')" @click="exportSheetShowing = false">
-              <ph-x :size="18" />
-            </button>
-          </div>
-          <button class="sheet-option" type="button" :disabled="exporting" @click="exportAs('pdf')">
-            <span class="option-name">PDF</span>
-            <span class="option-hint">{{ t('mobile.exportPdfHint') }}</span>
-          </button>
-          <button class="sheet-option" type="button" :disabled="exporting" @click="exportAs('cbz')">
-            <span class="option-name">CBZ</span>
-            <span class="option-hint">{{ t('mobile.exportCbzHint') }}</span>
-          </button>
-        </div>
-      </div>
-    </teleport>
+    <!-- 章节选择（多章漫画） -->
+    <chapter-choose-sheet
+      v-model:showing="chapterSheetShowing"
+      :mode="chapterSheetMode"
+      :chapters="chapterOptions"
+      :default-selected="pickedChapterIds"
+      :busy="downloading || exporting"
+      @confirm="onChaptersChosen" />
+
+    <!-- 导出格式：选 PDF 还是 cbz，和下载面板同一个外壳 -->
+    <format-choose-sheet
+      v-model:showing="exportSheetShowing"
+      :title="t('mobile.exportChooseTitle')"
+      :options="exportFormatOptions"
+      selected=""
+      :busy="exporting"
+      @confirm="exportWithFormat" />
   </section>
 </template>
 
@@ -706,75 +771,6 @@ async function changePage(next: number) {
 .action-favorite :deep(.n-button svg) {
   width: 22px;
   height: 22px;
-}
-
-.sheet-mask {
-  position: fixed;
-  inset: 0;
-  z-index: 90;
-  display: flex;
-  align-items: flex-end;
-  background: rgb(0 0 0 / 32%);
-}
-
-.export-sheet {
-  display: flex;
-  flex-direction: column;
-  gap: 10px;
-  width: 100%;
-  padding: 14px 16px calc(18px + env(safe-area-inset-bottom));
-  border-radius: 16px 16px 0 0;
-  background: #fff;
-}
-
-.sheet-head {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-}
-
-.sheet-title {
-  font-size: 15px;
-  font-weight: 600;
-}
-
-.sheet-close {
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  width: 30px;
-  height: 30px;
-  border: none;
-  border-radius: 50%;
-  background: #f3f3f3;
-  color: #666;
-}
-
-.sheet-option {
-  display: flex;
-  flex-direction: column;
-  gap: 2px;
-  padding: 12px 14px;
-  border: 1px solid #ffe0c7;
-  border-radius: 12px;
-  background: #fff9f3;
-  color: #333;
-  text-align: left;
-}
-
-.sheet-option:disabled {
-  opacity: 0.55;
-}
-
-.option-name {
-  color: #d96200;
-  font-size: 14px;
-  font-weight: 600;
-}
-
-.option-hint {
-  color: #999;
-  font-size: 11px;
 }
 
 .chapters {

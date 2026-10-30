@@ -28,6 +28,7 @@ import SettingsDialog from './dialogs/SettingsDialog/SettingsDialog.vue'
 import LoadingSpinner from './components/LoadingSpinner.vue'
 import { useI18n } from './i18n.ts'
 import { useNotifications } from './notifications/useNotifications.ts'
+import { refreshFavoriteFolders } from './favoriteFolders.ts'
 
 const store = useStore()
 const { t, locale, setLocale } = useI18n()
@@ -122,8 +123,17 @@ const aboutDialogShowing = ref<boolean>(false)
 const settingsDialogShowing = ref<boolean>(false)
 
 const { hasUnreadNotification, refreshNotifications } = useNotifications()
-/// 登录 / 切换账号 / 退出后刷新一次通知；未登录时 refreshNotifications 会直接清空、不发请求
-watch(() => store.userProfile, () => void refreshNotifications(), { immediate: true })
+/// 登录后刷新通知与收藏夹缓存
+watch(
+  () => store.userProfile,
+  (profile) => {
+    void refreshNotifications()
+    if (profile !== undefined) {
+      void refreshFavoriteFolders(true)
+    }
+  },
+  { immediate: true },
+)
 /// 打开配置页时再刷新一次（不做常驻轮询）
 watch(settingsDialogShowing, (showing) => {
   if (showing) {

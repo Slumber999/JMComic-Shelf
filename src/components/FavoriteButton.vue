@@ -2,7 +2,8 @@
 import { computed, ref, watch } from 'vue'
 import { showError } from '../errors.ts'
 import { DropdownOption, NButton, NDropdown, NIcon, useMessage } from 'naive-ui'
-import { FavoriteFolderRespData, commands } from '../bindings.ts'
+import { commands } from '../bindings.ts'
+import { favoriteFolders, refreshFavoriteFolders } from '../favoriteFolders.ts'
 import { useStore } from '../store.ts'
 import IconButton from './IconButton.vue'
 import { PhStar } from '@phosphor-icons/vue'
@@ -38,8 +39,6 @@ const favoriteTitle = computed(() =>
   isFavoriteNow.value ? t('favoriteButton.titleFavorited') : t('favoriteButton.titleFavorite'),
 )
 
-const favoriteFolders = ref<FavoriteFolderRespData[]>([])
-
 const favoriteOptions = computed<DropdownOption[]>(() => {
   const options: DropdownOption[] = [
     isFavoriteNow.value
@@ -57,22 +56,10 @@ const favoriteOptions = computed<DropdownOption[]>(() => {
   return options
 })
 
-async function loadFavoriteFolders() {
-  if (store.userProfile === undefined) {
-    return
-  }
-
-  const result = await commands.getFavoriteFolders()
-  if (result.status === 'error') {
-    console.error(result.error)
-    return
-  }
-  favoriteFolders.value = result.data
-}
-
+/// 列表走共享缓存，后台刷新
 function onFavoriteDropdownShow(show: boolean) {
   if (show) {
-    void loadFavoriteFolders()
+    void refreshFavoriteFolders()
   }
 }
 

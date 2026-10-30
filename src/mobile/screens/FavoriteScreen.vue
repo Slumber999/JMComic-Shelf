@@ -20,6 +20,9 @@ import ComicGrid from '../components/ComicGrid.vue'
 import ComicGridCard from '../components/ComicGridCard.vue'
 import FavoriteGroupCard from '../components/FavoriteGroupCard.vue'
 import FormatChooseSheet from '../components/FormatChooseSheet.vue'
+import BatchChapterSheet from '../components/BatchChapterSheet.vue'
+import ChapterChooseSheet from '../components/ChapterChooseSheet.vue'
+import type { ChapterOption } from '../components/ChapterChooseSheet.vue'
 import ListStatus from '../components/ListStatus.vue'
 import MobilePager from '../components/MobilePager.vue'
 import PullRefreshBar from '../components/PullRefreshBar.vue'
@@ -154,6 +157,28 @@ onBeforeUnmount(() => registerSelection('favorite'))
 /// 下载 / 导出共用通用格式弹层：选定格式后才开始批量操作
 const downloadSheetShowing = ref(false)
 const exportSheetShowing = ref(false)
+
+/// 批量操作的目标：每本带一份「这次处理哪些章节」，多章漫画先让用户决定
+interface BatchPlan {
+  comic: Comic
+  ids: number[]
+  skip: boolean
+}
+const pendingPlans = ref<BatchPlan[]>([])
+/// 多章漫画的决策弹层：跳过 / 逐本选章节 / 全部
+const batchSheetShowing = ref(false)
+const batchSheetMode = ref<'download' | 'export'>('download')
+const multiChapterNames = ref<string[]>([])
+/// 「选择章节」时逐本弹章节面板
+const pickShowing = ref(false)
+const pickQueue = ref<number[]>([])
+const pickIndex = ref(0)
+const pickComic = ref<Comic>()
+const pickDefaultIds = ref<number[]>([])
+/// 取详情期间先挡住重复点击（批量前要先知道每本有几章）
+const preparing = ref(false)
+/// 详情缓存：同一本再操作一次不用重新请求
+const detailCache = new Map<number, Comic>()
 const downloadFormat = ref<DownloadFormat>('Jpeg')
 /// 导出格式只记住这次的选择，用来给面板高亮默认项
 const exportFormat = ref<'pdf' | 'cbz'>('pdf')
@@ -231,7 +256,7 @@ const indexRefreshTotal = ref(0)
 /// 连点收藏夹/翻页时只认最后一次请求
 let requestId = 0
 
-const busy = computed(() => busyAction.value !== '' || selectAllBusy.value)
+const busy = computed(() => busyAction.value !== '' || selectAllBusy.value || preparing.value)
 /// 标签云分批显示：初始 30 个，每次「展开更多」+50（和桌面 tagCloudPaging 一致）
 const {
   visible: visibleFavoriteTags,
@@ -305,7 +330,7 @@ const folderOptions = computed(() =>
 
 /// 选中模式顶栏的进度：下载 / 导出都按本数报 x/y，PDF 先报「正在检查」
 const busyText = computed(() => {
-  if (selectAllBusy.value) {
+  if (selectAllBusy.value || preparing.value) {
     return t('mobile.batchPreparing')
   }
   if (busyAction.value === '') {
@@ -1083,17 +1108,134 @@ function orderByListOrder(ids: number[]): number[] {
   return [...inList, ...ids.filter((id) => !position.has(id))]
 }
 
-/// 点「下载」先弹格式面板：取消就什么都不做
-function openDownloadSheet() {
+/// 并行取选中漫画的详情并缓存
+async function loadSelectedComics(): Promise<Comic[]> {
+  const ids = orderByListOrder([...selectedIds.value])
+  preparing.value = true
+  batchDone.value = 0
+  batchTotal.value = ids.length
+  try {
+    const results = await Promise.all(
+      ids.map(async (id) => {
+        const cached = detailCache.get(id)
+        if (cached !== undefined) {
+          return cached
+        }
+        try {
+          const result = await retryResult(() => commands.getComic(id))
+          if (result.status === 'error') {
+            console.error(result.error)
+            return undefined
+          }
+          detailCache.set(id, result.data)
+          return result.data
+        } catch (error) {
+          console.error(error)
+          return undefined
+        } finally {
+          batchDone.value += 1
+        }
+      }),
+    )
+    return results.filter((comic): comic is Comic => comic !== undefined)
+  } finally {
+    preparing.value = false
+  }
+}
+
+/// 批量入口：多章漫画先问怎么处理
+async function startBatch(mode: 'download' | 'export') {
   if (selectedCount.value === 0 || busy.value) {
     return
   }
-  downloadFormat.value = rememberedDownloadFormat()
-  downloadSheetShowing.value = true
+  batchSheetMode.value = mode
+  const comics = await loadSelectedComics()
+  if (comics.length === 0) {
+    message.warning(t('mobile.startFailed'))
+    return
+  }
+  pendingPlans.value = comics.map((comic) => ({
+    comic,
+    ids:
+      mode === 'download'
+        ? comic.chapterInfos.filter((chapter) => chapter.isDownloaded !== true).map((chapter) => chapter.chapterId)
+        : comic.chapterInfos.map((chapter) => chapter.chapterId),
+    skip: false,
+  }))
+
+  const multi = pendingPlans.value.filter((plan) => plan.comic.chapterInfos.length > 1)
+  if (multi.length === 0) {
+    openFormatSheet()
+    return
+  }
+  multiChapterNames.value = multi.map((plan) => plan.comic.name)
+  batchSheetShowing.value = true
 }
 
-/// 选定格式后才开始批量下载：后端 download_comic 只读 config.download_format，
-/// 整批只写一次配置，再逐本建下载任务
+/// 多章漫画的处理方式
+function onBatchChoice(choice: 'skip' | 'pick' | 'all') {
+  batchSheetShowing.value = false
+  if (choice === 'skip') {
+    for (const plan of pendingPlans.value) {
+      if (plan.comic.chapterInfos.length > 1) {
+        plan.skip = true
+      }
+    }
+    openFormatSheet()
+    return
+  }
+  if (choice === 'all') {
+    openFormatSheet()
+    return
+  }
+
+  pickQueue.value = pendingPlans.value
+    .map((plan, index) => (plan.comic.chapterInfos.length > 1 ? index : -1))
+    .filter((index) => index >= 0)
+  nextPick()
+}
+
+function nextPick() {
+  const index = pickQueue.value.shift()
+  if (index === undefined) {
+    openFormatSheet()
+    return
+  }
+  const plan = pendingPlans.value[index]
+  pickIndex.value = index
+  pickComic.value = plan.comic
+  pickDefaultIds.value = plan.ids
+  pickShowing.value = true
+}
+
+const pickChapters = computed<ChapterOption[]>(() =>
+  (pickComic.value?.chapterInfos ?? []).map((chapter) => ({
+    id: chapter.chapterId,
+    title: chapter.chapterTitle,
+    downloaded: chapter.isDownloaded === true,
+  })),
+)
+
+function onChapterPick(ids: number[]) {
+  const plan = pendingPlans.value[pickIndex.value]
+  if (plan !== undefined) {
+    plan.ids = ids
+  }
+  pickShowing.value = false
+  nextPick()
+}
+
+/// 章节范围定下来后弹格式面板
+function openFormatSheet() {
+  if (batchSheetMode.value === 'download') {
+    downloadFormat.value = rememberedDownloadFormat()
+    downloadSheetShowing.value = true
+    return
+  }
+  exportSheetShowing.value = true
+}
+
+/// 选定格式后逐本建下载任务
 async function downloadWithFormat(value: string) {
   if (!isDownloadFormat(value) || selectedCount.value === 0 || busy.value) {
     return
@@ -1101,31 +1243,32 @@ async function downloadWithFormat(value: string) {
   const format = value
   busyAction.value = 'download'
   batchDone.value = 0
-  batchTotal.value = selectedCount.value
+  batchTotal.value = pendingPlans.value.length
   let created = 0
   let alreadyDownloaded = 0
   let failed = 0
   try {
-    // 只改内存：MobileShell 的防抖保存会把这处改动一起写盘，失败也有统一提示
+    // 只改内存，写盘交给统一保存
     if (store.config !== undefined) {
       store.config.downloadFormat = format
     }
     rememberDownloadFormat(format)
     downloadSheetShowing.value = false
-    // 后端下载队列是 FIFO：按列表顺序逐本 enqueue，进度也按这个顺序走
-    const comicIds = orderByListOrder([...selectedIds.value])
-    batchTotal.value = comicIds.length
-    for (const comicId of comicIds) {
+    // 按列表顺序逐本建任务
+    for (const plan of pendingPlans.value) {
+      if (plan.skip) {
+        batchDone.value += 1
+        continue
+      }
+      if (plan.ids.length === 0) {
+        alreadyDownloaded += 1
+        batchDone.value += 1
+        continue
+      }
       try {
-        const result = await commands.downloadComic(comicId)
-        if (result.status === 'ok') {
-          created += 1
-        } else if (result.error.code === 'already-downloaded') {
-          alreadyDownloaded += 1
-        } else {
-          failed += 1
-          console.error(result.error)
-        }
+        // 只建选中章节的任务
+        await commands.createDownloadTasks(plan.comic, plan.ids)
+        created += 1
       } catch (error) {
         failed += 1
         console.error(error)
@@ -1151,14 +1294,6 @@ async function downloadWithFormat(value: string) {
   exit()
 }
 
-/// 点「导出」先弹格式面板：PDF / cbz 二选一
-function openExportSheet() {
-  if (selectedCount.value === 0 || busy.value) {
-    return
-  }
-  exportSheetShowing.value = true
-}
-
 /// 选定格式后关面板，再按格式走各自的批量导出
 async function exportWithFormat(value: string) {
   if (busy.value || (value !== 'pdf' && value !== 'cbz')) {
@@ -1178,16 +1313,17 @@ async function exportSelectedCbz() {
   if (selectedCount.value === 0 || busy.value) {
     return
   }
-  const comicIds = orderByListOrder([...selectedIds.value])
+  const plans = pendingPlans.value.filter((plan) => !plan.skip && plan.ids.length > 0)
   busyAction.value = 'exportCbz'
   batchDone.value = 0
-  batchTotal.value = comicIds.length
+  batchTotal.value = plans.length
   let exported = 0
   let failed = 0
   try {
-    for (const comicId of comicIds) {
+    for (const plan of plans) {
       try {
-        const result = await commands.exportCbzWithoutDownload([comicId])
+        // 按选中的章节导（全部时就是所有章节）
+        const result = await commands.exportCbzChaptersWithoutDownload(plan.comic, plan.ids)
         if (result.status === 'error') {
           failed += 1
           console.error(result.error)
@@ -1212,7 +1348,7 @@ async function exportSelectedCbz() {
     parts.push(t('favorite.failedCount', { count: failed }))
   }
   if (parts.length === 0) {
-    parts.push(t('mobile.batchFailed', { count: comicIds.length }))
+    parts.push(t('mobile.batchFailed', { count: plans.length }))
   }
   const summary = parts.join('，')
   if (failed > 0) {
@@ -1244,33 +1380,31 @@ function confirmPdfSkips(count: number): Promise<boolean> {
 /// 逐本导出 pdf：PDF 只能由本地图片生成，先取详情挑出有已下载章节的，
 /// 其余的跳过并在开始前提示本数
 async function exportSelectedPdf() {
-  if (selectedCount.value === 0 || busy.value) {
+  const plans = pendingPlans.value.filter((plan) => !plan.skip && plan.ids.length > 0)
+  if (plans.length === 0 || busy.value) {
     return
   }
-  const comicIds = orderByListOrder([...selectedIds.value])
   busyAction.value = 'exportPdf'
   checkingPdfSkips.value = true
   batchDone.value = 0
-  batchTotal.value = comicIds.length
-  const ready: Comic[] = []
+  batchTotal.value = plans.length
+  const ready: { comic: Comic; ids: number[] }[] = []
   let skipped = 0
   let failed = 0
   let exported = 0
   try {
-    for (const comicId of comicIds) {
-      try {
-        const detail = await commands.getComic(comicId)
-        if (detail.status === 'error') {
-          failed += 1
-          console.error(detail.error)
-        } else if (!detail.data.chapterInfos.some((chapter) => chapter.isDownloaded === true)) {
-          skipped += 1
-        } else {
-          ready.push(detail.data)
-        }
-      } catch (error) {
-        failed += 1
-        console.error(error)
+    // 选中的章节里有已下载的才能进 PDF：一章都没有的整本跳过
+    for (const plan of plans) {
+      const downloaded = new Set(
+        plan.comic.chapterInfos
+          .filter((chapter) => chapter.isDownloaded === true)
+          .map((chapter) => chapter.chapterId),
+      )
+      const ids = plan.ids.filter((id) => downloaded.has(id))
+      if (ids.length === 0) {
+        skipped += 1
+      } else {
+        ready.push({ comic: plan.comic, ids })
       }
       batchDone.value += 1
     }
@@ -1283,9 +1417,9 @@ async function exportSelectedPdf() {
     checkingPdfSkips.value = false
     batchDone.value = 0
     batchTotal.value = ready.length
-    for (const comic of ready) {
+    for (const item of ready) {
       try {
-        const result = await commands.exportPdf(comic)
+        const result = await commands.exportPdfChapters(item.comic, item.ids)
         if (result.status === 'error') {
           failed += 1
           console.error(result.error)
@@ -1314,7 +1448,7 @@ async function exportSelectedPdf() {
     parts.push(t('mobile.pdfFailed', { count: failed }))
   }
   if (parts.length === 0) {
-    parts.push(t('mobile.batchFailed', { count: comicIds.length }))
+    parts.push(t('mobile.batchFailed', { count: plans.length }))
   }
   const summary = parts.join('，')
   if (skipped > 0 || failed > 0) {
@@ -1564,10 +1698,10 @@ onBeforeUnmount(() => {
       <button v-else-if="!groupViewOpen" type="button" :disabled="busy" @click="openAddToGroup">
         {{ t('favorite.groups.addTo') }}
       </button>
-      <button class="primary" type="button" :disabled="busy" @click="openDownloadSheet">
+      <button class="primary" type="button" :disabled="busy" @click="startBatch('download')">
         {{ t('favorite.download') }}
       </button>
-      <button class="primary" type="button" :disabled="busy" @click="openExportSheet">
+      <button class="primary" type="button" :disabled="busy" @click="startBatch('export')">
         {{ t('comic.export') }}
       </button>
       <button v-if="groupViewOpen" class="danger" type="button" :disabled="busy" @click="removeSelectedFromGroup">
@@ -1803,6 +1937,22 @@ onBeforeUnmount(() => {
         </template>
       </template>
     </template>
+
+    <!-- 选中项里有多章漫画：先决定跳过 / 逐本选章节 / 全部章节 -->
+    <batch-chapter-sheet
+      v-model:showing="batchSheetShowing"
+      :mode="batchSheetMode"
+      :names="multiChapterNames"
+      @choose="onBatchChoice" />
+
+    <!-- 逐本选章节：和详情页共用同一张章节面板 -->
+    <chapter-choose-sheet
+      v-if="pickComic !== undefined"
+      v-model:showing="pickShowing"
+      :mode="batchSheetMode"
+      :chapters="pickChapters"
+      :default-selected="pickDefaultIds"
+      @confirm="onChapterPick" />
 
     <!-- 下载 / 导出格式面板：选定后才开始批量操作，取消则什么都不做 -->
     <format-choose-sheet

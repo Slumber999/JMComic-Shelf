@@ -28,6 +28,7 @@ import { isNovelTarget, useNavStack } from './useNavStack.ts'
 import type { ScreenTarget, MobileScreen } from './useNavStack.ts'
 import { retryResult } from './netRetry.ts'
 import { useTaskProgress } from './useTaskProgress.ts'
+import { refreshFavoriteFolders } from '../favoriteFolders.ts'
 import { SHELL_SCREENS, SHELL_SCREEN_COMPONENTS, isShellScreen } from './shellScreens.ts'
 import { usePagerSwipe } from './usePagerSwipe.ts'
 
@@ -148,7 +149,17 @@ const loginDialogShowing = ref(false)
 // 顶栏角标与任务页共用同一份下载 / 导出任务进度
 const { activeCount: activeTaskCount } = useTaskProgress()
 const { refreshNotifications } = useNotifications()
-watch(() => store.userProfile, () => void refreshNotifications(), { immediate: true })
+/// 登录后刷新通知与收藏夹缓存
+watch(
+  () => store.userProfile,
+  (profile) => {
+    void refreshNotifications()
+    if (profile !== undefined) {
+      void refreshFavoriteFolders(true)
+    }
+  },
+  { immediate: true },
+)
 // 打开设置页时刷新一次通知（账号分组里要显示官方最新一条）
 watch(
   () => current.value === 'settings',
