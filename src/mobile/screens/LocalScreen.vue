@@ -5,7 +5,7 @@ let tagsExpandedInSession = false
 
 <script setup lang="ts">
 import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
-import { PhArrowClockwise, PhArrowsDownUp, PhTag } from '@phosphor-icons/vue'
+import { PhArrowClockwise, PhArrowsDownUp, PhBooks, PhSquaresFour, PhTag } from '@phosphor-icons/vue'
 import { useDialog, useMessage } from 'naive-ui'
 import { commands } from '../../bindings.ts'
 import type { Comic, LocalLibrarySource, LocalTag } from '../../bindings.ts'
@@ -26,6 +26,9 @@ import { usePullRefresh } from '../usePullRefresh.ts'
 import { useScreenScroll } from '../useScrollHost.ts'
 import { registerSelection } from '../selectionMode.ts'
 import { useSelection } from '../useSelection.ts'
+import ShelfCanvas from '../components/shelf/ShelfCanvas.vue'
+import type { ShelfBook } from '../components/shelf/ShelfCanvas.vue'
+import { openReaderForComic } from '../../reader/localReader.ts'
 import { useZipExport } from '../useZipExport.ts'
 import type { DetailTarget, MobileScreen } from '../useNavStack.ts'
 
@@ -88,26 +91,14 @@ const {
 /// 收藏顺序：id -> 名次（0 = 最新收藏）。索引里的 comics 本身就是最新在前，直接用 position
 const favoriteOrder = ref<Map<number, number>>(new Map())
 
-/// 按收藏顺序排：最新收藏的在前、老收藏的在后（和收藏夹列表同序）；
-/// 未收藏/已取消的保持原有相对顺序排最后；稳定排序，索引为空时原样返回
-function sortByFavoriteOrder(list: Comic[], order: Map<number, number>): Comic[] {
-  if (order.size === 0) {
+/// 按名次排：名次小的在前，没有名次的保持原有相对顺序排在最后。
+/// 收藏顺序和下载顺序都只是「id -> 名次」，共用这一份。
+function sortByRank(list: Comic[], rank: Map<number, number>): Comic[] {
+  if (rank.size === 0) {
     return list
   }
-  return [...list].sort((a, b) => {
-    const left = order.get(a.id)
-    const right = order.get(b.id)
-    if (left === undefined && right === undefined) {
-      return 0
-    }
-    if (left === undefined) {
-      return 1
-    }
-    if (right === undefined) {
-      return -1
-    }
-    return left - right
-  })
+  const position = (id: number) => rank.get(id) ?? Number.MAX_SAFE_INTEGER
+  return [...list].sort((a, b) => position(a.id) - position(b.id))
 }
 
 /// 排序方式：只作用于「下载的」页签。收藏顺序 = 按收藏索引（最新收藏在前）；
@@ -135,27 +126,10 @@ const sortMode = ref<LocalSortMode>(readSortMode())
 /// 排序只读这份名次，所以不会被收藏顺序的重排影响
 const downloadOrder = ref<Map<number, number>>(new Map())
 
-/// 按下载顺序倒序：名次越小越靠前；缺名次的保持相对顺序排最后
-function sortByDownloadOrder(list: Comic[], order: Map<number, number>): Comic[] {
-  if (order.size === 0) {
-    return list
-  }
-  return [...list].sort((a, b) => {
-    const left = order.get(a.id) ?? Number.MAX_SAFE_INTEGER
-    const right = order.get(b.id) ?? Number.MAX_SAFE_INTEGER
-    return left - right
-  })
-}
-
-/// 「导出的」页签不提供下载顺序：索引里没有下载时间，那里保持原来的收藏顺序
-const activeSortMode = computed<LocalSortMode>(() =>
-  store.localLibrarySource === 'DownloadDir' ? sortMode.value : 'favorite',
-)
-
+/// 两个页签共用同一套排序：下载目录的「下载」用后端 mtime 顺序，
+/// 导出目录没有下载时间，同样用后端返回的目录 mtime 顺序（都是「最近在前」）
 const orderedComics = computed(() =>
-  activeSortMode.value === 'download'
-    ? sortByDownloadOrder(comics.value, downloadOrder.value)
-    : sortByFavoriteOrder(comics.value, favoriteOrder.value),
+  sortByRank(comics.value, sortMode.value === 'download' ? downloadOrder.value : favoriteOrder.value),
 )
 
 /// 按钮上直接写当前排序方式（不只靠图标），点一下在两种之间切换。
@@ -163,16 +137,13 @@ const orderedComics = computed(() =>
 const sortLabels = computed(() => {
   const zhTW = locale.value === 'zh-TW'
   return {
-    favorite: zhTW ? '收藏順序' : '收藏顺序',
-    download: zhTW ? '下載順序' : '下载顺序',
+    favorite: '收藏',
+    download: zhTW ? '下載' : '下载',
   }
 })
 
-/// 只有「下载的」页签能切：换排序后回到第一页，否则停在原页码上看不出顺序变了
+/// 换排序后回到第一页，否则停在原页码上看不出顺序变了
 function toggleSortMode() {
-  if (store.localLibrarySource !== 'DownloadDir') {
-    return
-  }
   sortMode.value = sortMode.value === 'favorite' ? 'download' : 'favorite'
   try {
     localStorage.setItem(SORT_MODE_KEY, sortMode.value)
@@ -181,6 +152,99 @@ function toggleSortMode() {
   }
   page.value = 1
   scrollToTop()
+}
+
+/// 列表 / 立体书架：两个页签共用同一个书架组件
+const VIEW_MODE_KEY = 'local:viewMode'
+type LocalViewMode = 'grid' | 'shelf'
+
+function readViewMode(): LocalViewMode {
+  try {
+    const saved = localStorage.getItem(VIEW_MODE_KEY)
+    if (saved === 'grid' || saved === 'shelf') {
+      return saved
+    }
+  } catch {
+    // 忽略 localStorage 读取失败：默认网格
+  }
+  return 'grid'
+}
+
+const viewMode = ref<LocalViewMode>(readViewMode())
+
+function toggleViewMode() {
+  viewMode.value = viewMode.value === 'grid' ? 'shelf' : 'grid'
+  try {
+    localStorage.setItem(VIEW_MODE_KEY, viewMode.value)
+  } catch {
+    // 忽略 localStorage 写入失败
+  }
+  // 书架里没有多选：切过去先退出选择模式
+  if (viewMode.value === 'shelf' && selecting.value) {
+    exit()
+  }
+}
+
+/// 书架取当前筛选结果：封面走本地协议，缺封面时后端自动回落在在线封面
+const shelfBooks = computed<ShelfBook[]>(() =>
+  filteredComics.value.map((comic) => ({
+    id: comic.id,
+    name: comic.name,
+    author: (comic.author ?? []).join(' / '),
+    cover: localCoverUrl(comic.id, comic.comicDownloadDir, 480),
+    pages: [],
+    chapters: comic.chapterInfos.length,
+  })),
+)
+
+/// 打开动画：封面先飞到中央翻开，本地漫画才不会「秒开」看不到过渡
+const flightBook = ref<ShelfBook | null>(null)
+const flightStyle = ref<Record<string, string>>({})
+const flying = ref(false)
+const flipped = ref(false)
+let flightTimers: number[] = []
+
+function clearFlightTimers() {
+  for (const timer of flightTimers) {
+    window.clearTimeout(timer)
+  }
+  flightTimers = []
+}
+
+/// 点书架上的书：先播开书动画，再走和网格卡片相同的阅读入口（本地优先）
+function openShelfComic(book: ShelfBook, rect: { x: number; y: number; w: number; h: number }) {
+  const comic = comics.value.find((item) => item.id === book.id)
+  if (comic === undefined || flightBook.value !== null) {
+    return
+  }
+  const width = Math.min(window.innerWidth * 0.46, 300)
+  const height = width * 1.42
+  flightBook.value = book
+  flightStyle.value = {
+    left: rect.x + 'px',
+    top: rect.y + 'px',
+    width: rect.w + 'px',
+    height: rect.h + 'px',
+  }
+  requestAnimationFrame(() => {
+    requestAnimationFrame(() => {
+      flying.value = true
+      flightStyle.value = {
+        left: (window.innerWidth - width) / 2 + 'px',
+        top: (window.innerHeight - height) / 2 - 30 + 'px',
+        width: width + 'px',
+        height: height + 'px',
+      }
+    })
+  })
+  flightTimers.push(window.setTimeout(() => { flipped.value = true }, 480))
+  flightTimers.push(window.setTimeout(() => {
+    flightBook.value = null
+    flying.value = false
+    flipped.value = false
+    flightStyle.value = {}
+    void openReaderForComic(comic)
+  }, 1140))
 }
 
 const filteredComics = computed(() => {
@@ -418,7 +482,10 @@ watch(
   },
 )
 
-onBeforeUnmount(() => save(page.value, context.value))
+onBeforeUnmount(() => {
+  save(page.value, context.value)
+  clearFlightTimers()
+})
 </script>
 
 <template>
@@ -508,9 +575,8 @@ onBeforeUnmount(() => save(page.value, context.value))
         }}
       </span>
       <div class="tools">
-        <!-- 排序按钮：只给「下载的」页签（「导出的」保持收藏顺序），放在刷新左边 -->
+        <!-- 排序：两个页签共用，放在模式切换左边 -->
         <button
-          v-if="store.localLibrarySource === 'DownloadDir'"
           class="sort"
           :class="{ active: sortMode === 'download' }"
           type="button"
@@ -520,6 +586,16 @@ onBeforeUnmount(() => save(page.value, context.value))
           @click="toggleSortMode">
           <ph-arrows-down-up :size="14" />
           <span>{{ sortLabels[sortMode] }}</span>
+        </button>
+        <!-- 列表 / 立体书架：夹在排序和刷新之间 -->
+        <button
+          class="mode"
+          type="button"
+          :aria-label="viewMode === 'shelf' ? t('mobile.viewGrid') : t('mobile.viewShelf')"
+          :title="viewMode === 'shelf' ? t('mobile.viewGrid') : t('mobile.viewShelf')"
+          @click="toggleViewMode">
+          <ph-squares-four v-if="viewMode === 'shelf'" :size="16" />
+          <ph-books v-else :size="16" />
         </button>
         <button class="refresh" type="button" :aria-label="t('common.refresh')" @click="refresh">
           <ph-arrow-clockwise :size="16" />
@@ -538,21 +614,43 @@ onBeforeUnmount(() => save(page.value, context.value))
       @retry="refresh" />
 
     <template v-else>
-      <comic-grid>
-        <comic-grid-card
-          v-for="(comic, index) in pageComics"
-          :key="comic.id"
-          :image="localCoverUrl(comic.id, comic.comicDownloadDir, LOCAL_COVER_WIDTH)"
-          :eager="index < 6"
-          :title="comic.name"
-          :author="(comic.author ?? []).join('、')"
-          :selected="isSelected(comic.id)"
-          :selectable="selecting"
-          @select="onCardSelect(comic)"
-          @longpress="onCardLongPress(comic)" />
-      </comic-grid>
-      <mobile-pager :page="page" :page-count="pageCount" @update:page="changePage" />
+      <!-- 书架自己在「书本那条带子」里拦手势，其余区域仍可翻页 -->
+      <shelf-canvas
+        v-if="viewMode === 'shelf'"
+        class="shelf"
+        :books="shelfBooks"
+        @open="openShelfComic" />
+      <template v-else>
+        <comic-grid>
+          <comic-grid-card
+            v-for="(comic, index) in pageComics"
+            :key="comic.id"
+            :image="localCoverUrl(comic.id, comic.comicDownloadDir, LOCAL_COVER_WIDTH)"
+            :eager="index < 6"
+            :title="comic.name"
+            :author="(comic.author ?? []).join('、')"
+            :selected="isSelected(comic.id)"
+            :selectable="selecting"
+            @select="onCardSelect(comic)"
+            @longpress="onCardLongPress(comic)" />
+        </comic-grid>
+        <mobile-pager :page="page" :page-count="pageCount" @update:page="changePage" />
+      </template>
     </template>
+
+    <!-- 开书动画：封面从书架飞到中央再翻开 -->
+    <teleport to="body">
+      <div v-if="flightBook" class="flight" :class="{ flying, flipped }" :style="flightStyle">
+        <div class="flight-book">
+          <div class="flight-page">
+            <img v-if="flightBook.cover !== ''" :src="flightBook.cover" alt="" />
+          </div>
+          <div class="flight-cover">
+            <img v-if="flightBook.cover !== ''" :src="flightBook.cover" alt="" />
+          </div>
+        </div>
+      </div>
+    </teleport>
   </section>
 </template>
 
@@ -577,6 +675,74 @@ onBeforeUnmount(() => save(page.value, context.value))
   background: #fff;
   color: #666;
   font-size: 13px;
+}
+
+.flight {
+  position: fixed;
+  z-index: 95;
+  perspective: 1400px;
+  transition:
+    left 0.44s cubic-bezier(0.22, 0.75, 0.2, 1),
+    top 0.44s cubic-bezier(0.22, 0.75, 0.2, 1),
+    width 0.44s cubic-bezier(0.22, 0.75, 0.2, 1),
+    height 0.44s cubic-bezier(0.22, 0.75, 0.2, 1);
+}
+
+.flight-book {
+  position: absolute;
+  inset: 0;
+  transform: rotateY(-28deg) rotateX(6deg) scale(0.96);
+  transform-origin: 30% 60%;
+  transform-style: preserve-3d;
+  transition: transform 0.5s cubic-bezier(0.2, 0.75, 0.25, 1);
+}
+
+.flight.flying .flight-book {
+  transform: none;
+}
+
+.flight-page {
+  position: absolute;
+  inset: 0;
+  overflow: hidden;
+  border-radius: 6px;
+  background: #fff;
+  box-shadow: 0 20px 50px rgb(0 0 0 / 25%);
+}
+
+.flight-page img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  opacity: 0.9;
+}
+
+.flight-cover {
+  position: absolute;
+  inset: 0;
+  overflow: hidden;
+  border-radius: 6px;
+  background: #fff;
+  box-shadow: 0 12px 30px rgb(0 0 0 / 28%);
+  transform-origin: left center;
+  transition: transform 0.6s cubic-bezier(0.3, 0.7, 0.2, 1);
+}
+
+.flight-cover img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+
+.flight.flipped .flight-cover {
+  transform: rotateY(-158deg);
+}
+
+.shelf {
+  height: min(62vh, 520px);
+  border-radius: 14px;
+  overflow: hidden;
+  background: #fff;
 }
 
 .source.active {
@@ -659,7 +825,7 @@ onBeforeUnmount(() => save(page.value, context.value))
   gap: 6px;
 }
 
-/* 当前排序方式直接写在按钮上（收藏顺序 / 下载顺序），不只靠图标状态 */
+/* 当前排序方式直接写在按钮上（收藏 / 下载），不只靠图标状态 */
 .sort {
   display: flex;
   align-items: center;
@@ -681,6 +847,7 @@ onBeforeUnmount(() => save(page.value, context.value))
   font-weight: 600;
 }
 
+.mode,
 .refresh {
   display: flex;
   align-items: center;
@@ -691,5 +858,10 @@ onBeforeUnmount(() => save(page.value, context.value))
   border-radius: 50%;
   background: #ebebeb;
   color: #666;
+}
+
+.mode {
+  background: #fff2e6;
+  color: #d96200;
 }
 </style>

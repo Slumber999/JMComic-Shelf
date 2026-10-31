@@ -107,6 +107,8 @@ export default {
     timeFilter: '時間',
     timeFilterHint: '時間篩選只在關鍵詞搜尋時生效，官方分類介面不接受年月',
     sortFilter: '排序',
+    viewShelf: '立體書架',
+    viewGrid: '網格列表',
     pullToRefresh: '下拉重新整理',
     releaseToRefresh: '鬆開重新整理',
     refreshing: '正在重新整理…',

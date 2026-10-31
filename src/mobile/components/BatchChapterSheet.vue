@@ -46,7 +46,7 @@ function choose(choice: 'skip' | 'pick' | 'all') {
   <mobile-sheet :showing="showing" :title="title" @update:showing="emit('update:showing', $event)">
     <p class="batch-hint">{{ t('mobile.batchChapterHint', { count: names.length }) }}</p>
     <div class="batch-names">
-      <span v-for="name in names" :key="name" class="batch-name">{{ name }}</span>
+      <span v-for="name in names" :key="name" class="batch-name" :title="name">{{ name }}</span>
     </div>
     <button
       v-for="option in options"
@@ -68,21 +68,23 @@ function choose(choice: 'skip' | 'pick' | 'all') {
   line-height: 1.5;
 }
 
+/* 一本一行、超出省略：长标题不会把弹层撑高 */
 .batch-names {
   display: flex;
-  flex-wrap: wrap;
-  gap: 6px;
+  flex-direction: column;
+  gap: 4px;
   max-height: 18vh;
   overflow-y: auto;
   overscroll-behavior: contain;
 }
 
 .batch-name {
-  padding: 3px 8px;
-  border-radius: 999px;
-  background: #f6f6f6;
+  overflow: hidden;
   color: #555;
-  font-size: 11px;
+  font-size: 12px;
+  line-height: 1.6;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .sheet-option {

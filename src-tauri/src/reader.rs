@@ -608,6 +608,8 @@ pub fn image_response(body: Vec<u8>, content_type: &str) -> tauri::http::Respons
         .header(tauri::http::header::CONTENT_TYPE, content_type)
         // 同一个页面反复读时直接用缓存，避免重复解码传输
         .header(tauri::http::header::CACHE_CONTROL, "public, max-age=31536000")
+        // 允许前端取色（书脊按封面主色上色），否则画布被污染读不到像素
+        .header("Access-Control-Allow-Origin", "*")
         .body(body)
         .unwrap_or_else(|_| tauri::http::Response::new(Vec::new()))
 }

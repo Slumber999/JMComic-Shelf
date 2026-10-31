@@ -1,4 +1,5 @@
 import { onBeforeUnmount, ref, watch } from 'vue'
+import { isInSwipeBlockedZone } from './swipeZone.ts'
 import type { Ref } from 'vue'
 
 /// 根屏横向滑动切页：跟手位移 + 松手回弹 / 切换。
@@ -46,10 +47,17 @@ export function usePagerSwipe(options: {
     if (!options.enabled() || event.touches.length !== 1) {
       return
     }
+    const touch = event.touches[0]
+    if (touch === undefined) {
+      return
+    }
+    // 书架这类横向组件只在自己那一条带子里拦截
+    if (isInSwipeBlockedZone(touch.clientX, touch.clientY)) {
+      return
+    }
     if (insideHorizontalScroller(event.target)) {
       return
     }
-    const touch = event.touches[0]
     startX = touch.clientX
     startY = touch.clientY
     startTime = performance.now()

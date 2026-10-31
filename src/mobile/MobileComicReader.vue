@@ -1132,6 +1132,9 @@ onBeforeUnmount(() => {
   flex: 0 0 auto;
   align-items: center;
   justify-content: center;
+  /* 宽高都撑满容器：图片的 100% 才有参照，不会被原图宽度顶成「放大」 */
+  width: 100%;
+  height: 100%;
   min-height: 100%;
   box-sizing: border-box;
   /* 底部给固定栏（进度条 + 按钮排）让位 */

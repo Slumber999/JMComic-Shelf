@@ -107,6 +107,8 @@ export default {
     timeFilter: '时间',
     timeFilterHint: '时间筛选只在关键词搜索时生效，官方分类接口不接受年月',
     sortFilter: '排序',
+    viewShelf: '立体书架',
+    viewGrid: '网格列表',
     pullToRefresh: '下拉刷新',
     releaseToRefresh: '松开刷新',
     refreshing: '正在刷新…',
