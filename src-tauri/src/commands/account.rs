@@ -35,6 +35,13 @@ pub fn logout(app: AppHandle) -> CommandResult<()> {
     Ok(())
 }
 
+/// 本次启动的登录态是否因为闲置超过七天被作废：前端据此跳过账号密码自动登录
+#[tauri::command]
+#[specta::specta]
+pub fn take_session_expired() -> bool {
+    crate::session::take_expired()
+}
+
 #[tauri::command]
 #[specta::specta]
 #[instrument(level = "error", skip_all)]

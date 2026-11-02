@@ -242,7 +242,8 @@ impl JmClient {
     /// 创建客户端。不会失败：代理配置不合法时退化为直连（并记错误日志），
     /// 保证应用永远能启动
     pub fn new(app: AppHandle) -> Self {
-        let cookie_store = Arc::new(SessionCookieStore::default());
+        // 带了 app，登录态才能落盘、下次启动直接恢复
+        let cookie_store = Arc::new(SessionCookieStore::new(Some(app.clone())));
         let api_client = Arc::new(RwLock::new(create_api_client_or_direct(
             &app,
             &cookie_store,
@@ -673,8 +674,10 @@ impl JmClient {
         )?;
         user_profile.photo = format!("https://{IMAGE_DOMAIN}/media/users/{}", user_profile.photo);
 
-        if let Some(avs) = session_avs {
-            self.cookie_store.set_session(domain, avs);
+        // 优先用响应头里的 AVS，抓不到就从 jar 里捞（Set-Cookie 一定已经进去了）
+        match session_avs.or_else(|| self.cookie_store.avs_from_jar(domain)) {
+            Some(avs) => self.cookie_store.set_session(domain, avs),
+            None => self.cookie_store.persist(Some(domain)),
         }
         self.session_generation.fetch_add(1, Ordering::Relaxed);
         *self.last_relogin_failure.write() = None;

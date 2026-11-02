@@ -46,4 +46,22 @@ pub struct ComicInSearchRespData {
     pub is_favorite: bool,
     #[serde(rename = "update_at")]
     pub update_at: i64,
+    /// 列表接口偶尔会给标签：字符串数组才用，数字 id 一律丢掉（只用来做屏蔽判断）
+    #[serde(default, deserialize_with = "lenient_tags")]
+    pub tags: Vec<String>,
+}
+
+fn lenient_tags<'de, D>(deserializer: D) -> Result<Vec<String>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let value = Option::<Vec<serde_json::Value>>::deserialize(deserializer)?;
+    Ok(value
+        .unwrap_or_default()
+        .into_iter()
+        .filter_map(|item| match item {
+            serde_json::Value::String(text) => Some(text),
+            _ => None,
+        })
+        .collect())
 }

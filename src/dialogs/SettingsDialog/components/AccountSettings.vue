@@ -108,7 +108,6 @@ function confirmLogout() {
         <span class="text-sm">{{ t('account.autoLogin') }}</span>
         <n-switch v-model:value="store.config.autoLogin" size="small" />
       </div>
-      <span class="text-xs text-gray-500">{{ t('account.autoLoginHint') }}</span>
     </div>
 
     <div v-if="store.userProfile !== undefined" class="flex flex-col gap-1">

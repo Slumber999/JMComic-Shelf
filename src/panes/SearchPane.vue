@@ -31,9 +31,16 @@ import {
   useMessage,
 } from 'naive-ui'
 import ComicCard from '../components/ComicCard.vue'
+import { NModal, NTag } from 'naive-ui'
 import { useGridColumns } from '../comicGrid.ts'
 import LoadingSpinner from '../components/LoadingSpinner.vue'
-import { PhClockCounterClockwise, PhMagnifyingGlass, PhTag, PhTagSimple } from '@phosphor-icons/vue'
+import {
+  PhClockCounterClockwise,
+  PhMagnifyingGlass,
+  PhShieldSlash,
+  PhTag,
+  PhTagSimple,
+} from '@phosphor-icons/vue'
 import { useStore } from '../store.ts'
 import { useI18n } from '../i18n.ts'
 import { useLocalTags } from '../localTags.ts'
@@ -45,6 +52,112 @@ const message = useMessage()
 
 const HISTORY_KEY = 'search:history'
 const MAX_HISTORY = 20
+
+/// 屏蔽词：命中标签或标题的漫画在结果里直接隐藏（配置里持久化）
+const blockedWords = computed(() => store.config?.blockedTags ?? [])
+const blockedDialogShowing = ref(false)
+const blockInput = ref('')
+/// 后端按标签判定的命中 id（列表接口不带标签也能筛干净）
+const blockedIds = ref<Set<number>>(new Set())
+
+function isBlocked(comic: { id: number; name?: string }): boolean {
+  if (blockedIds.value.has(comic.id)) {
+    return true
+  }
+  const name = comic.name ?? ''
+  return blockedWords.value.some((word) => name.includes(word))
+}
+
+const visibleComics = computed(() =>
+  (store.searchResult?.content ?? []).filter((comic) => !isBlocked(comic)),
+)
+
+/// 用后端缓存/补抓的标签判定一遍，并提示命中了几个词、藏了几本
+let blockToken = 0
+async function applyBlock() {
+  const token = ++blockToken
+  const list = store.searchResult?.content ?? []
+  const words = blockedWords.value
+  if (words.length === 0 || list.length === 0) {
+    blockedIds.value = new Set()
+    return
+  }
+  const result = await commands.blockedComicIds(list.map((comic) => comic.id), words, 24)
+  if (token !== blockToken || result.status === 'error') {
+    return
+  }
+  blockedIds.value = new Set(result.data)
+  const hidden = list.filter((comic) => isBlocked(comic)).length
+  if (hidden > 0) {
+    message.info(t('search.blockedNotice', { words: words.slice(0, 3).join('、'), count: hidden }))
+  }
+}
+
+// 结果变了、屏蔽词改了都要重新判定并提示
+watch([() => store.searchResult, blockedWords], () => void applyBlock(), { immediate: true })
+
+/// 官方标签分组（和搜索页标签抽屉同一份目录）
+const blockGroups = computed(() => store.categoryResp?.blocks ?? [])
+
+const manualWords = computed(() => store.config?.manualBlockedTags ?? [])
+
+function setBlockedWords(next: string[]) {
+  if (store.config === undefined) {
+    return
+  }
+  store.config.blockedTags = next
+  // 立刻落盘，别等 400ms 的合并保存
+  void commands.saveConfig(store.config)
+}
+
+function setManualWords(next: string[]) {
+  if (store.config === undefined) {
+    return
+  }
+  store.config.manualBlockedTags = next
+  void commands.saveConfig(store.config)
+}
+
+function toggleBlockedWord(word: string) {
+  const next = new Set(blockedWords.value)
+  if (next.has(word)) {
+    next.delete(word)
+  } else {
+    next.add(word)
+  }
+  setBlockedWords([...next])
+  if (!next.has(word) && manualWords.value.includes(word)) {
+    setManualWords(manualWords.value.filter((item) => item !== word))
+  }
+}
+
+/// 点一下手动词：只启停屏蔽，词本身留在记忆里
+function toggleManualWord(word: string) {
+  const active = blockedWords.value.includes(word)
+  setBlockedWords(
+    active ? blockedWords.value.filter((item) => item !== word) : [...blockedWords.value, word],
+  )
+}
+
+/// 清空手动记录：连着屏蔽一起删
+function forgetManualWords() {
+  for (const word of manualWords.value) {
+    setBlockedWords(blockedWords.value.filter((item) => item !== word))
+  }
+  setManualWords([])
+}
+
+/// 手动输入的词也记住，下次打开面板还能看到
+function addBlockedWord() {
+  const word = blockInput.value.trim()
+  if (word === '') {
+    return
+  }
+  setBlockedWords([...new Set([...blockedWords.value, word])])
+  setManualWords([...new Set([...manualWords.value, word])])
+  blockInput.value = ''
+}
+
 
 const sortOptions = computed<SelectProps['options']>(() => [
   { label: t('search.newest'), value: 'Latest' },
@@ -679,6 +792,19 @@ function resetFilters() {
         :show-checkmark="false"
         size="small"
         @update-value="search(searchInput.trim(), 1, $event)" />
+      <!-- 和多标签搜索开关同款：无色图标按钮，有屏蔽词时才亮成橙色 -->
+      <n-button
+        size="small"
+        :type="blockedWords.length > 0 ? 'primary' : 'default'"
+        :class="blockedWords.length > 0 ? '' : 'multi-tag-toggle-off'"
+        :title="t('search.blockTags')"
+        @click="blockedDialogShowing = true">
+        <template #icon>
+          <n-icon size="16">
+            <PhShieldSlash />
+          </n-icon>
+        </template>
+      </n-button>
       <n-button
         :loading="searching"
         type="primary"
@@ -821,7 +947,7 @@ function resetFilters() {
       :class="store.comicLayout === 'list' ? 'flex flex-col gap-row-2' : 'grid gap-2 content-start'"
       :style="store.comicLayout === 'grid' ? gridStyle : undefined">
       <ComicCard
-        v-for="comicInSearch in store.searchResult.content"
+        v-for="comicInSearch in visibleComics"
         :key="comicInSearch.id"
         :layout="store.comicLayout"
         :comic-id="comicInSearch.id"
@@ -855,6 +981,55 @@ function resetFilters() {
       <n-pagination :page-count="searchPageCount" :page="searchPage" @update:page="loadPage" />
     </div>
   </div>
+
+  <!-- 屏蔽标签：勾上的标签不会出现在搜索结果里 -->
+  <n-modal v-model:show="blockedDialogShowing" preset="card" :title="t('search.blockTagsTitle')" class="w-90% max-w-lg">
+    <div class="flex max-h-80 flex-col gap-3 overflow-auto">
+      <div class="flex gap-1">
+        <n-input
+          v-model:value="blockInput"
+          size="small"
+          :placeholder="t('search.blockInputPlaceholder')"
+          @keyup.enter="addBlockedWord" />
+        <n-button size="small" type="primary" @click="addBlockedWord">{{ t('common.add') }}</n-button>
+      </div>
+      <!-- 官方标签按目录分组 -->
+      <div v-for="group in blockGroups" :key="group.title" class="flex flex-col gap-1">
+        <div class="text-xs text-gray-500">{{ group.title }}</div>
+        <div class="flex flex-wrap gap-1">
+          <n-tag
+            v-for="tag in group.content"
+            :key="tag"
+            checkable
+            size="small"
+            :checked="blockedWords.includes(tag)"
+            @click="toggleBlockedWord(tag)">
+            {{ tag }}
+          </n-tag>
+        </div>
+      </div>
+      <!-- 最后一组：手动词都记在这里，点一下只是启停屏蔽 -->
+      <div class="flex flex-col gap-1">
+        <div class="text-xs text-gray-500">{{ t('search.blockManual') }}</div>
+        <div class="flex flex-wrap gap-1">
+          <n-tag
+            v-for="word in manualWords"
+            :key="word"
+            size="small"
+            :type="blockedWords.includes(word) ? 'warning' : 'default'"
+            @click="toggleManualWord(word)">
+            {{ word }}
+          </n-tag>
+          <span v-if="manualWords.length === 0" class="text-xs text-gray-400">
+            {{ t('search.blockManualEmpty') }}
+          </span>
+        </div>
+        <n-button v-if="manualWords.length > 0" size="tiny" text @click="forgetManualWords">
+          {{ t('search.blockManualClear') }}
+        </n-button>
+      </div>
+    </div>
+  </n-modal>
 </template>
 
 <style scoped>

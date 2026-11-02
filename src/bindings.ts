@@ -27,6 +27,20 @@ async login(username: string, password: string) : Promise<Result<GetUserProfileR
 /**
  * 退出登录：清掉内存里的登录态（配置里记住的账号密码由前端清空并自动保存）
  */
+/**
+ * 本次启动的登录态是否因为闲置超过七天被作废：前端据此跳过账号密码自动登录
+ */
+async takeSessionExpired() : Promise<Result<boolean, CommandError>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("take_session_expired") };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+/**
+ * 退出登录：清掉内存里的登录态（配置里记住的账号密码由前端清空并自动保存）
+ */
 async logout() : Promise<Result<null, CommandError>> {
     try {
     return { status: "ok", data: await TAURI_INVOKE("logout") };
@@ -296,6 +310,18 @@ async getFavoritesTags(folderId: number) : Promise<FavoritesTagsSnapshot> {
 async fetchComicTags(comicIds: number[], limit: number) : Promise<Result<FetchComicTagsResult, CommandError>> {
     try {
     return { status: "ok", data: await TAURI_INVOKE("fetch_comic_tags", { comicIds, limit }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+/**
+ * 这些漫画里，标签命中 words 的 id 列表：标签走同一份缓存，缺的先补抓（最多 limit 本）
+ * - 屏蔽词放在后端判断，前端列表接口不带标签也能筛干净
+ */
+async blockedComicIds(comicIds: number[], words: string[], limit: number) : Promise<Result<number[], CommandError>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("blocked_comic_ids", { comicIds, words, limit }) };
 } catch (e) {
     if(e instanceof Error) throw e;
     else return { status: "error", error: e  as any };
@@ -853,7 +879,7 @@ export type ComicInFavorite = { id: number; author: string; description: string 
  * 导出目录里有没有这本（"列出全部漫画"里标记已导出）
  */
 isExported: boolean; comicDownloadDir: string }
-export type ComicInSearch = { id: number; author: string; name: string; image: string; category: CategoryRespData; categorySub: CategorySubRespData; liked: boolean; isFavorite: boolean; updateAt: number; isDownloaded: boolean; comicDownloadDir: string }
+export type ComicInSearch = { id: number; author: string; name: string; image: string; category: CategoryRespData; categorySub: CategorySubRespData; liked: boolean; isFavorite: boolean; updateAt: number; isDownloaded: boolean; comicDownloadDir: string; tags: string[] }
 export type ComicInWeekly = { id: number; author: string; description: string; name: string; image: string; category: Category; category_sub: CategorySub; liked: boolean; is_favorite: boolean; update_at: number; is_downloaded: boolean; comic_download_dir: string }
 export type CommandError = { err_title: string; 
 /**
@@ -906,7 +932,7 @@ export type Config = { username: string; password: string;
 /**
  * 启动时是否自动用记住的账号登录
  */
-autoLogin: boolean; downloadDir: string; exportDir: string; downloadFormat: DownloadFormat; dirFmt: string; proxyMode: ProxyMode; proxyHost: string; proxyPort: number; enableFileLogger: boolean; chapterConcurrency: number; chapterDownloadIntervalSec: number; imgConcurrency: number; imgDownloadIntervalSec: number; downloadAllFavoritesIntervalSec: number; updateDownloadedComicsIntervalSec: number; apiDomainMode: ApiDomainMode; customApiDomain: string; shouldDownloadCover: boolean; 
+autoLogin: boolean; blockedTags: string[]; manualBlockedTags: string[]; downloadDir: string; exportDir: string; downloadFormat: DownloadFormat; dirFmt: string; proxyMode: ProxyMode; proxyHost: string; proxyPort: number; enableFileLogger: boolean; chapterConcurrency: number; chapterDownloadIntervalSec: number; imgConcurrency: number; imgDownloadIntervalSec: number; downloadAllFavoritesIntervalSec: number; updateDownloadedComicsIntervalSec: number; apiDomainMode: ApiDomainMode; customApiDomain: string; shouldDownloadCover: boolean; 
 /**
  * 阅读器是否拆分成独立窗口
  */

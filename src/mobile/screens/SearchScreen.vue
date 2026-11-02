@@ -25,6 +25,7 @@ import ListStatus from '../components/ListStatus.vue'
 import MobilePager from '../components/MobilePager.vue'
 import PullRefreshBar from '../components/PullRefreshBar.vue'
 import SearchFilters from '../components/search/SearchFilters.vue'
+import MobileSheet from '../components/MobileSheet.vue'
 import SearchHistory from '../components/search/SearchHistory.vue'
 import { clearListCache, readListCache, writeListCache } from '../listCache.ts'
 import { measureBeacon } from '../measure.ts'
@@ -364,6 +365,108 @@ const pageCount = computed(() =>
 )
 /// 小说接口一次返回整份列表，页码在本地切
 const displayNovels = computed(() => slicePage(novels.value, page.value, LIST_PAGE_SIZE))
+/// 屏蔽词：命中标签或标题的漫画不展示（配置里持久化）
+const blockedWords = computed(() => store.config?.blockedTags ?? [])
+const blockSheetShowing = ref(false)
+const blockInput = ref('')
+/// 后端按标签判定的命中 id（列表接口不带标签也能筛干净）
+const blockedIds = ref<Set<number>>(new Set())
+
+function isBlocked(comic: { id: number; name?: string }): boolean {
+  if (blockedIds.value.has(comic.id)) {
+    return true
+  }
+  const name = comic.name ?? ''
+  return blockedWords.value.some((word) => name.includes(word))
+}
+
+const visibleResults = computed(() => results.value.filter((comic) => !isBlocked(comic)))
+
+/// 用后端缓存/补抓的标签判定一遍，并提示命中了几个词、藏了几本
+let blockToken = 0
+async function applyBlock(list: { id: number; name?: string }[]) {
+  const token = ++blockToken
+  const words = blockedWords.value
+  if (words.length === 0 || list.length === 0) {
+    blockedIds.value = new Set()
+    return
+  }
+  const result = await commands.blockedComicIds(list.map((comic) => comic.id), words, 24)
+  if (token !== blockToken || result.status === 'error') {
+    return
+  }
+  blockedIds.value = new Set(result.data)
+  const hidden = list.filter((comic) => isBlocked(comic)).length
+  if (hidden > 0) {
+    message.info(t('search.blockedNotice', { words: words.slice(0, 3).join('、'), count: hidden }))
+  }
+}
+
+// 结果变了、屏蔽词改了都要重新判定并提示
+watch([() => results.value, blockedWords], () => void applyBlock(results.value), { immediate: true })
+
+/// 手动添加的屏蔽词：单独存一份，重启后还能在最后一组看到
+const manualWords = computed(() => store.config?.manualBlockedTags ?? [])
+
+function setBlockedWords(next: string[]) {
+  if (store.config === undefined) {
+    return
+  }
+  store.config.blockedTags = next
+  // 立刻落盘：设置面板之外改的配置也要记住
+  void commands.saveConfig(store.config)
+}
+
+function setManualWords(next: string[]) {
+  if (store.config === undefined) {
+    return
+  }
+  store.config.manualBlockedTags = next
+  void commands.saveConfig(store.config)
+}
+
+function toggleBlockedWord(word: string) {
+  const next = new Set(blockedWords.value)
+  if (next.has(word)) {
+    next.delete(word)
+  } else {
+    next.add(word)
+  }
+  setBlockedWords([...next])
+  if (!next.has(word) && manualWords.value.includes(word)) {
+    setManualWords(manualWords.value.filter((item) => item !== word))
+  }
+}
+
+/// 点一下手动词：只启停屏蔽，词本身留在记忆里
+function toggleManualWord(word: string) {
+  const active = blockedWords.value.includes(word)
+  setBlockedWords(
+    active ? blockedWords.value.filter((item) => item !== word) : [...blockedWords.value, word],
+  )
+}
+
+/// 清空手动记录：连着屏蔽一起删
+function forgetManualWords() {
+  for (const word of manualWords.value) {
+    setBlockedWords(blockedWords.value.filter((item) => item !== word))
+  }
+  setManualWords([])
+}
+
+/// 手动输入的词也记住，下次打开面板还在
+function addBlockedWord() {
+  const word = blockInput.value.trim()
+  if (word === '') {
+    return
+  }
+  setBlockedWords([...new Set([...blockedWords.value, word])])
+  // 同时记进「手动添加」那一组，重启后仍然在
+  setManualWords([...new Set([...manualWords.value, word])])
+  blockInput.value = ''
+}
+
+
 const listLength = computed(() => (isNovelMode.value ? novels.value.length : results.value.length))
 
 const rankingOrders = computed(() => [
@@ -1323,10 +1426,12 @@ onBeforeUnmount(() => {
         :year="yearSelected"
         :month="monthSelected"
         :time-enabled="mode === 'search'"
+        :block-active="blockedWords.length > 0"
         @select-sort="selectSort"
         @select-year="selectYear"
         @select-month="selectMonth"
-        @reset-time="resetTimeFilter" />
+        @reset-time="resetTimeFilter"
+        @open-block="blockSheetShowing = true" />
 
     </div>
 
@@ -1424,7 +1529,7 @@ onBeforeUnmount(() => {
           ref="comicsGrid"
           :style="cardHeightPx > 0 ? { '--card-h': `${cardHeightPx}px` } : undefined">
           <comic-grid-card
-            v-for="(comic, index) in results"
+            v-for="(comic, index) in visibleResults"
             :key="comic.id"
             :image="coverThumbUrl(comic.id)"
             :title="comic.name"
@@ -1439,10 +1544,143 @@ onBeforeUnmount(() => {
           @update:page="changePage" />
       </template>
     </template>
+
+    <!-- 屏蔽词：官方标签点选 + 手动输入，都会记进配置 -->
+    <mobile-sheet v-model:showing="blockSheetShowing" :title="t('search.blockTagsTitle')">
+      <div class="block-body">
+        <div class="block-input-row">
+          <input
+            v-model="blockInput"
+            class="block-input"
+            type="text"
+            :placeholder="t('search.blockInputPlaceholder')"
+            @keyup.enter="addBlockedWord" />
+          <button class="block-add" type="button" @click="addBlockedWord">{{ t('common.add') }}</button>
+        </div>
+        <!-- 官方标签按目录分组，和搜索页的标签抽屉一致 -->
+        <div v-for="group in tagBlocks" :key="group.title" class="block-group">
+          <p class="block-group-title">{{ group.title }}</p>
+          <div class="block-tags">
+            <button
+              v-for="tag in group.content"
+              :key="tag"
+              class="block-tag"
+              :class="{ active: blockedWords.includes(tag) }"
+              type="button"
+              @click="toggleBlockedWord(tag)">
+              {{ tag }}
+            </button>
+          </div>
+        </div>
+        <!-- 最后一组：手动词都记在这里，点一下只是启停屏蔽，不会丢 -->
+        <div class="block-group">
+          <p class="block-group-title">{{ t('search.blockManual') }}</p>
+          <div class="block-tags">
+            <button
+              v-for="word in manualWords"
+              :key="word"
+              class="block-tag"
+              :class="{ active: blockedWords.includes(word) }"
+              type="button"
+              @click="toggleManualWord(word)">
+              {{ word }}
+            </button>
+            <span v-if="manualWords.length === 0" class="block-empty">{{ t('search.blockManualEmpty') }}</span>
+          </div>
+          <button v-if="manualWords.length > 0" class="block-clear" type="button" @click="forgetManualWords">
+            {{ t('search.blockManualClear') }}
+          </button>
+        </div>
+      </div>
+    </mobile-sheet>
   </section>
 </template>
 
 <style scoped>
+.block-body {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.block-hint {
+  margin: 0;
+  color: #999;
+  font-size: 12px;
+}
+
+.block-input-row {
+  display: flex;
+  gap: 8px;
+}
+
+.block-input {
+  flex: 1;
+  min-width: 0;
+  padding: 8px 12px;
+  border: 1px solid #e6e6e6;
+  border-radius: 10px;
+  font-size: 13px;
+}
+
+.block-add {
+  padding: 0 14px;
+  border: none;
+  border-radius: 10px;
+  background: #ff7a00;
+  color: #fff;
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.block-group {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.block-group-title {
+  margin: 0;
+  color: #999;
+  font-size: 12px;
+}
+
+.block-clear {
+  align-self: flex-start;
+  padding: 0;
+  border: none;
+  background: none;
+  color: #999;
+  font-size: 12px;
+  text-decoration: underline;
+}
+
+.block-empty {
+  color: #bbb;
+  font-size: 12px;
+}
+
+.block-tags {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.block-tag {
+  padding: 6px 12px;
+  border: 1px solid #e6e6e6;
+  border-radius: 999px;
+  background: #fff;
+  color: #555;
+  font-size: 12px;
+}
+
+.block-tag.active {
+  border-color: #ff7a00;
+  background: #fff2e6;
+  color: #d96200;
+  font-weight: 600;
+}
 .screen {
   display: flex;
   flex-direction: column;

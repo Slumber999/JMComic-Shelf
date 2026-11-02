@@ -5,6 +5,41 @@ import { normalizeAuthorName } from './authorNames.ts'
 
 /// 评论关键词屏蔽：纯逻辑，全站评论页和阅读器评论抽屉共用；关键词存 localStorage，不进 config.json
 const STORAGE_KEY = 'commentBlockKeywords'
+const EMOJI_STORAGE_KEY = 'commentBlockEmoji'
+
+/// 带表情的评论是否一起屏蔽：默认关，纯本地开关
+export function loadBlockEmoji(): boolean {
+  try {
+    return localStorage.getItem(EMOJI_STORAGE_KEY) === '1'
+  } catch {
+    return false
+  }
+}
+
+export function saveBlockEmoji(value: boolean): void {
+  try {
+    localStorage.setItem(EMOJI_STORAGE_KEY, value ? '1' : '0')
+  } catch {
+    // 忽略 localStorage 写入失败
+  }
+}
+
+/// 只要含一个 emoji/象形符号就算命中
+export function hasEmoji(text: string): boolean {
+  for (const char of text) {
+    const code = char.codePointAt(0) ?? 0
+    // 表情、杂项符号、装饰符号、变体选择符：都算「带表情」
+    if (
+      (code >= 0x1f300 && code <= 0x1faff) ||
+      (code >= 0x2600 && code <= 0x27bf) ||
+      (code >= 0x2b00 && code <= 0x2bff) ||
+      (code >= 0xfe00 && code <= 0xfe0f)
+    ) {
+      return true
+    }
+  }
+  return false
+}
 
 /// 与作者名同一套归一化（NFKC、压空白），再转小写
 export function normalize(text: string): string {
@@ -55,10 +90,17 @@ export function saveKeywords(keywords: string[]): void {
 }
 
 /// 只看这条评论自己的正文；回复单独过滤，别让一条广告回复带走整条一级评论
-export function isBlocked(comment: Comment, keywords: string[]): boolean {
+export function isBlocked(
+  comment: Comment,
+  keywords: string[],
+  blockEmoji = false,
+): boolean {
   const content = keywordKey(comment.content ?? '')
   if (content === '') {
     return false
+  }
+  if (blockEmoji && hasEmoji(comment.content ?? '')) {
+    return true
   }
   return keywords.some((keyword) => {
     const key = keywordKey(keyword)
@@ -67,14 +109,16 @@ export function isBlocked(comment: Comment, keywords: string[]): boolean {
 }
 
 /// 回复递归过滤：命中的回复连同它的下级一起隐藏，父评论保留
-function filterReplies(replies: Comment[], keywords: string[]): Comment[] {
+function filterReplies(replies: Comment[], keywords: string[], blockEmoji: boolean): Comment[] {
   const kept: Comment[] = []
   for (const reply of replies) {
-    if (isBlocked(reply, keywords)) {
+    if (isBlocked(reply, keywords, blockEmoji)) {
       continue
     }
     const children = reply.replys ?? []
-    kept.push(children.length === 0 ? reply : { ...reply, replys: filterReplies(children, keywords) })
+    kept.push(
+      children.length === 0 ? reply : { ...reply, replys: filterReplies(children, keywords, blockEmoji) },
+    )
   }
   return kept
 }
@@ -83,27 +127,40 @@ function filterReplies(replies: Comment[], keywords: string[]): Comment[] {
 export function filterComments(
   comments: Comment[],
   keywords: string[],
+  blockEmoji = false,
 ): { comments: Comment[]; blocked: number } {
   const kept: Comment[] = []
   let blocked = 0
   for (const comment of comments) {
-    if (isBlocked(comment, keywords)) {
+    if (isBlocked(comment, keywords, blockEmoji)) {
       blocked++
       continue
     }
     const replies = comment.replys ?? []
-    kept.push(replies.length === 0 ? comment : { ...comment, replys: filterReplies(replies, keywords) })
+    kept.push(
+      replies.length === 0
+        ? comment
+        : { ...comment, replys: filterReplies(replies, keywords, blockEmoji) },
+    )
   }
   return { comments: kept, blocked }
 }
 
 /// 全站评论页和漫画评论抽屉共用这一份关键词：一处增删，另一处立刻跟着变
 let sharedKeywords: Ref<string[]> | undefined
+let sharedBlockEmoji: Ref<boolean> | undefined
 
 /// 组件里取同一个关键词列表；增删都顺手写 localStorage
 export function useCommentKeywords() {
   sharedKeywords ??= ref<string[]>(loadKeywords())
+  sharedBlockEmoji ??= ref<boolean>(loadBlockEmoji())
   const keywords = sharedKeywords
+  const blockEmoji = sharedBlockEmoji
+
+  function setBlockEmoji(value: boolean): void {
+    blockEmoji.value = value
+    saveBlockEmoji(value)
+  }
 
   function addKeyword(keyword: string): void {
     const text = keyword.trim()
@@ -119,5 +176,5 @@ export function useCommentKeywords() {
     saveKeywords(keywords.value)
   }
 
-  return { keywords, addKeyword, removeKeyword }
+  return { keywords, blockEmoji, setBlockEmoji, addKeyword, removeKeyword }
 }

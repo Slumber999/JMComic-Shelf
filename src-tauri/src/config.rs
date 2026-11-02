@@ -53,6 +53,12 @@ pub struct Config {
     pub api_domain_mode: ApiDomainMode,
     pub custom_api_domain: String,
     pub should_download_cover: bool,
+    /// 搜索页要屏蔽的标签：命中的漫画不展示
+    #[serde(default)]
+    pub blocked_tags: Vec<String>,
+    /// 其中哪些是手动输入添加的（面板里单独一组展示，换设备/重启都还在）
+    #[serde(default)]
+    pub manual_blocked_tags: Vec<String>,
     /// 阅读器是否拆分成独立窗口
     pub split_reader: bool,
     /// 主窗口尺寸：换网格档位、用户拉伸窗口时由前端更新
@@ -199,6 +205,8 @@ impl Config {
             api_domain_mode: ApiDomainMode::Domain1,
             custom_api_domain: API_DOMAIN_1.to_string(),
             should_download_cover: true,
+            blocked_tags: Vec::new(),
+            manual_blocked_tags: Vec::new(),
             split_reader: false,
             window_width: 600,
             window_height: 720,

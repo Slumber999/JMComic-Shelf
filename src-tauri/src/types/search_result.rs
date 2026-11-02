@@ -87,6 +87,8 @@ pub struct ComicInSearch {
     pub update_at: i64,
     pub is_downloaded: bool,
     pub comic_download_dir: PathBuf,
+    /// 列表接口给的标签（可能为空）
+    pub tags: Vec<String>,
 }
 
 impl ComicInSearch {
@@ -108,6 +110,7 @@ impl ComicInSearch {
             update_at: resp_data.update_at,
             is_downloaded: false,
             comic_download_dir: PathBuf::new(),
+            tags: resp_data.tags,
         };
 
         comic.update_fields(id_to_dir_map);

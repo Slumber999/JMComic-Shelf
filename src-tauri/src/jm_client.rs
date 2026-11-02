@@ -63,11 +63,25 @@ const RELOGIN_COOLDOWN: Duration = Duration::from_secs(60);
 ///   jar 正是按这几项存取，谁后到谁覆盖。所以登录成功后把 AVS 记在这里，
 ///   取 cookie 时直接盖掉 jar 里的那份，游客 AVS 就顶不掉了
 /// - 登录态按域名隔离：每个域名存自己那份 AVS，换线后不会把旧域名的 AVS 发过去
-#[derive(Default)]
 struct SessionCookieStore {
     jar: Jar,
     /// 域名 -> 登录态 AVS；没有记录表示该域名还没登录
     sessions: RwLock<HashMap<String, String>>,
+    /// 用来把登录态落盘；没有 AppHandle（测试）时只在内存里
+    app: Option<AppHandle>,
+}
+
+/// 从 cookie 串里取 AVS 值（形如 "AVS=xxx; other=y"）
+fn parse_avs(text: &str) -> Option<String> {
+    for part in text.split(';') {
+        let mut pair = part.trim().splitn(2, '=');
+        let name = pair.next().unwrap_or_default();
+        let value = pair.next().unwrap_or_default();
+        if name.eq_ignore_ascii_case("AVS") && !value.is_empty() {
+            return Some(value.to_string());
+        }
+    }
+    None
 }
 
 /// 登录态按域名隔离：key 统一成小写 host，避免端口/大小写差异对不上
@@ -83,15 +97,80 @@ fn session_domain_key(domain: &str) -> String {
 }
 
 impl SessionCookieStore {
+    /// 建存储时先把上次的登录态读回来，七天没启动过会在 session::load 里作废
+    fn new(app: Option<AppHandle>) -> Self {
+        let restored = app.as_ref().and_then(crate::session::load);
+        let jar = Jar::default();
+        let mut sessions = std::collections::HashMap::new();
+        // 只存 AVS 服务端不认，剩下的 cookie 也要一起放回 jar 里
+        if let Some(restored) = &restored {
+            for (domain, cookies) in &restored.cookies {
+                if let Ok(url) = Url::parse(&format!("https://{domain}/")) {
+                    for cookie in cookies.split(';') {
+                        jar.add_cookie_str(cookie.trim(), &url);
+                    }
+                }
+                // 旧文件只存了 cookie 没存 AVS 时，从 cookie 串里补出来
+                if let Some(avs) = parse_avs(cookies) {
+                    sessions.insert(domain.clone(), avs);
+                }
+            }
+            sessions.extend(restored.sessions.clone());
+        }
+        Self {
+            jar,
+            sessions: RwLock::new(sessions),
+            app,
+        }
+    }
+
+    /// 从 jar 里把该域名的 AVS 捞出来：登录响应的头偶尔抓不到，但 Set-Cookie 一定进了 jar
+    fn avs_from_jar(&self, domain: &str) -> Option<String> {
+        let url = Url::parse(&format!("https://{}/", session_domain_key(domain))).ok()?;
+        let header = self.jar.cookies(&url)?;
+        parse_avs(header.to_str().ok()?)
+    }
+
     fn set_session(&self, domain: &str, avs: String) {
         self.sessions
             .write()
             .insert(session_domain_key(domain), avs);
+        self.persist(None);
     }
 
     /// 退出登录：丢掉所有域名的登录态 AVS，之后的请求退回游客身份
     fn clear_session(&self) {
         self.sessions.write().clear();
+        if let Some(app) = &self.app {
+            crate::session::clear(app);
+        }
+    }
+
+    /// 把当前登录态写回磁盘（保存失败只记日志）
+    /// extra_domain：登录成功但没拿到 AVS 头时，jar 里其实已经有 cookie，也要存下来
+    fn persist(&self, extra_domain: Option<&str>) {
+        let Some(app) = &self.app else {
+            return;
+        };
+        let sessions = self.sessions.read().clone();
+        let mut domains: Vec<String> = sessions.keys().cloned().collect();
+        if let Some(domain) = extra_domain {
+            let key = session_domain_key(domain);
+            if !domains.contains(&key) {
+                domains.push(key);
+            }
+        }
+        let mut cookies = HashMap::new();
+        for domain in &domains {
+            if let Ok(url) = Url::parse(&format!("https://{domain}/")) {
+                if let Some(value) = self.jar.cookies(&url) {
+                    if let Ok(text) = value.to_str() {
+                        cookies.insert(domain.clone(), text.to_string());
+                    }
+                }
+            }
+        }
+        crate::session::save(app, &sessions, &cookies);
     }
 
     /// 这个域名上有没有登录态

@@ -281,17 +281,31 @@ onMounted(async () => {
       unlistenResize = unlisten
     })
     .catch((error: unknown) => console.error('监听窗口尺寸失败', error))
-  // 开着自动登录、并且记住过账号密码时，才尝试登录
-  if (store.config.autoLogin && store.config.username !== '' && store.config.password !== '') {
-    const result = await commands.login(store.config.username, store.config.password)
-    if (result.status === 'error') {
-      // 启动阶段自动登录失败多为网络还没热起来：只记日志，不弹给用户
-      console.error(result.error)
+  if (store.config.autoLogin) {
+    // 先用持久化的登录态恢复（不再每次都拿账号密码登录）
+    const restored = await commands.getUserProfile()
+    if (restored.status === 'ok') {
+      markAuthReady()
+      store.userProfile = restored.data
       return
     }
-    markAuthReady()
-    store.userProfile = result.data
-    message.success(t('app.autoLoginSuccess'))
+    // 闲置超过七天：这次强制退出，不再自动登录，等用户手动登
+    const expired = await commands.takeSessionExpired()
+    if (expired.status === 'ok' && expired.data) {
+      return
+    }
+    // 恢复不了（换过账号/退出过）再退回账号密码登录
+    if (store.config.username !== '' && store.config.password !== '') {
+      const result = await commands.login(store.config.username, store.config.password)
+      if (result.status === 'error') {
+        // 启动阶段自动登录失败多为网络还没热起来：只记日志，不弹给用户
+        console.error(result.error)
+        return
+      }
+      markAuthReady()
+      store.userProfile = result.data
+      message.success(t('app.autoLoginSuccess'))
+    }
   }
 })
 </script>

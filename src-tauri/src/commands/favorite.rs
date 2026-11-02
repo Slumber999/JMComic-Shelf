@@ -248,6 +248,44 @@ pub async fn fetch_comic_tags(
         .map_err(|err| CommandError::from("获取漫画标签失败", err))
 }
 
+/// 这些漫画里，标签命中 words 的 id 列表：标签走同一份缓存，缺的先补抓（最多 limit 本）
+/// - 屏蔽词放在后端判断，前端列表接口不带标签也能筛干净
+#[tauri::command(async)]
+#[specta::specta]
+#[instrument(level = "error", skip_all, fields(limit = limit))]
+pub async fn blocked_comic_ids(
+    app: AppHandle,
+    comic_ids: Vec<i64>,
+    words: Vec<String>,
+    limit: usize,
+) -> CommandResult<Vec<i64>> {
+    let words: Vec<String> = words
+        .into_iter()
+        .map(|word| word.trim().to_lowercase())
+        .filter(|word| !word.is_empty())
+        .collect();
+    if words.is_empty() || comic_ids.is_empty() {
+        return Ok(Vec::new());
+    }
+    // 补标签失败也不影响已有缓存的部分
+    let _ = comic_tags::fetch_many(&app, comic_ids.clone(), limit).await;
+
+    let mut blocked = Vec::new();
+    for comic_id in comic_ids {
+        let Some(own_tags) = comic_tags::cached(&app, comic_id) else {
+            continue;
+        };
+        let hit = own_tags.iter().any(|tag| {
+            let tag = tag.to_lowercase();
+            words.iter().any(|word| tag == *word || tag.contains(word.as_str()))
+        });
+        if hit {
+            blocked.push(comic_id);
+        }
+    }
+    Ok(blocked)
+}
+
 /// 一本漫画的标签：缓存优先（收藏夹标签筛选和多关键词搜索共用这一份缓存）
 #[tauri::command]
 #[specta::specta]

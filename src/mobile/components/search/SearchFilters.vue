@@ -9,12 +9,16 @@ const props = defineProps<{
   year: number
   month: number
   timeEnabled: boolean
+  /// 有屏蔽词时这个按钮变橙，跟旁边几个 chip 的选中态一致
+  blockActive: boolean
 }>()
 const emit = defineEmits<{
   'select-sort': [value: SearchSort]
   'select-year': [value: number]
   'select-month': [value: number]
   'reset-time': []
+  /// 打开屏蔽标签面板
+  'open-block': []
 }>()
 
 const { t } = useI18n()
@@ -23,9 +27,8 @@ const currentYear = new Date().getFullYear()
 
 const sortOptions = computed<{ value: SearchSort; label: string }[]>(() => [
   { value: 'Latest', label: t('search.newest') },
-  { value: 'View', label: t('search.mostView') },
-  { value: 'Picture', label: t('search.mostPicture') },
   { value: 'Like', label: t('search.mostLike') },
+  { value: 'View', label: t('search.mostView') },
 ])
 const yearOptions = computed(() => [
   { value: 0, label: t('search.yearAll') },
@@ -54,6 +57,9 @@ const timeActive = computed(() => props.year !== 0 || props.month !== 0)
       type="button"
       @click="emit('select-sort', option.value)">
       {{ option.label }}
+    </button>
+    <button class="chip" :class="{ active: blockActive }" type="button" @click="emit('open-block')">
+      {{ t('search.blockTags') }}
     </button>
     <button
       class="chip time"

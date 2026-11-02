@@ -380,6 +380,8 @@ function previewConfig(): Config {
     username: '',
     password: '',
     autoLogin: false,
+    blockedTags: [],
+    manualBlockedTags: [],
     downloadDir: '',
     exportDir: '',
     downloadFormat: 'Jpeg',
@@ -451,15 +453,29 @@ onMounted(async () => {
   lastSavedConfig = JSON.stringify(store.config)
   setLocale(store.config.language)
 
-  if (isTauri() && store.config.autoLogin && store.config.username !== '' && store.config.password !== '') {
-    const result = await commands.login(store.config.username, store.config.password)
-    if (result.status === 'error') {
-      console.error(result.error)
+  if (isTauri() && store.config.autoLogin) {
+    // 先用持久化的登录态恢复，恢复不了才退回账号密码登录
+    const restored = await commands.getUserProfile()
+    if (restored.status === 'ok') {
+      markAuthReady()
+      store.userProfile = restored.data
       return
     }
-    markAuthReady()
-    store.userProfile = result.data
-    message.success(t('app.autoLoginSuccess'))
+    // 闲置超过七天：这次强制退出，不再自动登录
+    const expired = await commands.takeSessionExpired()
+    if (expired.status === 'ok' && expired.data) {
+      return
+    }
+    if (store.config.username !== '' && store.config.password !== '') {
+      const result = await commands.login(store.config.username, store.config.password)
+      if (result.status === 'error') {
+        console.error(result.error)
+        return
+      }
+      markAuthReady()
+      store.userProfile = result.data
+      message.success(t('app.autoLoginSuccess'))
+    }
   }
 })
 

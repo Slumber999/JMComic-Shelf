@@ -50,9 +50,9 @@ const scanNotice = ref<{ scanned: number; blocked: number }>()
 const rebuildPending = ref(false)
 
 /// 与评论抽屉共用同一份关键词，嵌套回复的过滤由 filterComments 处理（只隐藏命中的那条）
-const { keywords } = useCommentKeywords()
+const { keywords, blockEmoji } = useCommentKeywords()
 const blockSettingsShowing = ref(false)
-const filtered = computed(() => filterComments(rawComments.value, keywords.value))
+const filtered = computed(() => filterComments(rawComments.value, keywords.value, blockEmoji.value))
 const visibleComments = computed(() => filtered.value.comments)
 const blockedCount = computed(() => filtered.value.blocked)
 
@@ -113,7 +113,7 @@ async function load(reset = false) {
 
       merged.push(...fresh)
       scanned += fresh.length
-      const pageFiltered = filterComments(fresh, keywords.value)
+      const pageFiltered = filterComments(fresh, keywords.value, blockEmoji.value)
       blocked += pageFiltered.blocked
       added += pageFiltered.comments.length
 

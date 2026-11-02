@@ -42,6 +42,7 @@ mod measure;
 mod quick_reader;
 mod reader;
 mod responses;
+mod session;
 mod storage;
 mod types;
 mod utils;
@@ -93,6 +94,8 @@ pub fn run() {
             save_config,
             login,
             logout,
+            take_session_expired,
+            blocked_comic_ids,
             get_notifications,
             mark_notification_read,
             search,
@@ -373,6 +376,9 @@ pub fn run() {
 
             app.manage(config);
 
+            // logger 要在建客户端之前初始化：恢复登录态的日志才不会被丢掉
+            logger::init(app.handle())?;
+
             let jm_client = JmClient::new(app.handle().clone());
             app.manage(jm_client);
 
@@ -387,7 +393,6 @@ pub fn run() {
 
             app.manage(ReaderWindowTargetState::default());
 
-            logger::init(app.handle())?;
 
             // 启动预热：登录态恢复后在后台打一次最轻的 /categories，把 DNS/TLS/线路选择提前做掉；
             // 失败静默重试一次，不弹错误、不阻塞界面

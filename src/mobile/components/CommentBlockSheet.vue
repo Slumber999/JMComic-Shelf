@@ -8,7 +8,7 @@ import { useCommentKeywords } from '../../commentBlock.ts'
 const showing = defineModel<boolean>('showing', { required: true })
 
 const { t } = useI18n()
-const { keywords, addKeyword, removeKeyword } = useCommentKeywords()
+const { keywords, blockEmoji, setBlockEmoji, addKeyword, removeKeyword } = useCommentKeywords()
 const input = ref('')
 
 function submit(): void {
@@ -57,6 +57,17 @@ function submit(): void {
           </li>
         </ul>
 
+        <div class="emoji-row">
+          <span class="emoji-label">{{ t('comments.block.blockEmoji') }}</span>
+          <button
+            class="switch"
+            :class="{ on: blockEmoji }"
+            type="button"
+            role="switch"
+            :aria-checked="blockEmoji"
+            @click="setBlockEmoji(!blockEmoji)" />
+        </div>
+
         <p class="hint">{{ t('comments.block.hint') }}</p>
       </section>
     </div>
@@ -64,6 +75,49 @@ function submit(): void {
 </template>
 
 <style scoped>
+.emoji-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 10px 12px;
+  border-radius: 10px;
+  background: #f7f7f7;
+}
+
+.emoji-label {
+  color: #444;
+  font-size: 13px;
+}
+
+.switch {
+  position: relative;
+  width: 42px;
+  height: 24px;
+  border: none;
+  border-radius: 999px;
+  background: #d9d9d9;
+  transition: background 0.2s ease;
+}
+
+.switch::after {
+  position: absolute;
+  top: 3px;
+  left: 3px;
+  width: 18px;
+  height: 18px;
+  border-radius: 50%;
+  background: #fff;
+  content: '';
+  transition: transform 0.2s ease;
+}
+
+.switch.on {
+  background: #ff7a00;
+}
+
+.switch.on::after {
+  transform: translateX(18px);
+}
 .backdrop {
   position: fixed;
   inset: 0;
