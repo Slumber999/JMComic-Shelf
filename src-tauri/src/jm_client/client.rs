@@ -1300,6 +1300,7 @@ impl JmClient {
         .await
     }
 
+
     #[instrument(level = "error", skip_all, fields(aid = aid, folder_id = folder_id))]
     pub async fn move_favorite_to_folder(&self, aid: i64, folder_id: &str) -> eyre::Result<()> {
         let form = json!({

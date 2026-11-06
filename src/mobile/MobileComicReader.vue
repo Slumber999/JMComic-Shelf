@@ -16,6 +16,7 @@ import ReaderRail from './components/ReaderRail.vue'
 import { findExportedComic, resolveLocalComic } from '../reader/localReader.ts'
 import { readerLoadingGif, warmReaderLoadingGif } from './readerLoadingGif.ts'
 import { readerHand, setReaderHand } from './useReaderHand.ts'
+import { readerVolumeKeys } from './useReaderVolume.ts'
 import { useOverlayLayer } from './useNavStack.ts'
 
 /// 手机专用阅读器：操作栏竖排在左右一侧、底部是可拖动进度条；swipe 翻页、单击切换控件
@@ -203,7 +204,9 @@ function ratioKey(index: number): string {
 function pageHeight(index: number): number {
   const ratio = pageRatios.get(ratioKey(index)) ?? PLACEHOLDER_RATIO
   const width = viewportWidth.value || 360
-  return Math.round(width * ratio)
+  // 条漫放大按宽度比例放大每一页，滚动条跟着变长，不会像 transform 那样整体位移
+  const zoom = readingMode.value === 'scroll' ? zoomScale.value : 1
+  return Math.round(width * ratio * zoom)
 }
 
 /// 图片加载后记下真实比例；上方页高度变化时把 scrollTop 补回来，滚动条与画面都不跳
@@ -327,15 +330,13 @@ async function open() {
   readerComic.value = comic
   applyStartChapter()
 
-  if (props.comic !== undefined) {
-    isFavorite.value = props.comic.is_favorite
-  } else {
-    void commands.getComic(comicId.value).then((comicResult) => {
-      if (comicResult.status === 'ok') {
-        isFavorite.value = comicResult.data.is_favorite
-      }
-    })
-  }
+  // 先用传入的值垫底，再从服务端刷新一次收藏状态
+  isFavorite.value = props.comic?.is_favorite ?? false
+  void commands.getComic(comicId.value).then((comicResult) => {
+    if (comicResult.status === 'ok') {
+      isFavorite.value = comicResult.data.is_favorite
+    }
+  })
 
   await ensureChapterReady(chapterIndex.value)
   if (closed) {
@@ -734,13 +735,16 @@ function onSeek(ratio: number) {
   showBar()
 }
 
-// ---------- 手势：swipe 翻页 > 单击切控件（边缘 15% 翻页） ----------
+// ---------- 手势：双指缩放 / 放大后平移 > swipe 翻页 > 单击切控件 ----------
 
 const SWIPE_THRESHOLD = 50
 const DIRECTION_THRESHOLD = 8
 const TAP_MAX_MOVE = 10
 const TAP_MAX_MS = 280
 const EDGE_RATIO = 0.15
+/// 放大后拖到图片边界再拖出这么多像素，才触发翻页
+const EDGE_FLIP_PX = 56
+const MAX_ZOOM = 4
 
 interface PointerGesture {
   id: number
@@ -752,10 +756,111 @@ interface PointerGesture {
 
 let gesture: PointerGesture | undefined
 
+// ---------- 放大：只缩放漫画图，控制栏保持原样 ----------
+
+const pagedImage = ref<HTMLImageElement>()
+const scrollLayer = ref<HTMLElement>()
+const zoomScale = ref(1)
+const zoomTx = ref(0)
+const zoomTy = ref(0)
+/// 当前按下的触点：两指距离用来算缩放倍率
+const pointers = new Map<number, { x: number; y: number }>()
+let pinchStart: { dist: number; scale: number } | undefined
+let panStart:
+  | { x: number; y: number; tx: number; ty: number; edgeX: number; at: number }
+  | undefined
+
+function zoomTransform() {
+  return `translate3d(${zoomTx.value}px, ${zoomTy.value}px, 0) scale(${zoomScale.value})`
+}
+
+const zoomStyle = computed(() => (zoomScale.value === 1 ? undefined : { transform: zoomTransform() }))
+// 条漫：放大 = 把内容宽度按比例铺开（高度由 pageHeight 跟着放大），交给滚动容器平移
+const scrollZoomStyle = computed(() =>
+  zoomScale.value === 1 ? undefined : { width: zoomScale.value * 100 + '%' },
+)
+
+function resetZoom() {
+  zoomScale.value = 1
+  zoomTx.value = 0
+  zoomTy.value = 0
+  pinchStart = undefined
+  panStart = undefined
+}
+
+/// 平移限制在图片范围内；超出部分当作「已经拖到边界」的量，松手后据此翻页
+function clampPan(tx: number, ty: number) {
+  const container = scrollContainer.value
+  const scale = zoomScale.value
+  if (container === undefined) {
+    return { tx, ty, edgeX: 0 }
+  }
+  if (readingMode.value === 'paged') {
+    const image = pagedImage.value
+    if (image === undefined) {
+      return { tx, ty, edgeX: 0 }
+    }
+    const maxX = Math.max(0, (image.clientWidth * scale - container.clientWidth) / 2)
+    const maxY = Math.max(0, (image.clientHeight * scale - container.clientHeight) / 2)
+    const nextX = Math.min(maxX, Math.max(-maxX, tx))
+    const nextY = Math.min(maxY, Math.max(-maxY, ty))
+    return { tx: nextX, ty: nextY, edgeX: tx - nextX }
+  }
+  // 滚动模式：横向居中缩放，纵向只能从顶部往下拖，到底为止
+  const layer = scrollLayer.value
+  if (layer === undefined) {
+    return { tx, ty, edgeX: 0 }
+  }
+  const maxX = Math.max(0, (layer.clientWidth * scale - container.clientWidth) / 2)
+  const minY = Math.min(0, container.clientHeight - layer.scrollHeight * scale)
+  return {
+    tx: Math.min(maxX, Math.max(-maxX, tx)),
+    ty: Math.min(0, Math.max(minY, ty)),
+    edgeX: 0,
+  }
+}
+
 function onPointerDown(event: PointerEvent) {
   if (event.pointerType === 'mouse' && event.button !== 0) {
     return
   }
+  pointers.set(event.pointerId, { x: event.clientX, y: event.clientY })
+  if (pointers.size === 1) {
+    startLongPress(event.clientX, event.clientY)
+  } else {
+    cancelLongPress()
+  }
+
+  // 两指：进入缩放，翻页手势作废
+  if (pointers.size === 2) {
+    gesture = undefined
+    const [first, second] = [...pointers.values()]
+    pinchStart = {
+      dist: Math.hypot(first.x - second.x, first.y - second.y),
+      scale: zoomScale.value,
+    }
+    panStart = undefined
+    return
+  }
+  if (pointers.size > 2) {
+    return
+  }
+
+  // 放大状态下的单指：翻页模式平移图片，条漫模式直接拖滚动容器
+  if (zoomScale.value > 1) {
+    gesture = undefined
+    const container = scrollContainer.value
+    panStart = {
+      x: event.clientX,
+      y: event.clientY,
+      tx: readingMode.value === 'paged' ? zoomTx.value : (container?.scrollLeft ?? 0),
+      ty: readingMode.value === 'paged' ? zoomTy.value : (container?.scrollTop ?? 0),
+      edgeX: 0,
+      at: Date.now(),
+    }
+    return
+  }
+
   // 第二根手指按下（缩放）不参与翻页/单击判定
   if (gesture !== undefined) {
     gesture = undefined
@@ -770,6 +875,88 @@ function onPointerDown(event: PointerEvent) {
 }
 
 function onPointerMove(event: PointerEvent) {
+  if (pointers.has(event.pointerId)) {
+    pointers.set(event.pointerId, { x: event.clientX, y: event.clientY })
+  }
+  if (
+    longPressTimer !== 0 &&
+    (pointers.size > 1 ||
+      Math.hypot(event.clientX - longPressOrigin.x, event.clientY - longPressOrigin.y) >
+        TAP_MAX_MOVE)
+  ) {
+    cancelLongPress()
+  }
+
+  // 双指：按两指距离缩放
+  if (pinchStart !== undefined && pointers.size >= 2) {
+    const [first, second] = [...pointers.values()]
+    const dist = Math.hypot(first.x - second.x, first.y - second.y)
+    if (pinchStart.dist > 0) {
+      const next = Math.min(MAX_ZOOM, Math.max(1, (dist / pinchStart.dist) * pinchStart.scale))
+      if (readingMode.value === 'scroll') {
+        // 条漫是布局放大：缩放后把视口中心对应的内容滚回原位，避免「一拉就跳走」
+        const container = scrollContainer.value
+        const prev = zoomScale.value
+        if (container !== undefined && next !== prev) {
+          const centerX = container.scrollLeft + container.clientWidth / 2
+          const centerY = container.scrollTop + container.clientHeight / 2
+          const ratio = next / prev
+          zoomScale.value = next
+          void nextTick(() => {
+            container.scrollLeft = centerX * ratio - container.clientWidth / 2
+            container.scrollTop = centerY * ratio - container.clientHeight / 2
+          })
+        } else {
+          zoomScale.value = next
+        }
+      } else {
+        zoomScale.value = next
+        if (next === 1) {
+          zoomTx.value = 0
+          zoomTy.value = 0
+        } else {
+          const clamped = clampPan(zoomTx.value, zoomTy.value)
+          zoomTx.value = clamped.tx
+          zoomTy.value = clamped.ty
+        }
+      }
+    }
+    return
+  }
+
+  // 缩放后落单的手指：继续按平移处理（另一根手指抬起的瞬间不打断）
+  if (pinchStart === undefined && panStart === undefined && pointers.size === 1 && zoomScale.value > 1) {
+    const container = scrollContainer.value
+    panStart = {
+      x: event.clientX,
+      y: event.clientY,
+      tx: readingMode.value === 'paged' ? zoomTx.value : (container?.scrollLeft ?? 0),
+      ty: readingMode.value === 'paged' ? zoomTy.value : (container?.scrollTop ?? 0),
+      edgeX: 0,
+      at: Date.now(),
+    }
+  }
+
+  if (panStart !== undefined) {
+    if (readingMode.value === 'paged') {
+      const clamped = clampPan(
+        panStart.tx + (event.clientX - panStart.x),
+        panStart.ty + (event.clientY - panStart.y),
+      )
+      zoomTx.value = clamped.tx
+      zoomTy.value = clamped.ty
+      panStart.edgeX = clamped.edgeX
+    } else {
+      // 条漫：跟手滚动，边界由滚动容器自己夹住
+      const container = scrollContainer.value
+      if (container !== undefined) {
+        container.scrollLeft = panStart.tx - (event.clientX - panStart.x)
+        container.scrollTop = panStart.ty - (event.clientY - panStart.y)
+      }
+    }
+    return
+  }
+
   const current = gesture
   if (current === undefined || current.id !== event.pointerId || current.axis !== undefined) {
     return
@@ -784,6 +971,39 @@ function onPointerMove(event: PointerEvent) {
 }
 
 function onPointerUp(event: PointerEvent) {
+  cancelLongPress()
+  pointers.delete(event.pointerId)
+  // 长按已经弹出保存菜单：这一次抬起不再当点击 / 翻页处理
+  if (longPressFired) {
+    longPressFired = false
+    return
+  }
+  if (pointers.size < 2) {
+    pinchStart = undefined
+  }
+
+  const pan = panStart
+  if (pan !== undefined) {
+    panStart = undefined
+    const moved = Math.hypot(event.clientX - pan.x, event.clientY - pan.y)
+    // 放大时轻点仍然切换控件显隐
+    if (moved < TAP_MAX_MOVE && Date.now() - pan.at < TAP_MAX_MS) {
+      handleTap(event)
+      return
+    }
+    // 只有左右翻页模式才有「拖到边界继续拖就翻页」；条漫模式不翻页
+    if (readingMode.value === 'paged' && Math.abs(pan.edgeX) >= EDGE_FLIP_PX) {
+      const goPrev = pan.edgeX > 0
+      resetZoom()
+      if (goPrev) {
+        prevPage()
+      } else {
+        nextPage()
+      }
+    }
+    return
+  }
+
   const current = gesture
   if (current === undefined || current.id !== event.pointerId) {
     return
@@ -817,9 +1037,132 @@ function onPointerUp(event: PointerEvent) {
 }
 
 function onPointerCancel(event: PointerEvent) {
+  cancelLongPress()
+  pointers.delete(event.pointerId)
+  if (pointers.size < 2) {
+    pinchStart = undefined
+  }
+  if (pointers.size === 0) {
+    panStart = undefined
+  }
   if (gesture?.id === event.pointerId) {
     gesture = undefined
   }
+}
+
+// ---------- 长按保存当前页到系统相册 ----------
+
+const LONG_PRESS_MS = 520
+const saveSheetShowing = ref(false)
+const savePage = ref(0)
+let longPressTimer = 0
+let longPressFired = false
+const longPressOrigin = { x: 0, y: 0 }
+
+function cancelLongPress() {
+  if (longPressTimer !== 0) {
+    window.clearTimeout(longPressTimer)
+    longPressTimer = 0
+  }
+}
+
+function startLongPress(x: number, y: number) {
+  cancelLongPress()
+  longPressFired = false
+  if (pageCount.value === 0 || loadingChapter.value) {
+    return
+  }
+  longPressOrigin.x = x
+  longPressOrigin.y = y
+  longPressTimer = window.setTimeout(() => {
+    longPressTimer = 0
+    longPressFired = true
+    savePage.value = pageIndex.value
+    saveSheetShowing.value = true
+  }, LONG_PRESS_MS)
+}
+
+function readAsBase64(blob: Blob): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader()
+    reader.onload = () => {
+      const result = String(reader.result ?? '')
+      resolve(result.slice(result.indexOf(',') + 1))
+    }
+    reader.onerror = () => reject(reader.error)
+    reader.readAsDataURL(blob)
+  })
+}
+
+/// 取这一页的原始字节交给原生写进相册（安卓 10+ 走 MediaStore，旧版本走公共 Pictures）
+async function savePageToGallery() {
+  const index = savePage.value
+  const url = pageUrls.value[index] ?? ''
+  saveSheetShowing.value = false
+  if (url === '') {
+    return
+  }
+  const bridge = (window as Window & {
+    JMGallery?: { saveImage?: (base64: string, mime: string, name: string) => string }
+  }).JMGallery
+  if (bridge?.saveImage === undefined) {
+    message.warning(t('mobile.saveUnsupported'))
+    return
+  }
+  try {
+    const response = await fetch(pageSrc(index, url))
+    const blob = await response.blob()
+    const base64 = await readAsBase64(blob)
+    const mime = blob.type === '' ? 'image/jpeg' : blob.type
+    const ext = mime.includes('png') ? 'png' : mime.includes('webp') ? 'webp' : 'jpg'
+    const title = (currentChapter.value?.title ?? comicTitle.value ?? 'page').replace(/[\\/:*?"<>|]/g, '_')
+    const name = title + '_' + (index + 1) + '.' + ext
+    const result = bridge.saveImage(base64, mime, name)
+    if (result === 'ok') {
+      message.success(t('mobile.saveSuccess'))
+    } else {
+      message.error(t('mobile.saveFailed'))
+    }
+  } catch (error) {
+    console.error(error)
+    message.error(t('mobile.saveFailed'))
+  }
+}
+
+// ---------- 音量键翻页（安卓原生把按键转成事件） ----------
+
+let lastVolumeAt = 0
+
+function onVolumeKey(direction: number) {
+  if (!readerVolumeKeys.value || !showing.value || pageCount.value === 0 || loadingChapter.value) {
+    return
+  }
+  const now = Date.now()
+  if (now - lastVolumeAt < 150) {
+    return
+  }
+  lastVolumeAt = now
+  if (readingMode.value === 'paged') {
+    if (direction < 0) {
+      prevPage()
+    } else {
+      nextPage()
+    }
+    return
+  }
+  const container = scrollContainer.value
+  container?.scrollBy({ top: direction * container.clientHeight * 0.9, behavior: 'smooth' })
+}
+
+/// 安卓 WebView 长按图片会走 contextmenu（原生文本选择/图片菜单会打断 pointer 手势），
+/// 所以长按开保存菜单挂在 contextmenu 上，pointer 计时器只当兜底
+function onPageContextMenu(event: MouseEvent) {
+  event.preventDefault()
+  if (pageCount.value === 0 || loadingChapter.value) {
+    return
+  }
+  savePage.value = pageIndex.value
+  saveSheetShowing.value = true
 }
 
 /// 单击立即响应（双击缩放已移除，不再需要延迟判定）
@@ -829,6 +1172,11 @@ function handleTap(event: PointerEvent) {
 
 function onSingleTap(clientX: number) {
   const container = scrollContainer.value
+  // 放大状态下只切控件显隐，避免点边缘误翻页
+  if (zoomScale.value > 1) {
+    toggleBar()
+    return
+  }
   // 翻页模式只把左右边缘 15% 留给翻页，中间区域留给显隐控件
   if (
     container !== undefined &&
@@ -853,7 +1201,16 @@ function onSingleTap(clientX: number) {
 
 watch(pageUrls, () => {
   pageStates.value = {}
+  resetZoom()
   void nextTick(syncGifObserver)
+})
+
+watch([chapterIndex, readingMode], () => resetZoom())
+// 翻页模式换页要复位；条漫模式翻页是滚动带来的，复位会把放大打断
+watch(pageIndex, () => {
+  if (readingMode.value === 'paged') {
+    resetZoom()
+  }
 })
 
 watch(readingMode, () => {
@@ -890,12 +1247,35 @@ onMounted(() => {
   measureViewport()
   warmReaderLoadingGif()
   // 原生侧低内存回调的入口（见 gen/android 的 MainActivity.onTrimMemory）
-  const host = window as Window & { __jmOnLowMemory?: () => void }
+  const host = window as Window & {
+    __jmOnLowMemory?: () => void
+    __jmVolumeKey?: (direction: number) => void
+    JMGallery?: { setReaderActive?: (active: boolean) => void }
+  }
   host.__jmOnLowMemory = onLowMemory
+  host.__jmVolumeKey = onVolumeKey
 })
 
+// 只有「阅读器开着 + 音量键翻页开关也开着」时才让原生吃掉音量键
+// 否则音量键要留给系统调音量，不能因为阅读器开着就被吞
+watch(
+  [showing, readerVolumeKeys],
+  ([visible, volumeEnabled]) => {
+    const host = window as Window & { JMGallery?: { setReaderActive?: (active: boolean) => void } }
+    host.JMGallery?.setReaderActive?.(visible && volumeEnabled)
+  },
+  { immediate: true },
+)
+
 onBeforeUnmount(() => {
-  delete (window as Window & { __jmOnLowMemory?: () => void }).__jmOnLowMemory
+  delete (window as Window & {
+    __jmOnLowMemory?: () => void
+    __jmVolumeKey?: (direction: number) => void
+  }).__jmOnLowMemory
+  delete (window as Window & { __jmVolumeKey?: (direction: number) => void }).__jmVolumeKey
+  cancelLongPress()
+  const host = window as Window & { JMGallery?: { setReaderActive?: (active: boolean) => void } }
+  host.JMGallery?.setReaderActive?.(false)
   resizeObserver?.disconnect()
   resizeObserver = undefined
   gifObserver?.disconnect()
@@ -913,13 +1293,13 @@ onBeforeUnmount(() => {
     <div
       ref="scrollContainer"
       class="reader-scroll"
-      :class="readingMode"
+      :class="[readingMode, { zoomed: zoomScale > 1 }]"
       @pointerdown="onPointerDown"
       @pointermove="onPointerMove"
       @pointerup="onPointerUp"
       @pointercancel="onPointerCancel"
       @scroll="onScroll"
-      @contextmenu.prevent>
+      @contextmenu.prevent="onPageContextMenu">
       <div v-if="loadingChapter" class="center-hint">
         <loading-spinner :size="14" />
         <span>{{ preparing ? t('reader.preparing') : t('reader.openingShort') }}</span>
@@ -937,9 +1317,11 @@ onBeforeUnmount(() => {
         class="paged-track"
         >
         <img
+          ref="pagedImage"
           :key="pageUrls[pageIndex]"
           :src="pageSrc(pageIndex, pageUrls[pageIndex] ?? '')"
           class="paged-image"
+          :style="zoomStyle"
           alt=""
           :draggable="false"
           fetchpriority="high"
@@ -955,6 +1337,7 @@ onBeforeUnmount(() => {
 
       <!-- 上下滑动：每页先按固定占位高度（3:4）排好，图片加载后换成真实比例 -->
       <template v-else>
+        <div ref="scrollLayer" class="scroll-layer" :style="scrollZoomStyle">
         <!-- key 带上章节 token：换本就重建节点，避免沿用上一本的旧图 -->
         <div
           v-for="(url, index) in pageUrls"
@@ -981,6 +1364,7 @@ onBeforeUnmount(() => {
           </div>
         </div>
         <div class="scroll-tail" />
+        </div>
       </template>
     </div>
 
@@ -1023,7 +1407,8 @@ onBeforeUnmount(() => {
           <FavoriteButton :comic-id="comicId" :is-favorite="isFavorite" variant="icon" />
           <span>{{ t('favoriteButton.titleFavorite') }}</span>
         </div>
-        <!-- 原来的设置入口改成左右手切换：图标与设置页共用 useReaderHand，一处改两处同步 -->
+
+        <!-- 左右手只在阅读器里切：图标与 useReaderHand 共用，一处改两处同步 -->
         <button class="tool" type="button" :aria-label="handLabel" @click="toggleHand">
           <component :is="handIcon" :size="22" />
           <span>{{ handLabel }}</span>
@@ -1055,6 +1440,27 @@ onBeforeUnmount(() => {
       </section>
     </div>
 
+    <!-- 长按漫画页：保存到系统相册 -->
+    <div v-if="saveSheetShowing" class="sheet-mask" @pointerdown.self="saveSheetShowing = false">
+      <section class="sheet">
+        <header class="sheet-head">
+          <span>{{ t('mobile.saveTitle') }}</span>
+          <button
+            class="sheet-close"
+            type="button"
+            :aria-label="t('mobile.back')"
+            @click="saveSheetShowing = false">
+            <ph-x :size="20" />
+          </button>
+        </header>
+        <div class="sheet-list">
+          <button class="sheet-item" type="button" @click="savePageToGallery">
+            <span class="sheet-title">{{ t('mobile.saveToGallery') }}</span>
+          </button>
+        </div>
+      </section>
+    </div>
+
     <MobileCommentSheet
       v-if="commentTarget !== undefined"
       v-model:showing="commentDrawerShowing"
@@ -1068,6 +1474,7 @@ onBeforeUnmount(() => {
 .reader {
   position: fixed;
   inset: 0;
+  -webkit-touch-callout: none;
   z-index: 50;
   overflow: hidden;
   background: #111;
@@ -1099,12 +1506,28 @@ onBeforeUnmount(() => {
   background: rgb(0 0 0 / 28%);
 }
 
+.reader-scroll.scroll {
+  /* 条漫模式不需要浏览器缩放：两指缩放会把控制栏一起放大 */
+  touch-action: pan-y;
+}
+
+/* 放大时自己接管手势：禁用原生滚动，避免和拖拽打架 */
+.reader-scroll.zoomed {
+  overflow: hidden;
+  touch-action: none;
+}
+
+.scroll-layer {
+  width: 100%;
+}
+
 .reader-scroll.paged {
   display: flex;
   align-items: flex-start;
   justify-content: flex-start;
-  /* 横向滑动留给翻页、纵向留给浏览器；两指缩放仍交给浏览器 */
-  touch-action: pan-y pinch-zoom;
+  /* 缩放只作用于漫画：翻页、缩放、平移全部由 JS 处理，避免浏览器把整页（含控制栏）放大 */
+  touch-action: none;
+  overflow: hidden;
 }
 
 .center-hint {
@@ -1148,6 +1571,8 @@ onBeforeUnmount(() => {
   object-fit: contain;
   user-select: none;
   -webkit-user-drag: none;
+  transform-origin: 50% 50%;
+  will-change: transform;
 }
 
 .scroll-page {
@@ -1244,13 +1669,14 @@ onBeforeUnmount(() => {
   padding: 2px 8px 6px;
 }
 
-/* 左右手只换这一排按钮贴在左边还是右边 */
+/* 右手模式：按钮贴右、顺序从左到右；左手模式整排镜像（贴左 + 顺序反向） */
 .reader-tools.hand-right {
   justify-content: flex-end;
 }
 
 .reader-tools.hand-left {
-  justify-content: flex-start;
+  flex-direction: row-reverse;
+  justify-content: flex-end;
 }
 
 .tool {

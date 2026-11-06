@@ -173,8 +173,11 @@ function spineTexture(book: ShelfBook, index: number, spine: number, bodyH: numb
   return canvas
 }
 
-function ensureImage(book: ShelfBook) {
-  if (images.has(book.id)) return
+function ensureImage(book: ShelfBook, onSettled?: () => void) {
+  if (images.has(book.id)) {
+    onSettled?.()
+    return
+  }
   const img = new Image()
   img.crossOrigin = 'anonymous'
   img.decoding = 'async'
@@ -188,8 +191,154 @@ function ensureImage(book: ShelfBook) {
     } catch (error) {
       console.error('封面取色失败', error)
     }
+    onSettled?.()
   }
+  // 加载失败也要释放并发名额，否则后面的封面永远排不上
+  img.onerror = () => onSettled?.()
   images.set(book.id, img)
+}
+
+/// 封面调度：优先队列补满 6 并发，剩余的空闲时每批 5 本慢慢补
+const COVER_CONCURRENCY = 6
+const COVER_IDLE_BATCH = 5
+let coverToken = 0
+let coverPrime: ShelfBook[] = []
+let coverIdle: ShelfBook[] = []
+const coverQueued = new Set<number>()
+let coverInflight = 0
+let idleHandle: number | undefined
+let idleTimer: number | undefined
+let primeFocus = 0
+
+/// 取消还没执行的空闲任务：换书、卸载时旧队列不能再发请求
+function cancelIdleTask() {
+  if (idleHandle !== undefined) {
+    window.cancelIdleCallback(idleHandle)
+    idleHandle = undefined
+  }
+  if (idleTimer !== undefined) {
+    window.clearTimeout(idleTimer)
+    idleTimer = undefined
+  }
+}
+
+/// 作废旧队列（换书/卸载）：未执行的任务不再发请求
+function resetCoverQueue() {
+  coverToken += 1
+  coverPrime = []
+  coverIdle = []
+  coverQueued.clear()
+  coverInflight = 0
+  cancelIdleTask()
+}
+
+/// 真正发请求前再查一次缓存，重复的书直接跳过
+function startCover(token: number, book: ShelfBook) {
+  if (images.has(book.id)) return
+  coverInflight += 1
+  ensureImage(book, () => {
+    if (token !== coverToken) return
+    coverInflight -= 1
+    pump(token)
+  })
+}
+
+/// 优先队列一口气补满并发；空了且有请求在飞就等它们落地
+function pump(token: number) {
+  if (token !== coverToken) return
+  while (coverInflight < COVER_CONCURRENCY && coverPrime.length > 0) {
+    const book = coverPrime.shift()!
+    coverQueued.delete(book.id)
+    startCover(token, book)
+  }
+  if (coverPrime.length === 0 && coverIdle.length > 0 && coverInflight === 0) {
+    scheduleIdleBatch(token)
+  }
+}
+
+/// 空闲时发下一批（最多 5 本）：一批下完再排下一批，不占用交互线程
+function scheduleIdleBatch(token: number) {
+  if (idleHandle !== undefined || idleTimer !== undefined) return
+  const run = () => {
+    idleHandle = undefined
+    idleTimer = undefined
+    if (token !== coverToken) return
+    let batch = 0
+    while (
+      batch < COVER_IDLE_BATCH &&
+      coverInflight < COVER_CONCURRENCY &&
+      coverPrime.length === 0 &&
+      coverIdle.length > 0
+    ) {
+      const book = coverIdle.shift()!
+      coverQueued.delete(book.id)
+      if (images.has(book.id)) continue
+      startCover(token, book)
+      batch += 1
+    }
+    pump(token)
+  }
+  // requestIdleCallback 在部分 WebView 上不可用，退回 setTimeout
+  if (typeof window.requestIdleCallback === 'function') {
+    idleHandle = window.requestIdleCallback(run, { timeout: 500 })
+  } else {
+    idleTimer = window.setTimeout(run, 80)
+  }
+}
+
+/// 焦点跨槽：可见窗口里还没加载的书提到队首
+function prioritize(token: number) {
+  if (token !== coverToken) return
+  const books = props.books
+  const count = books.length
+  if (count === 0) return
+  const half = Math.ceil(width / metrics().pitch / 2) + 3
+  const first = Math.floor(focus - half)
+  const last = Math.ceil(focus + half)
+  for (let slot = first; slot <= last; slot += 1) {
+    if (!looping.value && (slot < 0 || slot >= count)) continue
+    const book = books[((slot % count) + count) % count]!
+    if (images.has(book.id)) continue
+    const at = coverIdle.findIndex((item) => item.id === book.id)
+    if (at >= 0) {
+      coverIdle.splice(at, 1)
+      coverPrime.unshift(book)
+    } else if (!coverQueued.has(book.id)) {
+      coverQueued.add(book.id)
+      coverPrime.unshift(book)
+    }
+  }
+  pump(token)
+}
+
+/// 第一批：焦点 ±12 本 + 前 8 本 + 末 4 本，其余排队等空闲补
+function scheduleCovers() {
+  resetCoverQueue()
+  const token = coverToken
+  const books = props.books
+  const count = books.length
+  if (count === 0) return
+  const center = looping.value ? Math.round(focus) : clamp(Math.round(focus), 0, count - 1)
+  primeFocus = Math.round(focus)
+  const indexOf = (slot: number) => ((slot % count) + count) % count
+  const add = (book: ShelfBook | undefined, prime: boolean) => {
+    if (!book || images.has(book.id) || coverQueued.has(book.id)) return
+    coverQueued.add(book.id)
+    if (prime) {
+      coverPrime.push(book)
+    } else {
+      coverIdle.push(book)
+    }
+  }
+  // 从焦点向两边扩散：第一眼看到的先发
+  for (let offset = 0; offset <= 12; offset += 1) {
+    add(books[indexOf(center + offset)], true)
+    if (offset > 0) add(books[indexOf(center - offset)], true)
+  }
+  for (let i = 0; i < Math.min(8, count); i += 1) add(books[i], true)
+  for (let i = Math.max(0, count - 4); i < count; i += 1) add(books[i], true)
+  for (const book of books) add(book, false)
+  pump(token)
 }
 
 /// 每本书在当前帧的位置：x = 书脊左边缘，topY = 书脊顶边
@@ -366,6 +515,12 @@ function schedule() {
 
 function tick(now: number) {
   raf = 0
+  // 焦点跨槽：把新进视野的封面提到队首
+  const near = Math.round(focus)
+  if (near !== primeFocus) {
+    primeFocus = near
+    prioritize(coverToken)
+  }
   if (entrance < 1) {
     entrance = clamp((now - startAt) / 900, 0, 1)
     dirty = true
@@ -607,12 +762,12 @@ onMounted(() => {
   resize()
   focus = props.startIndex ?? 0
   startAt = performance.now()
-  for (const book of props.books) ensureImage(book)
+  scheduleCovers()
   // 列表是异步加载的：书到了才补图，否则首屏全白
   watch(
     () => props.books,
-    (books) => {
-      for (const book of books) ensureImage(book)
+    () => {
+      scheduleCovers()
       dirty = true
       schedule()
     },
@@ -644,6 +799,7 @@ onBeforeUnmount(() => {
   unregisterZone?.()
   cancelAnimationFrame(raf)
   window.clearTimeout(wheelTimer)
+  resetCoverQueue()
 })
 </script>
 

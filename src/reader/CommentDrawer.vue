@@ -53,8 +53,8 @@ const { loading, comments, total, pageCount, loadComments, goToPage } = useComme
 })
 
 /// 与全站评论页共用同一份关键词：只过滤当前这一页，官方页码和总数保持原样
-const { keywords, blockEmoji } = useCommentKeywords()
-const filtered = computed(() => filterComments(comments.value, keywords.value, blockEmoji.value))
+const { keywords, blockHighFreq } = useCommentKeywords()
+const filtered = computed(() => filterComments(comments.value, keywords.value, blockHighFreq.value))
 const visibleComments = computed(() => filtered.value.comments)
 const blockedCount = computed(() => filtered.value.blocked)
 

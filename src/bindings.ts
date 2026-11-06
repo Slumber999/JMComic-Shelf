@@ -87,6 +87,10 @@ async getRanking(category: string, order: string, page: number) : Promise<Result
     else return { status: "error", error: e  as any };
 }
 },
+
+/**
+ * 收藏 / 取消收藏
+ */
 async toggleFavorite(comicId: number) : Promise<Result<null, CommandError>> {
     try {
     return { status: "ok", data: await TAURI_INVOKE("toggle_favorite", { comicId }) };

@@ -38,6 +38,7 @@ const opening = ref<boolean>(false)
 const preparing = ref<boolean>(false)
 /// 阅读器的收藏按钮只用来取初始状态，后续状态由 FavoriteButton 自己维护
 const isFavorite = ref<boolean>(false)
+/// 喜欢按钮同理：这里只给初始值
 /// 评论抽屉
 const commentDrawerShowing = ref<boolean>(false)
 /// 评论用的漫画 id：本地库存走 comic.id，在线阅读走 comicId

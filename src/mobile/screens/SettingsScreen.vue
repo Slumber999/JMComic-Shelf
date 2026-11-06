@@ -6,8 +6,8 @@ import {
   NIcon,
   NPopconfirm,
   NRadio,
-  NRadioButton,
   NRadioGroup,
+  NSwitch,
   useMessage,
 } from 'naive-ui'
 import { PhTrash } from '@phosphor-icons/vue'
@@ -24,7 +24,7 @@ import { showError } from '../../errors.ts'
 import { formatBytes } from '../../formatBytes.ts'
 import { localeOptions, setLocale, useI18n, type Locale } from '../../i18n.ts'
 import { useStore } from '../../store.ts'
-import { readerHand, setReaderHand } from '../useReaderHand.ts'
+import { readerVolumeKeys, setReaderVolumeKeys } from '../useReaderVolume.ts'
 
 const store = useStore()
 const { t } = useI18n()
@@ -191,12 +191,6 @@ function onLanguageChange(value: string | number) {
   setLocale(value as Locale)
 }
 
-function onReaderHandChange(value: string) {
-  if (value === 'left' || value === 'right') {
-    setReaderHand(value)
-  }
-}
-
 /// 仓库地址整行可点，点了复制链接
 async function copyRepoUrl() {
   if (navigator.clipboard?.writeText === undefined) {
@@ -232,12 +226,11 @@ async function copyRepoUrl() {
         <span class="field-hint">{{ t('settings.languageHint') }}</span>
       </div>
       <div class="field">
-        <span class="field-label">{{ t('mobile.readerHandLabel') }}</span>
-        <n-radio-group :value="readerHand" size="small" @update:value="onReaderHandChange">
-          <n-radio-button value="left">{{ t('mobile.readerHandLeft') }}</n-radio-button>
-          <n-radio-button value="right">{{ t('mobile.readerHandRight') }}</n-radio-button>
-        </n-radio-group>
-        <span class="field-hint">{{ t('mobile.readerHandHint') }}</span>
+        <div class="field-row">
+          <span class="field-label">{{ t('mobile.readerVolumeLabel') }}</span>
+          <n-switch :value="readerVolumeKeys" size="small" @update:value="setReaderVolumeKeys" />
+        </div>
+        <span class="field-hint">{{ t('mobile.readerVolumeHint') }}</span>
       </div>
     </section>
 
@@ -443,6 +436,12 @@ async function copyRepoUrl() {
   margin-top: 16px;
   padding-top: 16px;
   border-top: 1px solid #eee;
+}
+
+.field-row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
 }
 
 .field-label {

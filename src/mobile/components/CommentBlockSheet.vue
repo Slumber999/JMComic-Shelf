@@ -8,7 +8,7 @@ import { useCommentKeywords } from '../../commentBlock.ts'
 const showing = defineModel<boolean>('showing', { required: true })
 
 const { t } = useI18n()
-const { keywords, blockEmoji, setBlockEmoji, addKeyword, removeKeyword } = useCommentKeywords()
+const { keywords, blockHighFreq, setBlockHighFreq, addKeyword, removeKeyword } = useCommentKeywords()
 const input = ref('')
 
 function submit(): void {
@@ -58,14 +58,14 @@ function submit(): void {
         </ul>
 
         <div class="emoji-row">
-          <span class="emoji-label">{{ t('comments.block.blockEmoji') }}</span>
+          <span class="emoji-label">{{ t('comments.block.blockHighFreq') }}</span>
           <button
             class="switch"
-            :class="{ on: blockEmoji }"
+            :class="{ on: blockHighFreq }"
             type="button"
             role="switch"
-            :aria-checked="blockEmoji"
-            @click="setBlockEmoji(!blockEmoji)" />
+            :aria-checked="blockHighFreq"
+            @click="setBlockHighFreq(!blockHighFreq)" />
         </div>
 
         <p class="hint">{{ t('comments.block.hint') }}</p>

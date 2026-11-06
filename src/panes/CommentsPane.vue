@@ -37,12 +37,12 @@ const BATCH_SIZE = 40
 /// 一轮补页最多连续拉 10 个后端页（后端一页 30 条），关键词太狠或全是广告时不会无限请求
 const MAX_SCAN_PAGES = 10
 
-const { keywords, blockEmoji, setBlockEmoji, addKeyword, removeKeyword } = useCommentKeywords()
+const { keywords, blockHighFreq, setBlockHighFreq, addKeyword, removeKeyword } = useCommentKeywords()
 const blockSettingsShowing = ref<boolean>(false)
 const keywordInput = ref<string>('')
 
 const pageCount = computed(() => Math.max(1, Math.ceil(total.value / PAGE_SIZE)))
-const comments = computed(() => filterComments(displayedRaw.value, keywords.value, blockEmoji.value).comments)
+const comments = computed(() => filterComments(displayedRaw.value, keywords.value, blockHighFreq.value).comments)
 const blockedCount = computed(() =>
   keywords.value.length === 0 ? 0 : scannedComments.value.filter((c) => isBlocked(c, keywords.value)).length,
 )
@@ -94,7 +94,7 @@ async function loadBatch(): Promise<void> {
         break
       }
 
-      const pageResult = filterComments(fresh, keywords.value, blockEmoji.value)
+      const pageResult = filterComments(fresh, keywords.value, blockHighFreq.value)
       scannedComments.value.push(...fresh)
       pending.value.push(...pageResult.comments)
       scanned += fresh.length
@@ -236,8 +236,8 @@ watch(
             </n-button>
           </div>
           <div class="flex items-center justify-between rounded bg-gray-1 px-2 py-1">
-            <span class="text-xs">{{ t('comments.block.blockEmoji') }}</span>
-            <n-switch :value="blockEmoji" size="small" @update:value="setBlockEmoji" />
+            <span class="text-xs">{{ t('comments.block.blockHighFreq') }}</span>
+            <n-switch :value="blockHighFreq" size="small" @update:value="setBlockHighFreq" />
           </div>
           <div v-if="keywords.length === 0" class="text-xs text-gray-500">
             {{ t('comments.block.empty') }}

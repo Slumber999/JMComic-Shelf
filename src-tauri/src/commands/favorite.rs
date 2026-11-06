@@ -16,6 +16,7 @@ use crate::local_index;
 use crate::responses::{FavoriteFolderRespData, ToggleType};
 use crate::types::{ComicInFavorite, FavoriteSort, GetFavoriteResult};
 use crate::utils;
+
 #[tauri::command]
 #[specta::specta]
 #[instrument(level = "error", skip_all, fields(comic_id = comic_id))]

@@ -5,42 +5,27 @@ import { normalizeAuthorName } from './authorNames.ts'
 
 /// 评论关键词屏蔽：纯逻辑，全站评论页和阅读器评论抽屉共用；关键词存 localStorage，不进 config.json
 const STORAGE_KEY = 'commentBlockKeywords'
-const EMOJI_STORAGE_KEY = 'commentBlockEmoji'
+const HIGH_FREQ_STORAGE_KEY = 'commentBlockHighFreq'
 
-/// 带表情的评论是否一起屏蔽：默认关，纯本地开关
-export function loadBlockEmoji(): boolean {
+/// 高频广告词：开关打开后，正文命中这些词的评论一律隐藏
+export const HIGH_FREQ_KEYWORDS = ['寇裙', '瀏覽器', '流覽器', '浏览器', '扣扣', '無', '💕', '🉑']
+
+/// 是否屏蔽高频广告词：默认关，纯本地开关
+export function loadBlockHighFreq(): boolean {
   try {
-    return localStorage.getItem(EMOJI_STORAGE_KEY) === '1'
+    return localStorage.getItem(HIGH_FREQ_STORAGE_KEY) === '1'
   } catch {
     return false
   }
 }
 
-export function saveBlockEmoji(value: boolean): void {
+export function saveBlockHighFreq(value: boolean): void {
   try {
-    localStorage.setItem(EMOJI_STORAGE_KEY, value ? '1' : '0')
+    localStorage.setItem(HIGH_FREQ_STORAGE_KEY, value ? '1' : '0')
   } catch {
     // 忽略 localStorage 写入失败
   }
 }
-
-/// 只要含一个 emoji/象形符号就算命中
-export function hasEmoji(text: string): boolean {
-  for (const char of text) {
-    const code = char.codePointAt(0) ?? 0
-    // 表情、杂项符号、装饰符号、变体选择符：都算「带表情」
-    if (
-      (code >= 0x1f300 && code <= 0x1faff) ||
-      (code >= 0x2600 && code <= 0x27bf) ||
-      (code >= 0x2b00 && code <= 0x2bff) ||
-      (code >= 0xfe00 && code <= 0xfe0f)
-    ) {
-      return true
-    }
-  }
-  return false
-}
-
 /// 与作者名同一套归一化（NFKC、压空白），再转小写
 export function normalize(text: string): string {
   return normalizeAuthorName(text).toLowerCase()
@@ -93,14 +78,20 @@ export function saveKeywords(keywords: string[]): void {
 export function isBlocked(
   comment: Comment,
   keywords: string[],
-  blockEmoji = false,
+  blockHighFreq = false,
 ): boolean {
   const content = keywordKey(comment.content ?? '')
   if (content === '') {
     return false
   }
-  if (blockEmoji && hasEmoji(comment.content ?? '')) {
-    return true
+  if (blockHighFreq) {
+    const hit = HIGH_FREQ_KEYWORDS.some((word) => {
+      const key = keywordKey(word)
+      return key !== '' && content.includes(key)
+    })
+    if (hit) {
+      return true
+    }
   }
   return keywords.some((keyword) => {
     const key = keywordKey(keyword)
@@ -109,15 +100,15 @@ export function isBlocked(
 }
 
 /// 回复递归过滤：命中的回复连同它的下级一起隐藏，父评论保留
-function filterReplies(replies: Comment[], keywords: string[], blockEmoji: boolean): Comment[] {
+function filterReplies(replies: Comment[], keywords: string[], blockHighFreq: boolean): Comment[] {
   const kept: Comment[] = []
   for (const reply of replies) {
-    if (isBlocked(reply, keywords, blockEmoji)) {
+    if (isBlocked(reply, keywords, blockHighFreq)) {
       continue
     }
     const children = reply.replys ?? []
     kept.push(
-      children.length === 0 ? reply : { ...reply, replys: filterReplies(children, keywords, blockEmoji) },
+      children.length === 0 ? reply : { ...reply, replys: filterReplies(children, keywords, blockHighFreq) },
     )
   }
   return kept
@@ -127,12 +118,12 @@ function filterReplies(replies: Comment[], keywords: string[], blockEmoji: boole
 export function filterComments(
   comments: Comment[],
   keywords: string[],
-  blockEmoji = false,
+  blockHighFreq = false,
 ): { comments: Comment[]; blocked: number } {
   const kept: Comment[] = []
   let blocked = 0
   for (const comment of comments) {
-    if (isBlocked(comment, keywords, blockEmoji)) {
+    if (isBlocked(comment, keywords, blockHighFreq)) {
       blocked++
       continue
     }
@@ -140,7 +131,7 @@ export function filterComments(
     kept.push(
       replies.length === 0
         ? comment
-        : { ...comment, replys: filterReplies(replies, keywords, blockEmoji) },
+        : { ...comment, replys: filterReplies(replies, keywords, blockHighFreq) },
     )
   }
   return { comments: kept, blocked }
@@ -148,18 +139,18 @@ export function filterComments(
 
 /// 全站评论页和漫画评论抽屉共用这一份关键词：一处增删，另一处立刻跟着变
 let sharedKeywords: Ref<string[]> | undefined
-let sharedBlockEmoji: Ref<boolean> | undefined
+let sharedBlockHighFreq: Ref<boolean> | undefined
 
 /// 组件里取同一个关键词列表；增删都顺手写 localStorage
 export function useCommentKeywords() {
   sharedKeywords ??= ref<string[]>(loadKeywords())
-  sharedBlockEmoji ??= ref<boolean>(loadBlockEmoji())
+  sharedBlockHighFreq ??= ref<boolean>(loadBlockHighFreq())
   const keywords = sharedKeywords
-  const blockEmoji = sharedBlockEmoji
+  const blockHighFreq = sharedBlockHighFreq
 
-  function setBlockEmoji(value: boolean): void {
-    blockEmoji.value = value
-    saveBlockEmoji(value)
+  function setBlockHighFreq(value: boolean): void {
+    blockHighFreq.value = value
+    saveBlockHighFreq(value)
   }
 
   function addKeyword(keyword: string): void {
@@ -176,5 +167,5 @@ export function useCommentKeywords() {
     saveKeywords(keywords.value)
   }
 
-  return { keywords, blockEmoji, setBlockEmoji, addKeyword, removeKeyword }
+  return { keywords, blockHighFreq, setBlockHighFreq, addKeyword, removeKeyword }
 }

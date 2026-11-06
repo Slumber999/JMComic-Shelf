@@ -120,10 +120,10 @@ async function onFavoriteSelect(key: string) {
       <IconButton v-if="variant === 'icon'" :title="favoriteTitle">
         <PhStar :size="20" :weight="starWeight" :class="isFavoriteNow ? 'text-yellow-5' : ''" />
       </IconButton>
-      <n-button v-else size="small" :type="isFavoriteNow ? 'primary' : 'default'" :title="favoriteTitle">
+      <n-button v-else size="small" :title="favoriteTitle">
         <template #icon>
           <n-icon size="18">
-            <PhStar :weight="starWeight" />
+            <PhStar :weight="starWeight" :color="isFavoriteNow ? '#f59e0b' : undefined" />
           </n-icon>
         </template>
       </n-button>
