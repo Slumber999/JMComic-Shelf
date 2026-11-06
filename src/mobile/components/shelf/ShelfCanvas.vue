@@ -210,7 +210,7 @@ let idleHandle: number | undefined
 let idleTimer: number | undefined
 let primeFocus = 0
 
-/// 取消还没执行的空闲任务：换书、卸载时旧队列不能再发请求
+/// 取消未执行的空闲批次
 function cancelIdleTask() {
   if (idleHandle !== undefined) {
     window.cancelIdleCallback(idleHandle)
@@ -222,7 +222,7 @@ function cancelIdleTask() {
   }
 }
 
-/// 作废旧队列（换书/卸载）：未执行的任务不再发请求
+/// 换书/卸载时作废旧队列
 function resetCoverQueue() {
   coverToken += 1
   coverPrime = []
@@ -232,7 +232,7 @@ function resetCoverQueue() {
   cancelIdleTask()
 }
 
-/// 真正发请求前再查一次缓存，重复的书直接跳过
+/// 发请求前再查一次缓存
 function startCover(token: number, book: ShelfBook) {
   if (images.has(book.id)) return
   coverInflight += 1
@@ -243,7 +243,7 @@ function startCover(token: number, book: ShelfBook) {
   })
 }
 
-/// 优先队列一口气补满并发；空了且有请求在飞就等它们落地
+/// 补满并发，队列空了再排空闲批次
 function pump(token: number) {
   if (token !== coverToken) return
   while (coverInflight < COVER_CONCURRENCY && coverPrime.length > 0) {
@@ -256,7 +256,7 @@ function pump(token: number) {
   }
 }
 
-/// 空闲时发下一批（最多 5 本）：一批下完再排下一批，不占用交互线程
+/// 空闲时发下一批
 function scheduleIdleBatch(token: number) {
   if (idleHandle !== undefined || idleTimer !== undefined) return
   const run = () => {
@@ -286,7 +286,7 @@ function scheduleIdleBatch(token: number) {
   }
 }
 
-/// 焦点跨槽：可见窗口里还没加载的书提到队首
+/// 新进视野的书插队到最前
 function prioritize(token: number) {
   if (token !== coverToken) return
   const books = props.books
@@ -311,7 +311,7 @@ function prioritize(token: number) {
   pump(token)
 }
 
-/// 第一批：焦点 ±12 本 + 前 8 本 + 末 4 本，其余排队等空闲补
+/// 首批：焦点附近 + 前 8 本 + 末 4 本，其余等空闲
 function scheduleCovers() {
   resetCoverQueue()
   const token = coverToken

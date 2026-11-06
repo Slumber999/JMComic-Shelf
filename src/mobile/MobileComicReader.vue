@@ -775,10 +775,22 @@ function zoomTransform() {
 }
 
 const zoomStyle = computed(() => (zoomScale.value === 1 ? undefined : { transform: zoomTransform() }))
-// 条漫：放大 = 把内容宽度按比例铺开（高度由 pageHeight 跟着放大），交给滚动容器平移
+// 条漫按内容宽度放大，页高跟着 pageHeight 一起变
 const scrollZoomStyle = computed(() =>
   zoomScale.value === 1 ? undefined : { width: zoomScale.value * 100 + '%' },
 )
+
+function beginPan(event: PointerEvent) {
+  const container = scrollContainer.value
+  panStart = {
+    x: event.clientX,
+    y: event.clientY,
+    tx: readingMode.value === 'paged' ? zoomTx.value : (container?.scrollLeft ?? 0),
+    ty: readingMode.value === 'paged' ? zoomTy.value : (container?.scrollTop ?? 0),
+    edgeX: 0,
+    at: Date.now(),
+  }
+}
 
 function resetZoom() {
   zoomScale.value = 1
@@ -788,7 +800,7 @@ function resetZoom() {
   panStart = undefined
 }
 
-/// 平移限制在图片范围内；超出部分当作「已经拖到边界」的量，松手后据此翻页
+/// 平移限制在图片内，超出部分用来判断「拖到边界后翻页」
 function clampPan(tx: number, ty: number) {
   const container = scrollContainer.value
   const scale = zoomScale.value
@@ -846,18 +858,10 @@ function onPointerDown(event: PointerEvent) {
     return
   }
 
-  // 放大状态下的单指：翻页模式平移图片，条漫模式直接拖滚动容器
+  // 放大后单指：翻页模式拖图片，条漫模式拖滚动容器
   if (zoomScale.value > 1) {
     gesture = undefined
-    const container = scrollContainer.value
-    panStart = {
-      x: event.clientX,
-      y: event.clientY,
-      tx: readingMode.value === 'paged' ? zoomTx.value : (container?.scrollLeft ?? 0),
-      ty: readingMode.value === 'paged' ? zoomTy.value : (container?.scrollTop ?? 0),
-      edgeX: 0,
-      at: Date.now(),
-    }
+    beginPan(event)
     return
   }
 
@@ -894,7 +898,7 @@ function onPointerMove(event: PointerEvent) {
     if (pinchStart.dist > 0) {
       const next = Math.min(MAX_ZOOM, Math.max(1, (dist / pinchStart.dist) * pinchStart.scale))
       if (readingMode.value === 'scroll') {
-        // 条漫是布局放大：缩放后把视口中心对应的内容滚回原位，避免「一拉就跳走」
+        // 条漫布局缩放：保持视口中心内容不动
         const container = scrollContainer.value
         const prev = zoomScale.value
         if (container !== undefined && next !== prev) {
@@ -924,17 +928,9 @@ function onPointerMove(event: PointerEvent) {
     return
   }
 
-  // 缩放后落单的手指：继续按平移处理（另一根手指抬起的瞬间不打断）
+  // 双指抬掉一根后继续平移，不打断
   if (pinchStart === undefined && panStart === undefined && pointers.size === 1 && zoomScale.value > 1) {
-    const container = scrollContainer.value
-    panStart = {
-      x: event.clientX,
-      y: event.clientY,
-      tx: readingMode.value === 'paged' ? zoomTx.value : (container?.scrollLeft ?? 0),
-      ty: readingMode.value === 'paged' ? zoomTy.value : (container?.scrollTop ?? 0),
-      edgeX: 0,
-      at: Date.now(),
-    }
+    beginPan(event)
   }
 
   if (panStart !== undefined) {
@@ -947,7 +943,7 @@ function onPointerMove(event: PointerEvent) {
       zoomTy.value = clamped.ty
       panStart.edgeX = clamped.edgeX
     } else {
-      // 条漫：跟手滚动，边界由滚动容器自己夹住
+      // 条漫直接滚容器
       const container = scrollContainer.value
       if (container !== undefined) {
         container.scrollLeft = panStart.tx - (event.clientX - panStart.x)
@@ -1094,7 +1090,7 @@ function readAsBase64(blob: Blob): Promise<string> {
   })
 }
 
-/// 取这一页的原始字节交给原生写进相册（安卓 10+ 走 MediaStore，旧版本走公共 Pictures）
+/// 取原始字节交给原生写入相册
 async function savePageToGallery() {
   const index = savePage.value
   const url = pageUrls.value[index] ?? ''
@@ -1154,8 +1150,7 @@ function onVolumeKey(direction: number) {
   container?.scrollBy({ top: direction * container.clientHeight * 0.9, behavior: 'smooth' })
 }
 
-/// 安卓 WebView 长按图片会走 contextmenu（原生文本选择/图片菜单会打断 pointer 手势），
-/// 所以长按开保存菜单挂在 contextmenu 上，pointer 计时器只当兜底
+/// 安卓长按图片会走 contextmenu，保存菜单挂这里，pointer 计时器只当兜底
 function onPageContextMenu(event: MouseEvent) {
   event.preventDefault()
   if (pageCount.value === 0 || loadingChapter.value) {
@@ -1256,8 +1251,7 @@ onMounted(() => {
   host.__jmVolumeKey = onVolumeKey
 })
 
-// 只有「阅读器开着 + 音量键翻页开关也开着」时才让原生吃掉音量键
-// 否则音量键要留给系统调音量，不能因为阅读器开着就被吞
+// 阅读器开着且音量键翻页开启时才让原生吃按键，否则交还系统
 watch(
   [showing, readerVolumeKeys],
   ([visible, volumeEnabled]) => {

@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import { useSearchBlock } from '../../searchBlock.ts'
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch, watchEffect } from 'vue'
 import { PhMagnifyingGlass, PhTag } from '@phosphor-icons/vue'
 import { commands } from '../../bindings.ts'
@@ -365,107 +366,19 @@ const pageCount = computed(() =>
 )
 /// 小说接口一次返回整份列表，页码在本地切
 const displayNovels = computed(() => slicePage(novels.value, page.value, LIST_PAGE_SIZE))
-/// 屏蔽词：命中标签或标题的漫画不展示（配置里持久化）
-const blockedWords = computed(() => store.config?.blockedTags ?? [])
 const blockSheetShowing = ref(false)
-const blockInput = ref('')
-/// 后端按标签判定的命中 id（列表接口不带标签也能筛干净）
-const blockedIds = ref<Set<number>>(new Set())
 
-function isBlocked(comic: { id: number; name?: string }): boolean {
-  if (blockedIds.value.has(comic.id)) {
-    return true
-  }
-  const name = comic.name ?? ''
-  return blockedWords.value.some((word) => name.includes(word))
-}
-
-const visibleResults = computed(() => results.value.filter((comic) => !isBlocked(comic)))
-
-/// 用后端缓存/补抓的标签判定一遍，并提示命中了几个词、藏了几本
-let blockToken = 0
-async function applyBlock(list: { id: number; name?: string }[]) {
-  const token = ++blockToken
-  const words = blockedWords.value
-  if (words.length === 0 || list.length === 0) {
-    blockedIds.value = new Set()
-    return
-  }
-  const result = await commands.blockedComicIds(list.map((comic) => comic.id), words, 24)
-  if (token !== blockToken || result.status === 'error') {
-    return
-  }
-  blockedIds.value = new Set(result.data)
-  const hidden = list.filter((comic) => isBlocked(comic)).length
-  if (hidden > 0) {
-    message.info(t('search.blockedNotice', { words: words.slice(0, 3).join('、'), count: hidden }))
-  }
-}
-
-// 结果变了、屏蔽词改了都要重新判定并提示
-watch([() => results.value, blockedWords], () => void applyBlock(results.value), { immediate: true })
-
-/// 手动添加的屏蔽词：单独存一份，重启后还能在最后一组看到
-const manualWords = computed(() => store.config?.manualBlockedTags ?? [])
-
-function setBlockedWords(next: string[]) {
-  if (store.config === undefined) {
-    return
-  }
-  store.config.blockedTags = next
-  // 立刻落盘：设置面板之外改的配置也要记住
-  void commands.saveConfig(store.config)
-}
-
-function setManualWords(next: string[]) {
-  if (store.config === undefined) {
-    return
-  }
-  store.config.manualBlockedTags = next
-  void commands.saveConfig(store.config)
-}
-
-function toggleBlockedWord(word: string) {
-  const next = new Set(blockedWords.value)
-  if (next.has(word)) {
-    next.delete(word)
-  } else {
-    next.add(word)
-  }
-  setBlockedWords([...next])
-  if (!next.has(word) && manualWords.value.includes(word)) {
-    setManualWords(manualWords.value.filter((item) => item !== word))
-  }
-}
-
-/// 点一下手动词：只启停屏蔽，词本身留在记忆里
-function toggleManualWord(word: string) {
-  const active = blockedWords.value.includes(word)
-  setBlockedWords(
-    active ? blockedWords.value.filter((item) => item !== word) : [...blockedWords.value, word],
-  )
-}
-
-/// 清空手动记录：连着屏蔽一起删
-function forgetManualWords() {
-  for (const word of manualWords.value) {
-    setBlockedWords(blockedWords.value.filter((item) => item !== word))
-  }
-  setManualWords([])
-}
-
-/// 手动输入的词也记住，下次打开面板还在
-function addBlockedWord() {
-  const word = blockInput.value.trim()
-  if (word === '') {
-    return
-  }
-  setBlockedWords([...new Set([...blockedWords.value, word])])
-  // 同时记进「手动添加」那一组，重启后仍然在
-  setManualWords([...new Set([...manualWords.value, word])])
-  blockInput.value = ''
-}
-
+const {
+  words: blockedWords,
+  manual: manualWords,
+  groups: blockGroups,
+  input: blockInput,
+  visible: visibleResults,
+  toggle: toggleBlockedWord,
+  toggleManual: toggleManualWord,
+  forgetManual: forgetManualWords,
+  add: addBlockedWord,
+} = useSearchBlock(() => results.value, () => tagBlocks.value)
 
 const listLength = computed(() => (isNovelMode.value ? novels.value.length : results.value.length))
 
@@ -1558,7 +1471,7 @@ onBeforeUnmount(() => {
           <button class="block-add" type="button" @click="addBlockedWord">{{ t('common.add') }}</button>
         </div>
         <!-- 官方标签按目录分组，和搜索页的标签抽屉一致 -->
-        <div v-for="group in tagBlocks" :key="group.title" class="block-group">
+        <div v-for="group in blockGroups" :key="group.title" class="block-group">
           <p class="block-group-title">{{ group.title }}</p>
           <div class="block-tags">
             <button

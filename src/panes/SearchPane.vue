@@ -6,6 +6,7 @@ const multiScanCache = new Map<string, MultiScanState>()
 </script>
 
 <script setup lang="ts">
+import { useSearchBlock } from '../searchBlock.ts'
 import { computed, nextTick, onMounted, reactive, ref, watch } from 'vue'
 import { showError } from '../errors.ts'
 import { commands, SearchSort } from '../bindings.ts'
@@ -53,111 +54,22 @@ const message = useMessage()
 const HISTORY_KEY = 'search:history'
 const MAX_HISTORY = 20
 
-/// 屏蔽词：命中标签或标题的漫画在结果里直接隐藏（配置里持久化）
-const blockedWords = computed(() => store.config?.blockedTags ?? [])
 const blockedDialogShowing = ref(false)
-const blockInput = ref('')
-/// 后端按标签判定的命中 id（列表接口不带标签也能筛干净）
-const blockedIds = ref<Set<number>>(new Set())
 
-function isBlocked(comic: { id: number; name?: string }): boolean {
-  if (blockedIds.value.has(comic.id)) {
-    return true
-  }
-  const name = comic.name ?? ''
-  return blockedWords.value.some((word) => name.includes(word))
-}
-
-const visibleComics = computed(() =>
-  (store.searchResult?.content ?? []).filter((comic) => !isBlocked(comic)),
+const {
+  words: blockedWords,
+  manual: manualWords,
+  groups: blockGroups,
+  input: blockInput,
+  visible: visibleComics,
+  toggle: toggleBlockedWord,
+  toggleManual: toggleManualWord,
+  forgetManual: forgetManualWords,
+  add: addBlockedWord,
+} = useSearchBlock(
+  () => store.searchResult?.content ?? [],
+  () => store.categoryResp?.blocks ?? [],
 )
-
-/// 用后端缓存/补抓的标签判定一遍，并提示命中了几个词、藏了几本
-let blockToken = 0
-async function applyBlock() {
-  const token = ++blockToken
-  const list = store.searchResult?.content ?? []
-  const words = blockedWords.value
-  if (words.length === 0 || list.length === 0) {
-    blockedIds.value = new Set()
-    return
-  }
-  const result = await commands.blockedComicIds(list.map((comic) => comic.id), words, 24)
-  if (token !== blockToken || result.status === 'error') {
-    return
-  }
-  blockedIds.value = new Set(result.data)
-  const hidden = list.filter((comic) => isBlocked(comic)).length
-  if (hidden > 0) {
-    message.info(t('search.blockedNotice', { words: words.slice(0, 3).join('、'), count: hidden }))
-  }
-}
-
-// 结果变了、屏蔽词改了都要重新判定并提示
-watch([() => store.searchResult, blockedWords], () => void applyBlock(), { immediate: true })
-
-/// 官方标签分组（和搜索页标签抽屉同一份目录）
-const blockGroups = computed(() => store.categoryResp?.blocks ?? [])
-
-const manualWords = computed(() => store.config?.manualBlockedTags ?? [])
-
-function setBlockedWords(next: string[]) {
-  if (store.config === undefined) {
-    return
-  }
-  store.config.blockedTags = next
-  // 立刻落盘，别等 400ms 的合并保存
-  void commands.saveConfig(store.config)
-}
-
-function setManualWords(next: string[]) {
-  if (store.config === undefined) {
-    return
-  }
-  store.config.manualBlockedTags = next
-  void commands.saveConfig(store.config)
-}
-
-function toggleBlockedWord(word: string) {
-  const next = new Set(blockedWords.value)
-  if (next.has(word)) {
-    next.delete(word)
-  } else {
-    next.add(word)
-  }
-  setBlockedWords([...next])
-  if (!next.has(word) && manualWords.value.includes(word)) {
-    setManualWords(manualWords.value.filter((item) => item !== word))
-  }
-}
-
-/// 点一下手动词：只启停屏蔽，词本身留在记忆里
-function toggleManualWord(word: string) {
-  const active = blockedWords.value.includes(word)
-  setBlockedWords(
-    active ? blockedWords.value.filter((item) => item !== word) : [...blockedWords.value, word],
-  )
-}
-
-/// 清空手动记录：连着屏蔽一起删
-function forgetManualWords() {
-  for (const word of manualWords.value) {
-    setBlockedWords(blockedWords.value.filter((item) => item !== word))
-  }
-  setManualWords([])
-}
-
-/// 手动输入的词也记住，下次打开面板还能看到
-function addBlockedWord() {
-  const word = blockInput.value.trim()
-  if (word === '') {
-    return
-  }
-  setBlockedWords([...new Set([...blockedWords.value, word])])
-  setManualWords([...new Set([...manualWords.value, word])])
-  blockInput.value = ''
-}
-
 
 const sortOptions = computed<SelectProps['options']>(() => [
   { label: t('search.newest'), value: 'Latest' },
