@@ -25,6 +25,7 @@ import { formatBytes } from '../../formatBytes.ts'
 import { localeOptions, setLocale, useI18n, type Locale } from '../../i18n.ts'
 import { useStore } from '../../store.ts'
 import { readerVolumeKeys, setReaderVolumeKeys } from '../useReaderVolume.ts'
+import { longPressSave, setLongPressSave } from '../useLongPressSave.ts'
 
 const store = useStore()
 const { t } = useI18n()
@@ -223,14 +224,18 @@ async function copyRepoUrl() {
             {{ option.label }}
           </n-radio>
         </n-radio-group>
-        <span class="field-hint">{{ t('settings.languageHint') }}</span>
       </div>
       <div class="field">
         <div class="field-row">
           <span class="field-label">{{ t('mobile.readerVolumeLabel') }}</span>
           <n-switch :value="readerVolumeKeys" size="small" @update:value="setReaderVolumeKeys" />
         </div>
-        <span class="field-hint">{{ t('mobile.readerVolumeHint') }}</span>
+      </div>
+      <div class="field">
+        <div class="field-row">
+          <span class="field-label">{{ t('mobile.longPressSaveLabel') }}</span>
+          <n-switch :value="longPressSave" size="small" @update:value="setLongPressSave" />
+        </div>
       </div>
     </section>
 
@@ -249,7 +254,6 @@ async function copyRepoUrl() {
             <span class="usage-size">{{ formatBytes(stats.download.bytes) }}</span>
             <span class="usage-count">{{ t('settings.storage.comicCount', { count: stats.download.count }) }}</span>
           </div>
-          <span class="dir-path" :title="stats.download.path">{{ stats.download.path }}</span>
         </div>
         <div class="dir-row">
           <div class="dir-line">
@@ -257,7 +261,6 @@ async function copyRepoUrl() {
             <span class="usage-size">{{ formatBytes(stats.export.bytes) }}</span>
             <span class="usage-count">{{ t('settings.storage.comicCount', { count: stats.export.count }) }}</span>
           </div>
-          <span class="dir-path" :title="stats.export.path">{{ stats.export.path }}</span>
         </div>
         <div class="dir-row">
           <div class="dir-line">
@@ -265,7 +268,6 @@ async function copyRepoUrl() {
             <span class="usage-size">{{ formatBytes(stats.logs.bytes) }}</span>
             <span class="usage-count">{{ t('settings.storage.fileCount', { count: stats.logs.count }) }}</span>
           </div>
-          <span class="dir-path" :title="stats.logs.path">{{ stats.logs.path }}</span>
         </div>
       </div>
       <p v-else-if="!loading" class="field-hint">{{ t('settings.storage.countingShort') }}</p>
@@ -384,7 +386,6 @@ async function copyRepoUrl() {
             {{ t('settings.storage.indexRebuild') }}
           </n-button>
         </div>
-        <span class="field-hint">{{ t('settings.storage.indexNote') }}</span>
       </div>
     </section>
 
@@ -500,14 +501,6 @@ async function copyRepoUrl() {
   text-align: right;
   color: #999;
   font-size: 12px;
-}
-
-.dir-path {
-  overflow: hidden;
-  color: #bbb;
-  font-size: 11px;
-  text-overflow: ellipsis;
-  white-space: nowrap;
 }
 
 /* 可清理 / 最大占用 / 索引三块：和桌面一样用细边框分区 */

@@ -341,7 +341,6 @@ onMounted(() => {
           {{ t('settings.storage.indexRebuild') }}
         </n-button>
       </div>
-      <span class="text-xs text-gray-400">{{ t('settings.storage.indexNote') }}</span>
     </div>
   </div>
 </template>

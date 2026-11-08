@@ -17,6 +17,7 @@ import { findExportedComic, resolveLocalComic } from '../reader/localReader.ts'
 import { readerLoadingGif, warmReaderLoadingGif } from './readerLoadingGif.ts'
 import { readerHand, setReaderHand } from './useReaderHand.ts'
 import { readerVolumeKeys } from './useReaderVolume.ts'
+import { longPressSave } from './useLongPressSave.ts'
 import { useOverlayLayer } from './useNavStack.ts'
 
 /// 手机专用阅读器：操作栏竖排在左右一侧、底部是可拖动进度条；swipe 翻页、单击切换控件
@@ -204,9 +205,7 @@ function ratioKey(index: number): string {
 function pageHeight(index: number): number {
   const ratio = pageRatios.get(ratioKey(index)) ?? PLACEHOLDER_RATIO
   const width = viewportWidth.value || 360
-  // 条漫放大按宽度比例放大每一页，滚动条跟着变长，不会像 transform 那样整体位移
-  const zoom = readingMode.value === 'scroll' ? zoomScale.value : 1
-  return Math.round(width * ratio * zoom)
+  return Math.round(width * ratio)
 }
 
 /// 图片加载后记下真实比例；上方页高度变化时把 scrollTop 补回来，滚动条与画面都不跳
@@ -760,6 +759,99 @@ let gesture: PointerGesture | undefined
 
 const pagedImage = ref<HTMLImageElement>()
 const scrollLayer = ref<HTMLElement>()
+/// 条漫整条缩放：只对内容层做 transform，滚动位置不动；锚点换算后跟手
+const scrollScale = ref(1)
+const scrollTx = ref(0)
+const scrollTy = ref(0)
+const scrollZoomStyle = computed(() =>
+  scrollScale.value === 1
+    ? undefined
+    : { transform: `translate3d(${scrollTx.value}px, ${scrollTy.value}px, 0) scale(${scrollScale.value})` },
+)
+/// 手指中点下的内容坐标（未缩放）
+let scrollAnchor = { x: 0, y: 0 }
+let scrollPinch: { dist: number; scale: number } | undefined
+let scrollPan: { x: number; y: number; tx: number; ty: number } | undefined
+
+/// 把当前 transform 折算回滚动位置：缩回 1× 时画面停在该处，不回到起点
+function absorbScrollZoom(midY: number) {
+  const container = scrollContainer.value
+  if (container === undefined || scrollScale.value === 1) {
+    return
+  }
+  const contentY = (midY + container.scrollTop - scrollTy.value) / scrollScale.value
+  scrollScale.value = 1
+  scrollTx.value = 0
+  scrollTy.value = 0
+  container.scrollLeft = 0
+  container.scrollTop = contentY - midY
+}
+
+function resetScrollZoom(absorb = false) {
+  const container = scrollContainer.value
+  if (absorb && container !== undefined) {
+    absorbScrollZoom(container.clientHeight / 2)
+  }
+  scrollScale.value = 1
+  scrollTx.value = 0
+  scrollTy.value = 0
+  scrollPinch = undefined
+  scrollPan = undefined
+  if (container !== undefined) {
+    container.style.touchAction = ''
+  }
+}
+
+function clampScrollZoom() {
+  const container = scrollContainer.value
+  const layer = scrollLayer.value
+  if (container === undefined || layer === undefined) {
+    return
+  }
+  const s = scrollScale.value
+  scrollTx.value = Math.min(
+    container.scrollLeft,
+    Math.max(container.scrollLeft + container.clientWidth - s * layer.clientWidth, scrollTx.value),
+  )
+  scrollTy.value = Math.min(
+    container.scrollTop,
+    Math.max(container.scrollTop + container.clientHeight - s * layer.clientHeight, scrollTy.value),
+  )
+}
+
+function startScrollZoom(midX: number, midY: number, dist: number) {
+  const container = scrollContainer.value
+  if (container === undefined) {
+    return
+  }
+  container.style.touchAction = 'none'
+  const s = scrollScale.value
+  scrollAnchor = {
+    x: (midX + container.scrollLeft - scrollTx.value) / s,
+    y: (midY + container.scrollTop - scrollTy.value) / s,
+  }
+  scrollPinch = { dist, scale: s }
+}
+
+function applyScrollZoom(next: number, midX: number, midY: number, dist: number) {
+  const container = scrollContainer.value
+  if (container === undefined) {
+    return
+  }
+  const clamped = Math.min(MAX_ZOOM, Math.max(1, next))
+  if (clamped === 1) {
+    // 缩到最小后重新起手：不松指也能立刻再放大
+    absorbScrollZoom(midY)
+    scrollAnchor = { x: midX, y: midY + container.scrollTop }
+    scrollPinch = { dist, scale: 1 }
+    return
+  }
+  scrollScale.value = clamped
+  scrollTx.value = midX + container.scrollLeft - clamped * scrollAnchor.x
+  scrollTy.value = midY + container.scrollTop - clamped * scrollAnchor.y
+  clampScrollZoom()
+}
+
 const zoomScale = ref(1)
 const zoomTx = ref(0)
 const zoomTy = ref(0)
@@ -775,24 +867,21 @@ function zoomTransform() {
 }
 
 const zoomStyle = computed(() => (zoomScale.value === 1 ? undefined : { transform: zoomTransform() }))
-// 条漫按内容宽度放大，页高跟着 pageHeight 一起变
-const scrollZoomStyle = computed(() =>
-  zoomScale.value === 1 ? undefined : { width: zoomScale.value * 100 + '%' },
-)
+
 
 function beginPan(event: PointerEvent) {
-  const container = scrollContainer.value
   panStart = {
     x: event.clientX,
     y: event.clientY,
-    tx: readingMode.value === 'paged' ? zoomTx.value : (container?.scrollLeft ?? 0),
-    ty: readingMode.value === 'paged' ? zoomTy.value : (container?.scrollTop ?? 0),
+    tx: zoomTx.value,
+    ty: zoomTy.value,
     edgeX: 0,
     at: Date.now(),
   }
 }
 
 function resetZoom() {
+  resetScrollZoom()
   zoomScale.value = 1
   zoomTx.value = 0
   zoomTy.value = 0
@@ -818,18 +907,7 @@ function clampPan(tx: number, ty: number) {
     const nextY = Math.min(maxY, Math.max(-maxY, ty))
     return { tx: nextX, ty: nextY, edgeX: tx - nextX }
   }
-  // 滚动模式：横向居中缩放，纵向只能从顶部往下拖，到底为止
-  const layer = scrollLayer.value
-  if (layer === undefined) {
-    return { tx, ty, edgeX: 0 }
-  }
-  const maxX = Math.max(0, (layer.clientWidth * scale - container.clientWidth) / 2)
-  const minY = Math.min(0, container.clientHeight - layer.scrollHeight * scale)
-  return {
-    tx: Math.min(maxX, Math.max(-maxX, tx)),
-    ty: Math.min(0, Math.max(minY, ty)),
-    edgeX: 0,
-  }
+  return { tx, ty, edgeX: 0 }
 }
 
 function onPointerDown(event: PointerEvent) {
@@ -847,9 +925,11 @@ function onPointerDown(event: PointerEvent) {
   if (pointers.size === 2) {
     gesture = undefined
     const [first, second] = [...pointers.values()]
-    pinchStart = {
-      dist: Math.hypot(first.x - second.x, first.y - second.y),
-      scale: zoomScale.value,
+    const dist = Math.hypot(first.x - second.x, first.y - second.y)
+    if (readingMode.value === 'scroll') {
+      startScrollZoom((first.x + second.x) / 2, (first.y + second.y) / 2, dist)
+    } else {
+      pinchStart = { dist, scale: zoomScale.value }
     }
     panStart = undefined
     return
@@ -858,7 +938,12 @@ function onPointerDown(event: PointerEvent) {
     return
   }
 
-  // 放大后单指：翻页模式拖图片，条漫模式拖滚动容器
+  // 放大后的单指：翻页模式拖图片，条漫模式拖当前页
+  if (readingMode.value === 'scroll' && scrollScale.value > 1) {
+    gesture = undefined
+    scrollPan = { x: event.clientX, y: event.clientY, tx: scrollTx.value, ty: scrollTy.value }
+    return
+  }
   if (zoomScale.value > 1) {
     gesture = undefined
     beginPan(event)
@@ -891,29 +976,28 @@ function onPointerMove(event: PointerEvent) {
     cancelLongPress()
   }
 
-  // 双指：按两指距离缩放
+  // 条漫：整条按两指距离缩放，锚点跟随中点
+  if (readingMode.value === 'scroll' && scrollPinch !== undefined && pointers.size >= 2) {
+    const [first, second] = [...pointers.values()]
+    const dist = Math.hypot(first.x - second.x, first.y - second.y)
+    if (scrollPinch.dist > 0) {
+      applyScrollZoom(
+        (dist / scrollPinch.dist) * scrollPinch.scale,
+        (first.x + second.x) / 2,
+        (first.y + second.y) / 2,
+        dist,
+      )
+    }
+    return
+  }
+
+  // 翻页：按两指距离缩放图片
   if (pinchStart !== undefined && pointers.size >= 2) {
     const [first, second] = [...pointers.values()]
     const dist = Math.hypot(first.x - second.x, first.y - second.y)
     if (pinchStart.dist > 0) {
       const next = Math.min(MAX_ZOOM, Math.max(1, (dist / pinchStart.dist) * pinchStart.scale))
-      if (readingMode.value === 'scroll') {
-        // 条漫布局缩放：保持视口中心内容不动
-        const container = scrollContainer.value
-        const prev = zoomScale.value
-        if (container !== undefined && next !== prev) {
-          const centerX = container.scrollLeft + container.clientWidth / 2
-          const centerY = container.scrollTop + container.clientHeight / 2
-          const ratio = next / prev
-          zoomScale.value = next
-          void nextTick(() => {
-            container.scrollLeft = centerX * ratio - container.clientWidth / 2
-            container.scrollTop = centerY * ratio - container.clientHeight / 2
-          })
-        } else {
-          zoomScale.value = next
-        }
-      } else {
+      if (readingMode.value === 'paged') {
         zoomScale.value = next
         if (next === 1) {
           zoomTx.value = 0
@@ -933,23 +1017,20 @@ function onPointerMove(event: PointerEvent) {
     beginPan(event)
   }
 
+  if (scrollPan !== undefined) {
+    scrollTx.value = scrollPan.tx + (event.clientX - scrollPan.x)
+    scrollTy.value = scrollPan.ty + (event.clientY - scrollPan.y)
+    clampScrollZoom()
+    return
+  }
   if (panStart !== undefined) {
-    if (readingMode.value === 'paged') {
-      const clamped = clampPan(
-        panStart.tx + (event.clientX - panStart.x),
-        panStart.ty + (event.clientY - panStart.y),
-      )
-      zoomTx.value = clamped.tx
-      zoomTy.value = clamped.ty
-      panStart.edgeX = clamped.edgeX
-    } else {
-      // 条漫直接滚容器
-      const container = scrollContainer.value
-      if (container !== undefined) {
-        container.scrollLeft = panStart.tx - (event.clientX - panStart.x)
-        container.scrollTop = panStart.ty - (event.clientY - panStart.y)
-      }
-    }
+    const clamped = clampPan(
+      panStart.tx + (event.clientX - panStart.x),
+      panStart.ty + (event.clientY - panStart.y),
+    )
+    zoomTx.value = clamped.tx
+    zoomTy.value = clamped.ty
+    panStart.edgeX = clamped.edgeX
     return
   }
 
@@ -976,6 +1057,11 @@ function onPointerUp(event: PointerEvent) {
   }
   if (pointers.size < 2) {
     pinchStart = undefined
+    scrollPinch = undefined
+  }
+  scrollPan = undefined
+  if (scrollScale.value <= 1.02) {
+    resetScrollZoom(true)
   }
 
   const pan = panStart
@@ -1037,9 +1123,14 @@ function onPointerCancel(event: PointerEvent) {
   pointers.delete(event.pointerId)
   if (pointers.size < 2) {
     pinchStart = undefined
+    scrollPinch = undefined
   }
   if (pointers.size === 0) {
     panStart = undefined
+    scrollPan = undefined
+  }
+  if (scrollScale.value <= 1.02) {
+    resetScrollZoom(true)
   }
   if (gesture?.id === event.pointerId) {
     gesture = undefined
@@ -1065,7 +1156,7 @@ function cancelLongPress() {
 function startLongPress(x: number, y: number) {
   cancelLongPress()
   longPressFired = false
-  if (pageCount.value === 0 || loadingChapter.value) {
+  if (!longPressSave.value || pageCount.value === 0 || loadingChapter.value) {
     return
   }
   longPressOrigin.x = x
@@ -1129,6 +1220,7 @@ async function savePageToGallery() {
 
 let lastVolumeAt = 0
 
+
 function onVolumeKey(direction: number) {
   if (!readerVolumeKeys.value || !showing.value || pageCount.value === 0 || loadingChapter.value) {
     return
@@ -1153,7 +1245,7 @@ function onVolumeKey(direction: number) {
 /// 安卓长按图片会走 contextmenu，保存菜单挂这里，pointer 计时器只当兜底
 function onPageContextMenu(event: MouseEvent) {
   event.preventDefault()
-  if (pageCount.value === 0 || loadingChapter.value) {
+  if (!longPressSave.value || pageCount.value === 0 || loadingChapter.value) {
     return
   }
   savePage.value = pageIndex.value
@@ -1287,7 +1379,7 @@ onBeforeUnmount(() => {
     <div
       ref="scrollContainer"
       class="reader-scroll"
-      :class="[readingMode, { zoomed: zoomScale > 1 }]"
+      :class="[readingMode, { zoomed: zoomScale > 1 || scrollScale > 1 }]"
       @pointerdown="onPointerDown"
       @pointermove="onPointerMove"
       @pointerup="onPointerUp"
@@ -1487,6 +1579,7 @@ onBeforeUnmount(() => {
   -webkit-overflow-scrolling: touch;
   /* 关掉浏览器自带的双击缩放 */
   touch-action: manipulation;
+  scrollbar-gutter: stable;
   scrollbar-width: thin;
   scrollbar-color: rgb(0 0 0 / 30%) transparent;
 }
@@ -1507,12 +1600,13 @@ onBeforeUnmount(() => {
 
 /* 放大时自己接管手势：禁用原生滚动，避免和拖拽打架 */
 .reader-scroll.zoomed {
-  overflow: hidden;
   touch-action: none;
 }
 
 .scroll-layer {
   width: 100%;
+  transform-origin: 0 0;
+  will-change: transform;
 }
 
 .reader-scroll.paged {

@@ -51,7 +51,6 @@ function onScaleChange(value: number) {
           {{ option.label }}
         </n-radio>
       </n-radio-group>
-      <span class="text-xs text-gray-500">{{ t('settings.languageHint') }}</span>
     </div>
 
     <span class="font-bold mt-4">{{ t('interface.layout') }}</span>
@@ -70,7 +69,6 @@ function onScaleChange(value: number) {
         <n-radio value="medium">{{ t('interface.gridMedium') }}</n-radio>
         <n-radio value="large">{{ t('interface.gridLarge') }}</n-radio>
       </n-radio-group>
-      <span class="text-xs text-gray-500">{{ t('interface.gridSizeHint') }}</span>
     </div>
 
     <div class="flex items-center gap-2 mt-5">
