@@ -230,8 +230,22 @@ function onScrollPageLoad(index: number, event: Event) {
 // ---------- 控件显隐 ----------
 
 /// 显隐只由「点正文空白区」的 toggleBar 控制：不自动淡出，翻页 / 切章 / 滚动也不改它
+/// 刚唤出的这一下点击不能再落到按钮上：记录唤出时间，吞掉紧随其后的 click
+let barRevealAt = 0
+
 function showBar() {
+  if (!barVisible.value) {
+    barRevealAt = performance.now()
+  }
   barVisible.value = true
+}
+
+function suppressAfterReveal(event: MouseEvent) {
+  if (barRevealAt !== 0 && performance.now() - barRevealAt < 500) {
+    barRevealAt = 0
+    event.preventDefault()
+    event.stopPropagation()
+  }
 }
 
 function hideBar() {
@@ -510,11 +524,69 @@ async function goToChapter(index: number, page = 0) {
   markCurrentChapterRead()
 }
 
+/// 章末二次确认：第一次触发只提示，第二次才真正进下一章
+const nextArmed = ref(false)
+const pullReady = ref(false)
+let nextArmedTimer = 0
+let pullStartY: number | null = null
+
+function armNextChapter() {
+  nextArmed.value = true
+  window.clearTimeout(nextArmedTimer)
+  nextArmedTimer = window.setTimeout(() => {
+    nextArmed.value = false
+  }, 2500)
+}
+
+function triggerNextChapter() {
+  if (!hasNextChapter.value) {
+    return
+  }
+  if (nextArmed.value) {
+    nextArmed.value = false
+    window.clearTimeout(nextArmedTimer)
+    nextChapter()
+    return
+  }
+  armNextChapter()
+}
+
+const hasNextChapter = computed(() => chapterIndex.value < chapters.value.length - 1)
+
+function atScrollBottom(): boolean {
+  const container = scrollContainer.value
+  return container !== undefined && container.scrollTop + container.clientHeight >= container.scrollHeight - 8
+}
+
+function onTouchStart(event: TouchEvent) {
+  if (readingMode.value !== 'scroll' || !hasNextChapter.value || !atScrollBottom() || event.touches.length !== 1) {
+    pullStartY = null
+    return
+  }
+  pullStartY = event.touches[0].clientY
+}
+
+function onTouchMove(event: TouchEvent) {
+  if (pullStartY === null || event.touches.length !== 1) {
+    return
+  }
+  pullReady.value = pullStartY - event.touches[0].clientY > 80
+}
+
+function onTouchEnd() {
+  const go = pullReady.value
+  pullReady.value = false
+  pullStartY = null
+  if (go) {
+    nextChapter()
+  }
+}
+
 function nextPage() {
   if (pageIndex.value < pageCount.value - 1) {
     goToPage(pageIndex.value + 1)
   } else if (chapterIndex.value < chapters.value.length - 1) {
-    void goToChapter(chapterIndex.value + 1)
+    triggerNextChapter()
   }
 }
 
@@ -1239,6 +1311,10 @@ function onVolumeKey(direction: number) {
     return
   }
   const container = scrollContainer.value
+  if (direction > 0 && hasNextChapter.value && atScrollBottom()) {
+    triggerNextChapter()
+    return
+  }
   container?.scrollBy({ top: direction * container.clientHeight * 0.9, behavior: 'smooth' })
 }
 
@@ -1292,7 +1368,11 @@ watch(pageUrls, () => {
   void nextTick(syncGifObserver)
 })
 
-watch([chapterIndex, readingMode], () => resetZoom())
+watch([chapterIndex, readingMode], () => {
+  nextArmed.value = false
+  pullReady.value = false
+  resetZoom()
+})
 // 翻页模式换页要复位；条漫模式翻页是滚动带来的，复位会把放大打断
 watch(pageIndex, () => {
   if (readingMode.value === 'paged') {
@@ -1375,7 +1455,7 @@ onBeforeUnmount(() => {
 </script>
 
 <template>
-  <div v-if="showing" class="reader">
+  <div v-if="showing" class="reader" @click.capture="suppressAfterReveal">
     <div
       ref="scrollContainer"
       class="reader-scroll"
@@ -1384,6 +1464,9 @@ onBeforeUnmount(() => {
       @pointermove="onPointerMove"
       @pointerup="onPointerUp"
       @pointercancel="onPointerCancel"
+      @touchstart.passive="onTouchStart"
+      @touchmove.passive="onTouchMove"
+      @touchend="onTouchEnd"
       @scroll="onScroll"
       @contextmenu.prevent="onPageContextMenu">
       <div v-if="loadingChapter" class="center-hint">
@@ -1449,9 +1532,15 @@ onBeforeUnmount(() => {
             <span class="page-no">{{ index + 1 }}</span>
           </div>
         </div>
-        <div class="scroll-tail" />
+        <button class="scroll-tail" type="button" @click="nextChapter">
+          {{ chapterIndex < chapters.length - 1 ? t('mobile.readerNextChapterEnd') : '' }}
+        </button>
         </div>
       </template>
+    </div>
+
+    <div v-if="pullReady || nextArmed" class="chapter-hint">
+      {{ pullReady ? t('mobile.readerReleaseNext') : t('mobile.readerNextAgain') }}
     </div>
 
     <reader-rail
@@ -1680,9 +1769,29 @@ onBeforeUnmount(() => {
   -webkit-user-drag: none;
 }
 
-/* 底部留出常驻进度条的高度，最后一页不会被盖住 */
+/* 底部留出常驻进度条的高度；到底后再上拉 / 点击都进下一章 */
 .scroll-tail {
+  display: block;
+  width: 100%;
   height: calc(124px + env(safe-area-inset-bottom));
+  border: 0;
+  background: transparent;
+  color: #888;
+  font-size: 13px;
+}
+
+.chapter-hint {
+  position: absolute;
+  left: 50%;
+  bottom: calc(150px + env(safe-area-inset-bottom));
+  z-index: 60;
+  padding: 8px 18px;
+  border-radius: 999px;
+  background: rgb(0 0 0 / 72%);
+  color: #fff;
+  font-size: 13px;
+  transform: translateX(-50%);
+  pointer-events: none;
 }
 
 .page-placeholder {

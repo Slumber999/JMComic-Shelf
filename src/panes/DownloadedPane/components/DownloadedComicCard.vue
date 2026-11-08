@@ -2,10 +2,11 @@
 import { CommandError, Comic, Result, commands } from '../../../bindings.ts'
 import { showError } from '../../../errors.ts'
 import { useStore } from '../../../store.ts'
-import { PhBookOpen, PhBookmarkSimple, PhFilePdf, PhFileZip, PhFolderOpen } from '@phosphor-icons/vue'
+import { PhBookOpen, PhBookmarkSimple, PhFilePdf, PhFileZip, PhFolderOpen, PhTrash } from '@phosphor-icons/vue'
 import IconButton from '../../../components/IconButton.vue'
 import AuthorLinks from '../../../components/AuthorLinks.vue'
-import { computed } from 'vue'
+import { computed, ref } from 'vue'
+import { useDialog, useMessage } from 'naive-ui'
 import { getProgress, progressLabel } from '../../../reader/progress.ts'
 import { localCoverUrl } from '../../../reader/protocol.ts'
 import { ComicLayout } from '../../../types.ts'
@@ -27,7 +28,7 @@ const props = withDefaults(
   { layout: 'list' },
 )
 
-const emit = defineEmits<{ read: [comic: Comic] }>()
+const emit = defineEmits<{ read: [comic: Comic]; deleted: [comic: Comic] }>()
 
 /// 读到哪儿了（存在 localStorage 里，读完会自动刷新）
 const progress = computed(() => getProgress(props.comic.id))
@@ -54,6 +55,42 @@ async function startExport(exportComic: (comic: Comic) => Promise<Result<null, C
   const result = await exportComic(props.comic)
   if (result.status === 'error') {
     showError(result.error)
+  }
+}
+
+/// 删除这一本：磁盘目录直接没了、不进回收站，所以先弹确认
+const dialog = useDialog()
+const message = useMessage()
+const deleting = ref<boolean>(false)
+
+function confirmDeleteComic() {
+  if (deleting.value) {
+    return
+  }
+  dialog.warning({
+    title: t('downloaded.deleteTitle'),
+    content: t('downloaded.deleteConfirm', { name: props.comic.name }),
+    positiveText: t('downloaded.delete'),
+    negativeText: t('common.cancel'),
+    onPositiveClick: async () => {
+      await deleteComicDir()
+    },
+  })
+}
+
+/// 调后端删掉这本在「下载目录 / 导出目录」里的文件夹，成功后让本地库存页重新扫盘
+async function deleteComicDir() {
+  deleting.value = true
+  try {
+    const result = await commands.deleteLocalComic(props.comic.id, store.localLibrarySource)
+    if (result.status === 'error') {
+      showError(result.error)
+      return
+    }
+    message.success(t('downloaded.deleteSuccess', { name: props.comic.name }))
+    emit('deleted', props.comic)
+  } finally {
+    deleting.value = false
   }
 }
 
@@ -148,6 +185,14 @@ function onCoverClick(event: MouseEvent) {
           :title="fromExportDir ? t('comic.openExportDir') : t('comic.openDownloadDir')"
           @click="(event) => runAction(event, showComicDownloadDirInFileManager)">
           <PhFolderOpen :size="20" />
+        </IconButton>
+
+        <!-- 删除整本：和「打开目录」同一组，避免放在阅读按钮旁边误点 -->
+        <IconButton
+          :title="t('downloaded.delete')"
+          :disabled="deleting"
+          @click="(event) => runAction(event, confirmDeleteComic)">
+          <PhTrash :size="20" />
         </IconButton>
 
         <!-- 其余按钮整组靠右，和搜索 / 收藏页的卡片一致 -->

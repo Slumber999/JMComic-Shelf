@@ -166,7 +166,8 @@ let reloadSeq = 0
 /// 扫盘期间盖住列表：全库扫描可能要几秒，不给反馈会以为是空的
 const loading = ref<boolean>(false)
 
-async function reloadComics() {
+/// resetPage：换来源/切页签要回第一页；只是删掉一本时保持当前页码，免得跳回开头
+async function reloadComics(resetPage: boolean = true) {
   const seq = ++reloadSeq
   // 显式把当前来源传给后端：后端配置是异步写的，这里再去读会读到旧的
   const source = store.localLibrarySource
@@ -178,8 +179,15 @@ async function reloadComics() {
   loading.value = false
   store.downloadedComics = comics
   checkedIds.value.clear()
-  currentPage.value = 1
+  if (resetPage) {
+    currentPage.value = 1
+  }
   void reloadTags()
+}
+
+/// 卡片里删掉一本之后：重新扫盘（标签云的数量也跟着刷新），页码尽量留在原地
+function handleComicDeleted() {
+  void reloadComics(false)
 }
 
 // 监听标签页变化，更新漫画列表
@@ -483,7 +491,8 @@ function useDropdown() {
         :from-export-dir="fromExportDir"
         :checkbox-checked="checkboxChecked"
         :handle-click="handleCardClick"
-        @read="openReader" />
+        @read="openReader"
+        @deleted="handleComicDeleted" />
     </div>
 
     <div class="flex items-center justify-center gap-3 box-border p-2 pt-0 mt-auto">
