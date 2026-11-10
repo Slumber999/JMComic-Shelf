@@ -547,12 +547,15 @@ async fn export_chapter_cbz(
     let tmp_path = cbz_path.with_extension("cbz.tmp");
     let tmp_path_for_write = tmp_path.clone();
     let cbz_path_for_write = cbz_path.to_path_buf();
+    // 多章漫画：封面不是第一页第一张，和下载目录用同一张 cover.jpg
+    let with_cover = comic.chapter_infos.len() > 1;
     let write_result = tokio::task::spawn_blocking(move || {
         write_cbz(
             &tmp_path_for_write,
             &cbz_path_for_write,
             &comic_info_xml,
             &images,
+            with_cover,
         )
     })
     .await
@@ -621,6 +624,7 @@ fn write_cbz(
     cbz_path: &Path,
     comic_info_xml: &str,
     images: &[(usize, String, Vec<u8>)],
+    with_cover: bool,
 ) -> eyre::Result<()> {
     let file = std::fs::File::create(tmp_path)
         .wrap_err(format!("创建文件`{}`失败", tmp_path.display()))?;
@@ -634,6 +638,20 @@ fn write_cbz(
     zip_writer
         .write_all(comic_info_xml.as_bytes())
         .wrap_err("写入`ComicInfo.xml`失败")?;
+
+    // 多章漫画把目录里的封面放第一张（与下载目录封面同一张）
+    if with_cover {
+        if let Some(dir) = cbz_path.parent() {
+            let cover = dir.join("cover.jpg");
+            if cover.is_file() {
+                zip_writer
+                    .start_file("0000_cover.jpg", options)
+                    .wrap_err("在cbz中创建封面条目失败")?;
+                let data = std::fs::read(&cover).wrap_err("读取封面失败")?;
+                zip_writer.write_all(&data).wrap_err("写入封面失败")?;
+            }
+        }
+    }
 
     for (index, ext, data) in images {
         let name = format!("{:04}.{ext}", index + 1);
@@ -682,7 +700,7 @@ mod tests {
             (1usize, "jpg".to_string(), b"second".to_vec()),
         ];
 
-        write_cbz(&tmp_path, &cbz_path, "<ComicInfo />", &images).unwrap();
+        write_cbz(&tmp_path, &cbz_path, "<ComicInfo />", &images, false).unwrap();
         assert!(!tmp_path.exists());
         assert!(cbz_path.exists());
 

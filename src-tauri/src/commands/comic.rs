@@ -183,9 +183,16 @@ pub async fn get_comic(app: AppHandle, aid: i64) -> CommandResult<Comic> {
 }
 
 async fn get_comic_inner(app: AppHandle, aid: i64) -> CommandResult<Comic> {
-    let comic = utils::get_comic(app.clone(), aid)
+    let mut comic = utils::get_comic(app.clone(), aid)
         .await
         .map_err(|err| CommandError::from("获取漫画信息失败", err))?;
+
+    // 详情页要显示「已导出」标记：按导出目录里真实的 cbz 文件补一次章节状态
+    if let Ok(export_dir) = comic.get_comic_export_dir(&app) {
+        if export_dir.is_dir() {
+            crate::commands::download::mark_exported_chapters(&mut comic, &export_dir, true);
+        }
+    }
 
     Ok(comic)
 }
@@ -265,22 +272,48 @@ pub fn open_comic_reader(app: AppHandle, comic: Comic) -> CommandResult<ReaderCo
         .ok_or_eyre("`comic_download_dir`字段为`None`")
         .map_err(|err| CommandError::from("打开阅读器失败", err))?;
 
+    let export_dir = local_index::export_comic_dir_and_name(&app, comic.id).map(|(dir, _)| dir);
     let state = app.state::<ReaderState>();
-    let reader_comic = crate::reader::open_reader(&state, &comic.name, &comic_dir)
-        .map_err(|err| CommandError::from("打开阅读器失败", err))?;
+    let reader_comic = crate::reader::open_reader_mixed(
+        &state,
+        &comic,
+        Some(&comic_dir),
+        export_dir.as_deref(),
+    )
+    .map_err(|err| CommandError::from("打开阅读器失败", err))?;
 
     tracing::debug!("阅读器打开成功，章节数={}", reader_comic.chapters.len());
     Ok(reader_comic)
 }
 
 /// 本地优先的章节登记：下载目录 → 导出目录；都没有（或本地读不出来）返回 None，由调用方走在线
+fn read_local_comic(dir: &std::path::Path) -> Option<Comic> {
+    let text = std::fs::read_to_string(dir.join("元数据.json")).ok()?;
+    serde_json::from_str::<Comic>(&text).ok()
+}
+
 fn open_local_reader(app: &AppHandle, comic_id: i64) -> Option<ReaderComic> {
-    let candidates = [
-        local_index::comic_dir_and_name(app, comic_id),
-        local_index::export_comic_dir_and_name(app, comic_id),
-    ];
+    let download = local_index::comic_dir_and_name(app, comic_id);
+    let export = local_index::export_comic_dir_and_name(app, comic_id);
     let state = app.state::<ReaderState>();
-    candidates
+    let download_dir = download.as_ref().map(|(dir, _)| dir.clone());
+    let export_dir = export.as_ref().map(|(dir, _)| dir.clone());
+
+    for (dir, _) in [download.as_ref(), export.as_ref()].into_iter().flatten() {
+        if let Some(comic) = read_local_comic(dir) {
+            if let Ok(reader) = crate::reader::open_reader_mixed(
+                &state,
+                &comic,
+                download_dir.as_deref(),
+                export_dir.as_deref(),
+            ) {
+                return Some(reader);
+            }
+        }
+    }
+
+    // 没有元数据（老目录）：退回只列本地章节
+    [download, export]
         .into_iter()
         .flatten()
         .find_map(|(comic_dir, comic_title)| {
@@ -318,8 +351,14 @@ async fn open_reader_by_id_inner(app: AppHandle, comic_id: i64) -> CommandResult
 
     // 索引里没有、但接口返回里带了下载目录，再试一次本地（比如刚下载完还没被索引扫到）
     if let Some(comic_dir) = comic.comic_download_dir.clone() {
+        let export_dir = local_index::export_comic_dir_and_name(&app, comic.id).map(|(dir, _)| dir);
         let state = app.state::<ReaderState>();
-        if let Ok(reader_comic) = crate::reader::open_reader(&state, &comic.name, &comic_dir) {
+        if let Ok(reader_comic) = crate::reader::open_reader_mixed(
+            &state,
+            &comic,
+            Some(&comic_dir),
+            export_dir.as_deref(),
+        ) {
             tracing::debug!("阅读器打开成功(本地)，章节数={}", reader_comic.chapters.len());
             return Ok(reader_comic);
         }

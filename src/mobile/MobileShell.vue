@@ -453,7 +453,7 @@ onMounted(async () => {
   lastSavedConfig = JSON.stringify(store.config)
   setLocale(store.config.language)
 
-  if (isTauri() && store.config.autoLogin) {
+  if (isTauri()) {
     // 先用持久化的登录态恢复，恢复不了才退回账号密码登录
     const restored = await commands.getUserProfile()
     if (restored.status === 'ok') {

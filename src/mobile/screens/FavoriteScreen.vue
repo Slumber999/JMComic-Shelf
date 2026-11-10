@@ -658,13 +658,6 @@ async function buildIndex() {
   }
 }
 
-/// 首次核对的耗时粗估：并发 8、一本约 0.5 秒（和桌面文案同一套算法）
-function tagFetchDuration(count: number): string {
-  const seconds = Math.ceil(count / 16)
-  return seconds <= 90
-    ? t('favorite.tags.durationUnderMinute')
-    : t('favorite.tags.durationMinutes', { minutes: Math.ceil(seconds / 60) })
-}
 
 /// 开始核对前的代价提示：每个收藏夹本会话只问一次
 function requestTagFetch() {
@@ -677,16 +670,9 @@ function requestTagFetch() {
   }
 
   const count = Math.min(tagUnknownCount.value, TAG_FETCH_BUDGET)
-  const scopeKey =
-    tagUnknownCount.value > count ? 'favorite.tags.fetchScopeMore' : 'favorite.tags.fetchScope'
   dialog.warning({
     title: t('favorite.tags.fetchTitle'),
-    content: () =>
-      h('div', { style: 'display:flex;flex-direction:column;gap:6px' }, [
-        h('div', t(scopeKey, { count })),
-        h('div', t('favorite.tags.fetchTime', { duration: tagFetchDuration(count) })),
-        h('div', t('favorite.tags.fetchCacheNote')),
-      ]),
+    content: () => h('div', t('favorite.tags.fetchSimple', { count })),
     positiveText: t('favorite.tags.fetchConfirm'),
     negativeText: t('common.cancel'),
     onPositiveClick: () => {

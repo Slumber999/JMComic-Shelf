@@ -587,6 +587,17 @@ async exportComicZip(comicId: number, source: LocalLibrarySource) : Promise<Resu
 }
 },
 /**
+ * 导出单本 PDF：落点和 zip 相同（桌面下载目录 / 安卓公共 Download）
+ */
+async exportComicPdf(comicId: number, source: LocalLibrarySource) : Promise<Result<string, CommandError>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("export_comic_pdf", { comicId, source }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+/**
  * 暂停导出任务：当前章节做完后停下，任务留在暂停状态
  */
 async pauseExportTask(uuid: string) : Promise<Result<null, CommandError>> {
@@ -1183,7 +1194,19 @@ pageCount: number;
 /**
  * 是否是在线章节
  */
-online: boolean }
+online: boolean; 
+/**
+ * 章节 id（在线章节按它取图）
+ */
+chapterId: number; 
+/**
+ * 是否已下载（目录里有本章图片）
+ */
+downloaded: boolean; 
+/**
+ * 是否已导出（导出目录里有本章 cbz）
+ */
+exported: boolean }
 export type ReaderComic = { title: string; chapters: ReaderChapter[] }
 /**
  * 阅读窗口要显示的漫画：传 comic 表示本地库存，只传 comic_id 表示从网络读

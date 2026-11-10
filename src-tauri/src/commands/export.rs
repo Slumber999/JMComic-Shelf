@@ -352,8 +352,13 @@ pub async fn export_cbz_chapters_without_download(
     comic: Comic,
     chapter_ids: Vec<i64>,
 ) -> CommandResult<()> {
-    export::export_cbz_chapters_without_download(app, comic, chapter_ids)
-        .await
-        .map_err(|err| CommandError::from("导出指定章节cbz失败", err))?;
+    // 后台跑完整导出，命令立即返回，和下载一致
+    let comic_title = comic.name.clone();
+    tauri::async_runtime::spawn(async move {
+        if let Err(err) = export::export_cbz_chapters_without_download(app, comic, chapter_ids).await {
+            let err_title = format!("漫画`{comic_title}`导出指定章节cbz失败");
+            tracing::error!(err_title, message = err.to_message());
+        }
+    });
     Ok(())
 }

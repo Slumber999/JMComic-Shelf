@@ -1,8 +1,8 @@
 <script setup lang="ts">
-import { CommandError, Comic, Result, commands } from '../../../bindings.ts'
+import { Comic, commands } from '../../../bindings.ts'
 import { showError } from '../../../errors.ts'
 import { useStore } from '../../../store.ts'
-import { PhBookOpen, PhBookmarkSimple, PhFilePdf, PhFileZip, PhFolderOpen, PhTrash } from '@phosphor-icons/vue'
+import { PhBookOpen, PhBookmarkSimple, PhFolderOpen, PhTrash } from '@phosphor-icons/vue'
 import IconButton from '../../../components/IconButton.vue'
 import AuthorLinks from '../../../components/AuthorLinks.vue'
 import { computed, ref } from 'vue'
@@ -11,11 +11,9 @@ import { getProgress, progressLabel } from '../../../reader/progress.ts'
 import { localCoverUrl } from '../../../reader/protocol.ts'
 import { ComicLayout } from '../../../types.ts'
 import { useI18n } from '../../../i18n.ts'
-import { useConfirmWholeComic } from '../../../confirmWholeComic.ts'
 
 const store = useStore()
 const { t } = useI18n()
-const confirmWholeComic = useConfirmWholeComic()
 
 const props = withDefaults(
   defineProps<{
@@ -41,22 +39,6 @@ function pickComic() {
   store.pickComic(props.comic)
 }
 
-function exportCbz() {
-  void confirmWholeComic(props.comic, t('comic.export'), () => startExport(commands.exportCbz))
-}
-
-function exportPdf() {
-  void confirmWholeComic(props.comic, t('comic.export'), () => startExport(commands.exportPdf))
-}
-
-/// 导出这一本：cbz / pdf 只差调哪个命令，切进度页和报错处理都一样
-async function startExport(exportComic: (comic: Comic) => Promise<Result<null, CommandError>>) {
-  store.showProgressesTab('uncompleted')
-  const result = await exportComic(props.comic)
-  if (result.status === 'error') {
-    showError(result.error)
-  }
-}
 
 /// 删除这一本：磁盘目录直接没了、不进回收站，所以先弹确认
 const dialog = useDialog()
@@ -197,15 +179,6 @@ function onCoverClick(event: MouseEvent) {
 
         <!-- 其余按钮整组靠右，和搜索 / 收藏页的卡片一致 -->
         <div class="ml-auto flex gap-col-2">
-          <template v-if="!fromExportDir">
-            <IconButton :title="t('downloaded.exportCbz')" @click="(event) => runAction(event, exportCbz)">
-              <PhFileZip :size="20" />
-            </IconButton>
-
-            <IconButton :title="t('downloaded.exportPdf')" @click="(event) => runAction(event, exportPdf)">
-              <PhFilePdf :size="20" />
-            </IconButton>
-          </template>
 
           <!-- 右下角：直接阅读（下载目录读图片，导出目录读cbz） -->
           <IconButton

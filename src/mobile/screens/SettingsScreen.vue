@@ -2,7 +2,6 @@
 import { computed, onMounted, ref } from 'vue'
 import {
   NButton,
-  NCheckbox,
   NIcon,
   NPopconfirm,
   NRadio,
@@ -40,7 +39,6 @@ const stats = ref<StorageStats>()
 const loading = ref(true)
 /// 正在清理哪一项（用来显示 loading，同时避免重复点击）
 const cleaning = ref<string>()
-const selectedQuickReaders = ref<string[]>([])
 
 /// 收藏索引：只看/重建 folderId=0 这层（「全部收藏」），其余层在收藏夹页按需建立
 const favoritesIndex = ref<FavoritesFolderIndex | null>(null)
@@ -59,9 +57,7 @@ const indexStatusText = computed(() => {
 const leftoverBytes = computed(() =>
   (stats.value?.leftovers ?? []).reduce((sum, item) => sum + item.bytes, 0),
 )
-const quickReaderBytes = computed(() =>
-  (stats.value?.quickReaders ?? []).reduce((sum, item) => sum + item.bytes, 0),
-)
+
 
 async function refreshFavoritesIndex() {
   try {
@@ -100,9 +96,6 @@ async function refresh() {
       return
     }
     stats.value = result.data
-    // 去掉已经不存在的勾选
-    const paths = new Set(result.data.quickReaders.map((item) => item.path))
-    selectedQuickReaders.value = selectedQuickReaders.value.filter((path) => paths.has(path))
   } catch (error) {
     console.error(error)
   } finally {
@@ -137,17 +130,6 @@ function cleanLeftovers() {
   void runClean('leftovers', () => commands.cleanStorageLeftovers(), t('settings.storage.leftovers'))
 }
 
-function cleanQuickReaders() {
-  if (selectedQuickReaders.value.length === 0) {
-    message.warning(t('settings.storage.pickQuickReadersFirst'))
-    return
-  }
-  void runClean(
-    'quickReaders',
-    () => commands.cleanStorageQuickReaders(selectedQuickReaders.value),
-    t('settings.storage.quickReaders'),
-  )
-}
 
 function cleanLogs() {
   void runClean('logs', () => commands.cleanStorageLogs(), t('settings.storage.oldLogs'))
@@ -166,11 +148,6 @@ async function deleteComic(entry: StorageEntry) {
   )
 }
 
-function toggleQuickReader(path: string) {
-  selectedQuickReaders.value = selectedQuickReaders.value.includes(path)
-    ? selectedQuickReaders.value.filter((item) => item !== path)
-    : [...selectedQuickReaders.value, path]
-}
 
 onMounted(async () => {
   try {
@@ -291,34 +268,6 @@ async function copyRepoUrl() {
           <span v-else class="field-hint">{{ t('settings.storage.none') }}</span>
         </div>
 
-        <div class="entry-row">
-          <span class="entry-text">
-            {{ t('settings.storage.quickReadersDetail', { count: stats.quickReaders.length, size: formatBytes(quickReaderBytes) }) }}
-          </span>
-          <n-popconfirm v-if="stats.quickReaders.length > 0" @positive-click="cleanQuickReaders">
-            <template #trigger>
-              <n-button
-                size="small"
-                type="warning"
-                secondary
-                :disabled="selectedQuickReaders.length === 0"
-                :loading="cleaning === 'quickReaders'">
-                {{ t('settings.storage.cleanSelected', { count: selectedQuickReaders.length }) }}
-              </n-button>
-            </template>
-            {{ t('settings.storage.quickReadersNote') }}
-          </n-popconfirm>
-          <span v-else class="field-hint">{{ t('settings.storage.none') }}</span>
-        </div>
-        <div v-if="stats.quickReaders.length > 0" class="checkbox-list">
-          <n-checkbox
-            v-for="item in stats.quickReaders"
-            :key="item.path"
-            :checked="selectedQuickReaders.includes(item.path)"
-            @update:checked="toggleQuickReader(item.path)">
-            {{ item.name }} · {{ formatBytes(item.bytes) }}
-          </n-checkbox>
-        </div>
 
         <div class="entry-row">
           <span class="entry-text">
@@ -326,7 +275,7 @@ async function copyRepoUrl() {
           </span>
           <n-popconfirm @positive-click="cleanLogs">
             <template #trigger>
-              <n-button size="small" type="warning" secondary :loading="cleaning === 'logs'">
+              <n-button size="small" type="warning" quaternary :loading="cleaning === 'logs'">
                 {{ t('settings.storage.cleanOldLogs') }}
               </n-button>
             </template>
@@ -380,7 +329,7 @@ async function copyRepoUrl() {
             class="shrink-0"
             size="small"
             type="primary"
-            secondary
+            quaternary
             :loading="rebuildingIndex"
             @click="rebuildFavoritesIndex">
             {{ t('settings.storage.indexRebuild') }}
@@ -532,15 +481,6 @@ async function copyRepoUrl() {
   min-width: 0;
   color: #333;
   line-height: 1.5;
-}
-
-.checkbox-list {
-  display: flex;
-  flex-direction: column;
-  gap: 4px;
-  max-height: 128px;
-  padding-left: 4px;
-  overflow-y: auto;
 }
 
 .comic-row {

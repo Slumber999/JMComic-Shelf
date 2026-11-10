@@ -20,6 +20,8 @@ use crate::{
     downloader::download_img_task::{calculate_block_num, decode_and_encode_img},
     extensions::{AppHandleExt, EyreReportToMessage, PathIsImg},
     jm_client::IMAGE_DOMAIN,
+    types::{ChapterInfo, Comic},
+    utils,
 };
 
 /// 页面内存缓存上限（字节）：命中缓存的翻页是零IO的
@@ -67,6 +69,12 @@ pub struct ReaderChapter {
     pub page_count: usize,
     /// 是否是在线章节
     pub online: bool,
+    /// 章节 id（在线章节按它取图）
+    pub chapter_id: i64,
+    /// 是否已下载（目录里有本章图片）
+    pub downloaded: bool,
+    /// 是否已导出（导出目录里有本章 cbz）
+    pub exported: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Type)]
@@ -387,12 +395,17 @@ pub fn open_reader(
                 .fetch_add(1, AtomicOrdering::Relaxed)
                 .wrapping_add(1);
             let page_count = source.page_count();
+            let exported = matches!(&source, ChapterSource::Cbz { .. });
+            let downloaded = matches!(&source, ChapterSource::Dir { .. });
             registry.insert(token, source);
             ReaderChapter {
                 token,
                 title,
                 page_count,
                 online: false,
+                chapter_id: 0,
+                downloaded,
+                exported,
             }
         })
         .collect();
@@ -431,6 +444,9 @@ pub fn open_reader_remote(
                 title,
                 page_count: 0,
                 online: true,
+                chapter_id,
+                downloaded: false,
+                exported: false,
             }
         })
         .collect();
@@ -441,6 +457,127 @@ pub fn open_reader_remote(
     }
 }
 
+/// 打开阅读器（下载/导出目录）：章节以漫画元数据为准
+/// - 本地有图片 / cbz 的章节用本地来源，没有的登记成在线章节（点开时才取图）
+/// - 这样只下载了部分章节时，后面没下载的章节也能接着读
+pub fn open_reader_mixed(
+    catalog: &ReaderState,
+    comic: &Comic,
+    download_dir: Option<&Path>,
+    export_dir: Option<&Path>,
+) -> eyre::Result<ReaderComic> {
+    // 下载目录按章节元数据里的 chapter_id 匹配（目录名可被 fmt 配置改掉，不能靠名字）
+    let mut by_id: HashMap<i64, ChapterSource> = HashMap::new();
+    let mut by_name: HashMap<String, ChapterSource> = HashMap::new();
+    if let Some(dir) = download_dir {
+        for chapter_dir in list_subdirs(dir).unwrap_or_default() {
+            let pages = list_images(&chapter_dir);
+            if pages.is_empty() {
+                continue;
+            }
+            let source = ChapterSource::Dir { pages };
+            let id = std::fs::read_to_string(chapter_dir.join("章节元数据.json"))
+                .ok()
+                .and_then(|text| serde_json::from_str::<ChapterInfo>(&text).ok())
+                .map(|meta| meta.chapter_id);
+            match id {
+                Some(id) => {
+                    by_id.insert(id, source);
+                }
+                None => {
+                    by_name.insert(file_name_string(&chapter_dir), source);
+                }
+            }
+        }
+    }
+    // 导出目录按 cbz 文件名匹配（导出时就是 filename_filter(标题)）
+    let mut by_cbz: HashMap<String, ChapterSource> = HashMap::new();
+    if let Some(dir) = export_dir {
+        if let Ok(files) = list_cbz_files(&dir.join("cbz")) {
+            for path in files {
+                if let Ok(pages) = read_cbz_pages(&path) {
+                    if !pages.is_empty() {
+                        by_cbz.insert(stem_string(&path), ChapterSource::Cbz { path, pages });
+                    }
+                }
+            }
+        }
+    }
+
+    if comic.chapter_infos.is_empty() {
+        let dir = download_dir.or(export_dir).ok_or_eyre("没有可读目录")?;
+        return open_reader(catalog, &comic.name, dir);
+    }
+
+    let wanted: Vec<(String, Option<ChapterSource>)> = comic
+        .chapter_infos
+        .iter()
+        .map(|info| {
+            let key = utils::filename_filter(&info.chapter_title);
+            let source = by_id
+                .remove(&info.chapter_id)
+                .or_else(|| by_cbz.remove(&key))
+                .or_else(|| by_name.remove(&key));
+            (key, source)
+        })
+        .collect();
+
+    // 目录名和元数据完全对不上（老版本目录）：退回纯本地列表，别把能读的章节变成在线
+    if wanted.iter().all(|(_, source)| source.is_none()) {
+        if let Some(dir) = download_dir.or(export_dir) {
+            return open_reader(catalog, &comic.name, dir);
+        }
+    }
+
+    let mut registry = catalog.chapters.write();
+    let mut chapters = Vec::with_capacity(wanted.len());
+    for (index, (key, source)) in wanted.into_iter().enumerate() {
+        let info = &comic.chapter_infos[index];
+        let token = catalog
+            .next_token
+            .fetch_add(1, AtomicOrdering::Relaxed)
+            .wrapping_add(1);
+        let downloaded = source.as_ref().is_some_and(|s| matches!(s, ChapterSource::Dir { .. })) || has_chapter_dir(download_dir, &key);
+        let exported = has_chapter_cbz(export_dir, &key);
+        let (page_count, online, chapter_source) = match source {
+            Some(ChapterSource::Dir { pages }) => (pages.len(), false, ChapterSource::Dir { pages }),
+            Some(ChapterSource::Cbz { path, pages }) => {
+                (pages.len(), false, ChapterSource::Cbz { path, pages })
+            }
+            _ => (
+                0,
+                true,
+                ChapterSource::Remote {
+                    chapter_id: info.chapter_id,
+                    prepared: None,
+                },
+            ),
+        };
+        registry.insert(token, chapter_source);
+        chapters.push(ReaderChapter {
+            token,
+            title: info.chapter_title.clone(),
+            page_count,
+            online,
+            chapter_id: info.chapter_id,
+            downloaded,
+            exported,
+        });
+    }
+
+    Ok(ReaderComic {
+        title: comic.name.clone(),
+        chapters,
+    })
+}
+
+fn has_chapter_dir(dir: Option<&Path>, key: &str) -> bool {
+    dir.is_some_and(|dir| dir.join(key).is_dir())
+}
+
+fn has_chapter_cbz(export_dir: Option<&Path>, key: &str) -> bool {
+    export_dir.is_some_and(|dir| dir.join("cbz").join(format!("{key}.cbz")).is_file())
+}
 /// 准备在线章节：请求图片地址和混淆参数，返回页数
 /// - 本地章节直接返回已有页数
 /// - 必须是 async：调用方是 async 命令，已经在 tokio runtime 上，不能再用 block_on

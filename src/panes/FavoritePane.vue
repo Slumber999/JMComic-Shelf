@@ -112,7 +112,6 @@ const tagChecking = ref<boolean>(false)
 const tagCheckCancelled = ref<boolean>(false)
 const tagCheckFailed = ref<number>(0)
 /// 本会话里已经确认过「首次核对」代价的收藏夹
-const tagCheckConfirmed = new Set<number>()
 /// 官方标签结果集：tag -> { ids, complete }；complete=翻到了结尾，可以零请求排除漫画
 const officialTagSets = shallowRef<Map<string, { ids: Set<number>; complete: boolean }>>(new Map())
 
@@ -282,7 +281,6 @@ watch(
     await getFavourite(0, 1, 'FavoriteTime')
     // 换账号就是另一份索引文件，缓存、关键词和标签都要重来
     clearIndexSearch()
-    tagCheckConfirmed.clear()
     await loadFavoritesIndex()
     if (favoritesIndex.value !== null) {
       await loadFavoriteTags()
@@ -532,13 +530,6 @@ async function resolveOfficialTagSets(tags: string[]) {
   }
 }
 
-/// 首次核对的耗时粗估：并发 8、一本约 0.5 秒
-function tagFetchDuration(count: number): string {
-  const seconds = Math.ceil(count / 16)
-  return seconds <= 90
-    ? t('favorite.tags.durationUnderMinute')
-    : t('favorite.tags.durationMinutes', { minutes: Math.ceil(seconds / 60) })
-}
 
 /// 开始筛选核对：先走官方标签通道收窄，再看还剩多少本要逐本取详情
 async function startTagCheck() {
@@ -567,35 +558,12 @@ async function continueTagCheck() {
   await scheduleTagCheck()
 }
 
-/// 排期：确认过代价就直接跑，否则先把请求量和耗时说清楚
+/// 桌面端不再弹确认框，直接开始核对
 async function scheduleTagCheck() {
-  const count = tagCheckQueue.value.length
-  if (count === 0) {
+  if (tagCheckQueue.value.length === 0) {
     return
   }
-  if (tagCheckConfirmed.has(folderIdSelected.value)) {
-    await runTagCheck()
-    return
-  }
-
-  const first = Math.min(count, TAG_CHECK_BUDGET)
-  const scopeKey = count > first ? 'favorite.tags.fetchScopeMore' : 'favorite.tags.fetchScope'
-  dialog.warning({
-    title: t('favorite.tags.fetchTitle'),
-    content: () =>
-      h('div', { class: 'flex flex-col gap-1' }, [
-        h('div', t(scopeKey, { count: first })),
-        h('div', t('favorite.tags.fetchOfficialNote')),
-        h('div', t('favorite.tags.fetchTime', { duration: tagFetchDuration(first) })),
-        h('div', t('favorite.tags.fetchCacheNote')),
-      ]),
-    positiveText: t('favorite.tags.fetchConfirm'),
-    negativeText: t('common.cancel'),
-    onPositiveClick: () => {
-      tagCheckConfirmed.add(folderIdSelected.value)
-      void runTagCheck()
-    },
-  })
+  await runTagCheck()
 }
 
 /// 分批核对标签：一次最多 TAG_CHECK_BUDGET 本，每小批回报一次进度，可随时停止

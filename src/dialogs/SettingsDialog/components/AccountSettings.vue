@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed, ref, watch } from 'vue'
-import { NAvatar, NButton, NSwitch, useDialog, useMessage } from 'naive-ui'
+import { NAvatar, NButton, useDialog, useMessage } from 'naive-ui'
 import { commands } from '../../../bindings.ts'
 import { showError } from '../../../errors.ts'
 import { useStore } from '../../../store.ts'
@@ -105,8 +105,6 @@ function confirmLogout() {
 
     <div class="flex flex-col gap-1">
       <div class="flex items-center gap-2">
-        <span class="text-sm">{{ t('account.autoLogin') }}</span>
-        <n-switch v-model:value="store.config.autoLogin" size="small" />
       </div>
     </div>
 

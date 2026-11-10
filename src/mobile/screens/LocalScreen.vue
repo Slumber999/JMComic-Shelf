@@ -409,6 +409,69 @@ async function deleteSelected() {
 }
 
 /// 选中漫画导出 zip：一本一个 zip，全部落在后端下载目录里，完成后提示完整路径
+/// 选中漫画导出 PDF：落点和 zip 一样（后端下载目录 / 安卓公共 Download）
+const pdfExporting = ref(false)
+const pdfDone = ref(0)
+const pdfTotal = ref(0)
+
+async function exportSelectedPdf() {
+  if (selectedCount.value === 0 || deleting.value || zipExporting.value || pdfExporting.value) {
+    return
+  }
+  const targets = orderedComics.value.filter((comic) => selectedIds.value.has(comic.id))
+  if (targets.length === 0) {
+    exit()
+    return
+  }
+  pdfExporting.value = true
+  pdfTotal.value = targets.length
+  pdfDone.value = 0
+  let exported = 0
+  let failed = 0
+  let lastPath = ''
+  for (const comic of targets) {
+    const result = await commands.exportComicPdf(comic.id, store.localLibrarySource)
+    if (result.status === 'error') {
+      failed += 1
+      console.error(result.error)
+    } else {
+      exported += 1
+      lastPath = result.data
+    }
+    pdfDone.value = exported + failed
+  }
+  pdfExporting.value = false
+
+  // 和 zip 同一套提示：说明落到了 下载/{name}，还是应用下载目录的完整路径
+  const publicPrefix = 'Download/'
+  const publicName = lastPath.startsWith(publicPrefix) ? lastPath.slice(publicPrefix.length) : ''
+  const index = Math.max(lastPath.lastIndexOf('/'), lastPath.lastIndexOf('\\'))
+  const folder = index > 0 ? lastPath.slice(0, index) : lastPath
+  const parts: string[] = []
+  if (exported > 0) {
+    parts.push(
+      publicName
+        ? t('mobile.pdfSavedDownloads', { count: exported, name: publicName })
+        : t('mobile.pdfSaved', { count: exported, path: folder }),
+    )
+  }
+  if (failed > 0) {
+    parts.push(t('mobile.pdfSaveFailed', { count: failed }))
+  }
+  if (parts.length === 0) {
+    parts.push(t('mobile.batchFailed', { count: targets.length }))
+  }
+  const summary = parts.join('，')
+  if (failed > 0) {
+    message.warning(summary, { duration: 10000 })
+  } else {
+    message.success(summary, { duration: 10000 })
+  }
+  if (exported > 0) {
+    exit()
+  }
+}
+
 async function exportSelectedZip() {
   if (selectedCount.value === 0 || deleting.value || zipExporting.value) {
     return
@@ -498,18 +561,33 @@ onBeforeUnmount(() => {
       :busy-text="
         deleting
           ? t('mobile.deletingProgress', { done: deleteDone, total: deleteTotal })
-          : zipExporting
-            ? t('mobile.zipExporting', { done: zipDone, total: zipTotal })
-            : ''
+          : pdfExporting
+            ? t('mobile.pdfExporting', { done: pdfDone, total: pdfTotal })
+            : zipExporting
+              ? t('mobile.zipExporting', { done: zipDone, total: zipTotal })
+              : ''
       "
       @cancel="exit">
-      <button type="button" :disabled="deleting || zipExporting" @click="selectAll">
+      <button type="button" :disabled="deleting || zipExporting || pdfExporting" @click="selectAll">
         {{ t('mobile.selectAll') }}
       </button>
-      <button class="primary" type="button" :disabled="deleting || zipExporting" @click="exportSelectedZip">
+      <button
+        class="primary"
+        type="button"
+        :disabled="deleting || zipExporting || pdfExporting"
+        @click="exportSelectedZip">
         {{ t('mobile.zipExport') }}
       </button>
-      <button class="danger" type="button" :disabled="deleting || zipExporting" @click="confirmDelete">
+      <!-- PDF 要由下载目录里的图片生成；导出目录只有 cbz，不显示这个按钮 -->
+      <button
+        v-if="store.localLibrarySource === 'DownloadDir'"
+        class="primary"
+        type="button"
+        :disabled="deleting || zipExporting || pdfExporting"
+        @click="exportSelectedPdf">
+        {{ t('mobile.pdfExport') }}
+      </button>
+      <button class="danger" type="button" :disabled="deleting || zipExporting || pdfExporting" @click="confirmDelete">
         {{ deleting ? t('mobile.deleting') : t('mobile.deleteSelected') }}
       </button>
     </selection-bar>

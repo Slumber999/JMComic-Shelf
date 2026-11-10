@@ -1609,7 +1609,11 @@ onBeforeUnmount(() => {
             @click="pickChapter(index)">
             <span class="sheet-index">{{ index + 1 }}</span>
             <span class="sheet-title">{{ chapter.title }}</span>
-            <span class="sheet-pages">{{ chapter.pageCount }}P</span>
+            <span v-if="chapter.downloaded" class="chapter-mark downloaded" :title="t('mobile.chapterDownloaded')" />
+            <span v-if="chapter.exported" class="chapter-mark exported" :title="t('mobile.chapterExported')" />
+            <span class="sheet-pages">
+              {{ chapter.online && chapter.pageCount === 0 ? t('mobile.chapterOnline') : chapter.pageCount + 'P' }}
+            </span>
           </button>
         </div>
       </section>
@@ -2006,6 +2010,21 @@ onBeforeUnmount(() => {
   font-size: 13px;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+.chapter-mark {
+  flex: 0 0 auto;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+}
+
+.chapter-mark.downloaded {
+  background: #8ec9a9;
+}
+
+.chapter-mark.exported {
+  background: #ff7a00;
 }
 
 .sheet-pages {

@@ -434,7 +434,7 @@ pub fn get_exported_comics(app: AppHandle) -> Vec<Comic> {
 /// - reset=false：只用文件**补上**标记、不清除（导出目录里的漫画拿不到下载目录名，
 ///   文件名可能对不上，清掉会误伤）
 #[instrument(level = "error", skip_all, fields(comic_id = comic.id, comic_title = comic.name))]
-fn mark_exported_chapters(comic: &mut Comic, comic_export_dir: &Path, reset: bool) {
+pub(crate) fn mark_exported_chapters(comic: &mut Comic, comic_export_dir: &Path, reset: bool) {
     let file_names = |sub_dir: &str, extension: &str| -> Vec<String> {
         let Ok(read_dir) = std::fs::read_dir(comic_export_dir.join(sub_dir)) else {
             return Vec::new();

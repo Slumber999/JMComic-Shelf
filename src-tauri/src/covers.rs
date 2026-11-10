@@ -32,7 +32,8 @@ const COVER_CACHE_BUDGET: usize = 64 * 1024 * 1024;
 /// 列表缩略图最大宽度（前端默认请求 320：卡片 3:4、3 倍屏也够）
 const THUMB_MAX_WIDTH: u32 = 720;
 /// 缩略图磁盘缓存：app_data/cover-cache/{id}-{w}.jpg，总容量上限与清理目标
-const THUMB_CACHE_DIR: &str = "cover-cache";
+// 目录名带版本：封面来源规则变了就换名字，旧缩略图整体作废一次
+const THUMB_CACHE_DIR: &str = "cover-cache-v2";
 const THUMB_DISK_BUDGET: u64 = 200 * 1024 * 1024;
 /// 小图并发放宽：一屏二十多张，避免排队
 const THUMB_FETCH_CONCURRENCY: usize = 16;
@@ -444,12 +445,18 @@ fn fetch_cover(
 
 /// 本地封面路径：只允许下载目录/导出目录里的 cover.jpg，避免自定义协议变成任意文件读取
 fn local_cover_path(app: &AppHandle, dir: &str) -> Option<PathBuf> {
-    let candidate = Path::new(dir).join("cover.jpg");
-    if !candidate.is_file() {
-        return None;
+    // 下载目录封面在根目录；导出目录的封面由导出流程放在 cbz/ 里，两个位置都认
+    let candidates = [Path::new(dir).join("cover.jpg"), Path::new(dir).join("cbz").join("cover.jpg")];
+    for candidate in candidates {
+        if !candidate.is_file() {
+            continue;
+        }
+        let candidate = candidate.canonicalize().ok()?;
+        if is_allowed_local_path(app, &candidate) {
+            return Some(candidate);
+        }
     }
-    let candidate = candidate.canonicalize().ok()?;
-    is_allowed_local_path(app, &candidate).then_some(candidate)
+    None
 }
 
 /// 只允许下载目录/导出目录内的路径，避免自定义协议变成任意文件读取

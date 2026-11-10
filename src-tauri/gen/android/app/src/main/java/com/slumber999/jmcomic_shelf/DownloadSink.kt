@@ -18,6 +18,7 @@ import java.io.OutputStream
 // 由 Rust 回退到 app 私有目录里的那份 zip。Rust 按类名 JNI 调用，R8 规则见 proguard-rules.pro。
 object DownloadSink {
     private const val MIME_ZIP = "application/zip"
+    private const val MIME_PDF = "application/pdf"
 
     // 下载目录下建一个应用自己的子目录，别把 zip 直接撒在用户的 Download 里
     private const val SUBDIR = "禁漫书架"
@@ -35,9 +36,11 @@ object DownloadSink {
             return null
         }
         val resolver = context.contentResolver
+        // 按扩展名给 MIME：给错类型 MediaStore 会按类型追加后缀（pdf 会变成 xxx.pdf.zip）
+        val mime = if (displayName.endsWith(".pdf", true)) MIME_PDF else MIME_ZIP
         val pending = ContentValues().apply {
             put(MediaStore.Downloads.DISPLAY_NAME, displayName)
-            put(MediaStore.Downloads.MIME_TYPE, MIME_ZIP)
+            put(MediaStore.Downloads.MIME_TYPE, mime)
             put(MediaStore.Downloads.RELATIVE_PATH, Environment.DIRECTORY_DOWNLOADS + "/" + SUBDIR)
             // 先标 pending 再写，写完才发布，下载目录里不会出现半截 zip
             put(MediaStore.Downloads.IS_PENDING, 1)

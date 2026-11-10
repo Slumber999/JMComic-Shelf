@@ -1709,17 +1709,7 @@ onBeforeUnmount(() => {
   color: #d96200;
 }
 
-/* 去码是全局标签筛选，和分类的橙色选中态区分开 */
-.category-chip.unrated {
-  border-color: #ffc9a3;
-  color: #b34b00;
-}
 
-.category-chip.unrated.active {
-  border-color: #b34b00;
-  background: #b34b00;
-  color: #fff;
-}
 
 .tag-drawer {
   border-radius: 12px;

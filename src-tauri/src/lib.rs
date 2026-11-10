@@ -155,6 +155,7 @@ pub fn run() {
             export_cbz_without_download,
             export_cbz_chapters_without_download,
             export_comic_zip,
+            export_comic_pdf,
             pause_export_task,
             resume_export_task,
             delete_export_task,

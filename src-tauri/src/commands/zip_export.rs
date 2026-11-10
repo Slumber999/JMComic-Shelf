@@ -48,6 +48,78 @@ pub fn export_comic_zip(
         .map_err(|err| CommandError::from("导出zip失败", err))
 }
 
+
+/// 导出单本 PDF：和 zip 同一套落点（桌面下载目录 / 安卓公共 Download）
+#[allow(clippy::needless_pass_by_value)]
+#[tauri::command(async)]
+#[specta::specta]
+#[instrument(level = "error", skip_all, fields(comic_id = comic_id, source = ?source))]
+pub fn export_comic_pdf(
+    app: AppHandle,
+    comic_id: i64,
+    source: LocalLibrarySource,
+) -> CommandResult<String> {
+    export_comic_pdf_inner(&app, comic_id, source)
+        .map_err(|err| CommandError::from("导出pdf失败", err))
+}
+
+fn export_comic_pdf_inner(
+    app: &AppHandle,
+    comic_id: i64,
+    source: LocalLibrarySource,
+) -> eyre::Result<String> {
+    let (comic_dir, comic_name) = match source {
+        LocalLibrarySource::DownloadDir => local_index::comic_dir_and_name(app, comic_id),
+        LocalLibrarySource::ExportDir => local_index::export_comic_dir_and_name(app, comic_id),
+    }
+    .ok_or_eyre(format!("本地库存里找不到禁漫号 {comic_id} 的漫画目录"))?;
+
+    let comic = crate::types::Comic::from_metadata(&comic_dir.join("元数据.json"))
+        .wrap_err("读取漫画元数据失败")?;
+    let has_images = comic
+        .chapter_infos
+        .iter()
+        .filter_map(|chapter| chapter.chapter_download_dir.as_ref())
+        .any(|dir| !list_images(dir).is_empty());
+    if !has_images {
+        return Err(eyre!("这本漫画还没有下载图片，无法导出 PDF"));
+    }
+
+    crate::export::pdf(app, &comic).wrap_err("生成 PDF 失败")?;
+
+    // pdf 生成在应用导出目录，挪到和 zip 相同的位置
+    let merged = comic
+        .get_comic_export_dir(app)?
+        .join("pdf")
+        .join(format!("{}.pdf", comic.get_comic_download_dir_name()?));
+    let download_dir = {
+        let config = app.get_config();
+        let config = config.read();
+        config.download_dir.clone()
+    };
+    std::fs::create_dir_all(&download_dir)
+        .wrap_err(format!("创建目录`{}`失败", download_dir.display()))?;
+    let pdf_name = format!("{comic_id}-{}.pdf", utils::filename_filter(&comic_name));
+    let pdf_path = download_dir.join(&pdf_name);
+    std::fs::copy(&merged, &pdf_path)
+        .wrap_err(format!("复制 PDF 到`{}`失败", pdf_path.display()))?;
+    if let Err(err) = std::fs::remove_file(&merged) {
+        tracing::warn!("删除中转 PDF`{}`失败: {err:?}", merged.display());
+    }
+
+    #[cfg(target_os = "android")]
+    {
+        if let Some(public_path) = downloads::publish_to_downloads(&pdf_path, &pdf_name) {
+            if let Err(err) = std::fs::remove_file(&pdf_path) {
+                tracing::warn!("删除中转PDF`{}`失败: {err:?}", pdf_path.display());
+            }
+            return Ok(public_path);
+        }
+    }
+
+    Ok(pdf_path.to_string_lossy().to_string())
+}
+
 fn export_comic_zip_inner(
     app: &AppHandle,
     comic_id: i64,

@@ -129,12 +129,13 @@ fn cbz_internal(
     }
     // 导出目录内容变了，本地库索引（本地标签云等）要重建
     crate::local_index::invalidate();
-    // 先把封面拷贝到导出目录(如果有)
+    // 先把封面拷贝到导出目录(如果有)；根目录也放一份，本地库存封面和下载目录保持一致
     if let Err(err) = copy_cover(comic, &cbz_export_dir) {
         let err_title = "将封面拷贝到导出目录失败";
         let message = err.to_message();
         tracing::error!(err_title, message);
     }
+
     // 并发处理
     let current_span = tracing::Span::current();
     let downloaded_chapters = downloaded_chapters.into_par_iter();
@@ -203,6 +204,11 @@ fn cbz_internal(
             zip_writer
                 .write_all(comic_info_xml.as_bytes())
                 .wrap_err("写入`ComicInfo.xml`失败")?;
+
+            // 多章漫画：封面不是第一页第一张，把下载目录里的 cover.jpg（和书架同一张）放最前面
+            if comic.chapter_infos.len() > 1 {
+                write_cover_entry(&mut zip_writer, comic)?;
+            }
 
             let image_paths = get_image_paths(&chapter_download_dir, false).wrap_err(format!(
                 "获取`{}`中的图片失败",
@@ -292,6 +298,30 @@ fn cbz_internal(
     }
     .emit(app);
 
+    Ok(())
+}
+
+/// 把漫画的封面写进 cbz：命名 0000_ 保证排在第一张，比例与原图一致
+fn write_cover_entry(
+    zip_writer: &mut ZipWriter<std::fs::File>,
+    comic: &Comic,
+) -> eyre::Result<()> {
+    let cover = comic.get_cover_path().wrap_err("获取封面路径失败")?;
+    if !cover.is_file() {
+        return Ok(());
+    }
+    let ext = cover
+        .extension()
+        .and_then(|ext| ext.to_str())
+        .unwrap_or("jpg");
+    zip_writer
+        .start_file(
+            format!("0000_cover.{ext}"),
+            SimpleFileOptions::default().compression_method(zip::CompressionMethod::Stored),
+        )
+        .wrap_err("在cbz中创建封面条目失败")?;
+    let mut file = std::fs::File::open(&cover).wrap_err("打开封面失败")?;
+    std::io::copy(&mut file, zip_writer).wrap_err("写入封面失败")?;
     Ok(())
 }
 

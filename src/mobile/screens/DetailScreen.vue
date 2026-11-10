@@ -223,13 +223,12 @@ const downloadFormatOptions = computed(() =>
 
 /// 导出格式选项：和下载面板同一个 sheet 外壳，只是列出 PDF / CBZ
 const exportFormatOptions = computed(() => [
-  { value: 'pdf', label: 'PDF', hint: t('mobile.exportPdfHint') },
   { value: 'cbz', label: 'CBZ', hint: t('mobile.exportCbzHint') },
 ])
 
 function exportWithFormat(value: string) {
-  if (value === 'pdf' || value === 'cbz') {
-    void exportAs(value)
+  if (value === 'cbz') {
+    void exportAs()
   }
 }
 
@@ -348,27 +347,16 @@ async function downloadWithFormat(value: string) {
 }
 
 /// 导出：先选格式（PDF / cbz），确认后直接开始，不跳页
-async function exportAs(format: 'pdf' | 'cbz') {
+async function exportAs() {
   const data = comic.value
   const ids = pickedChapterIds.value
   if (data === undefined || exporting.value || ids.length === 0) {
     return
   }
-  // PDF 只能由本地图片生成：选中的章节一本都没下载就先说明白
-  const anyDownloaded = chapterOptions.value.some(
-    (chapter) => ids.includes(chapter.id) && chapter.downloaded,
-  )
-  if (format === 'pdf' && !anyDownloaded) {
-    message.warning(t('mobile.pdfNoDownloaded'))
-    return
-  }
 
   exporting.value = true
   try {
-    const result =
-      format === 'pdf'
-        ? await retryResult(() => commands.exportPdfChapters(data, ids))
-        : await retryResult(() => commands.exportCbzChaptersWithoutDownload(data, ids))
+    const result = await retryResult(() => commands.exportCbzChaptersWithoutDownload(data, ids))
     if (result.status === 'error') {
       showError(result.error)
       return
@@ -509,9 +497,14 @@ async function changePage(next: number) {
                 v-if="isReadChapter(item.index) && item.index !== readingChapter"
                 class="chapter-read"
                 :size="12" />
-              <span v-if="item.chapter.isDownloaded === true" class="chapter-badge">
-                {{ t('favorite.downloaded') }}
-              </span>
+              <span
+                v-if="item.chapter.isDownloaded === true"
+                class="chapter-dot downloaded"
+                :title="t('mobile.chapterDownloaded')" />
+              <span
+                v-if="item.chapter.isCbzExported"
+                class="chapter-dot exported"
+                :title="t('mobile.chapterExported')" />
             </button>
           </div>
           <mobile-pager :page="page" :page-count="pageCount" @update:page="changePage" />
@@ -842,13 +835,19 @@ async function changePage(next: number) {
   white-space: nowrap;
 }
 
-.chapter-badge {
+.chapter-dot {
   flex: 0 0 auto;
-  padding: 1px 6px;
-  border-radius: 999px;
-  background: #fff2e6;
-  color: #d96200;
-  font-size: 10px;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+}
+
+.chapter-dot.downloaded {
+  background: #8ec9a9;
+}
+
+.chapter-dot.exported {
+  background: #ff7a00;
 }
 
 /* 已读：序号和勾用禁漫橙，标题也跟着变橙但不再加粗，避免整列太扎眼 */

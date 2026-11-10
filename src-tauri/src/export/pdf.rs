@@ -286,10 +286,20 @@ fn merge_pdf_files(
     let comic_download_dir_name = comic
         .get_comic_download_dir_name()
         .wrap_err("获取漫画下载目录名失败")?;
-    let save_path = comic_export_dir.join(format!("{comic_download_dir_name}.{extension}"));
+    let pdf_dir = comic_export_dir.join(extension);
+    std::fs::create_dir_all(&pdf_dir)
+        .wrap_err(format!("创建目录`{}`失败", pdf_dir.display()))?;
+    let save_path = pdf_dir.join(format!("{comic_download_dir_name}.{extension}"));
 
     // 合并pdf
+    let chapter_files = chapter_pdf_paths.clone();
     merge_pdf_file(chapter_pdf_paths, &save_path).wrap_err("合并pdf失败")?;
+    // 合并成功后删掉分章 pdf：只保留 pdf/{漫画名}.pdf 这一份
+    for path in chapter_files {
+        if path != save_path {
+            let _ = std::fs::remove_file(&path);
+        }
+    }
 
     // 发送合并pdf进度事件
     let _ = ExportPdfEvent::MergeProgress {
