@@ -33,6 +33,7 @@ import DownloadAllFavoriteButton from '../components/DownloadAllFavoriteButton.v
 import { PhArrowClockwise, PhCaretDown, PhCheckCircle, PhCircle, PhDownloadSimple, PhFileZip, PhMagnifyingGlass, PhTag } from '@phosphor-icons/vue'
 import { useI18n } from '../i18n.ts'
 import { tagExpandLabel, useTagCloudPaging } from '../tagCloudPaging.ts'
+import { hideRareTags, RARE_TAG_MIN_COUNT } from '../hideRareTags.ts'
 
 const store = useStore()
 const { t } = useI18n()
@@ -188,6 +189,13 @@ const tagCheckQueue = computed<FavoritesIndexComic[]>(() => {
   )
 })
 
+/// 设置里可隐藏冷门标签：只影响标签筛选的展示
+const filteredFavoriteTags = computed(() =>
+  hideRareTags.value
+    ? favoriteTags.value.filter((tag) => tag.count >= RARE_TAG_MIN_COUNT)
+    : favoriteTags.value,
+)
+
 /// 标签云分页：初始 30 个，每次「展开更多」+50，收起回 30
 const {
   visible: visibleFavoriteTags,
@@ -196,7 +204,7 @@ const {
   canCollapse: canCollapseFavoriteTags,
   loadMore: loadMoreFavoriteTags,
   collapse: collapseFavoriteTags,
-} = useTagCloudPaging(favoriteTags)
+} = useTagCloudPaging(filteredFavoriteTags)
 
 /// 进度必须说人话：没选标签时报「攒了多少」，选了标签时报「核对了多少、命中多少」
 const tagProgressText = computed(() => {
@@ -1005,7 +1013,7 @@ async function exportCbz() {
         <n-icon size="14">
           <PhTag />
         </n-icon>
-        <span>{{ t('favorite.tags.header', { count: favoriteTags.length }) }}</span>
+        <span>{{ t('favorite.tags.header', { count: filteredFavoriteTags.length }) }}</span>
         <span v-if="appliedTags.length > 0" class="text-orange">
           {{ t('favorite.tags.applied', { count: appliedTags.length }) }}
         </span>
@@ -1037,7 +1045,7 @@ async function exportCbz() {
         <n-button size="tiny" @click="onSearchFocus">{{ t('favorite.tags.buildIndex') }}</n-button>
       </div>
       <template v-else>
-        <div v-if="favoriteTags.length === 0" class="text-xs text-gray-500">
+        <div v-if="filteredFavoriteTags.length === 0" class="text-xs text-gray-500">
           {{ t('favorite.tags.empty') }}
         </div>
         <div v-else class="flex flex-wrap items-center gap-1">

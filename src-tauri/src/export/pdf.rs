@@ -323,7 +323,7 @@ fn merge_pdf_files(
 #[allow(clippy::similar_names)]
 #[allow(clippy::cast_possible_truncation)]
 #[instrument(level = "error", skip_all, fields(pdf_path = %pdf_path.display()))]
-fn create_pdf(image_paths: Vec<PathBuf>, pdf_path: &Path) -> eyre::Result<()> {
+pub(crate) fn create_pdf(image_paths: Vec<PathBuf>, pdf_path: &Path) -> eyre::Result<()> {
     let mut doc = Document::with_version("1.5");
     let pages_id = doc.new_object_id();
     let mut page_ids = vec![];
@@ -337,8 +337,21 @@ fn create_pdf(image_paths: Vec<PathBuf>, pdf_path: &Path) -> eyre::Result<()> {
             .wrap_err(format!("将`{}`读取到buffer失败", image_path.display()))?;
         let (width, height) = image::image_dimensions(&image_path)
             .wrap_err(format!("获取`{}`的尺寸失败", image_path.display()))?;
-        let image_stream = lopdf::xobject::image_from(buffer)
-            .wrap_err(format!("创建`{}`的图片流失败", image_path.display()))?;
+        // lopdf 只认 jpeg/png；webp 等先解码再转 jpeg，否则整本合并会直接失败
+        let image_stream = match lopdf::xobject::image_from(buffer) {
+            Ok(stream) => stream,
+            Err(_) => {
+                let rgb = image::open(&image_path)
+                    .wrap_err(format!("解码`{}`失败", image_path.display()))?
+                    .to_rgb8();
+                let mut jpeg = Vec::new();
+                image::codecs::jpeg::JpegEncoder::new_with_quality(&mut jpeg, 90)
+                    .encode_image(&rgb)
+                    .wrap_err(format!("转码`{}`失败", image_path.display()))?;
+                lopdf::xobject::image_from(jpeg)
+                    .wrap_err(format!("创建`{}`的图片流失败", image_path.display()))?
+            }
+        };
         // 将图片流添加到doc中
         let img_id = doc.add_object(image_stream);
         // 图片的名称，用于 Do 操作在页面上显示图片

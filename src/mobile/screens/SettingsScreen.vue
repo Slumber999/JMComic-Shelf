@@ -25,6 +25,7 @@ import { localeOptions, setLocale, useI18n, type Locale } from '../../i18n.ts'
 import { useStore } from '../../store.ts'
 import { readerVolumeKeys, setReaderVolumeKeys } from '../useReaderVolume.ts'
 import { longPressSave, setLongPressSave } from '../useLongPressSave.ts'
+import { hideRareTags, setHideRareTags } from '../../hideRareTags.ts'
 
 const store = useStore()
 const { t } = useI18n()
@@ -212,6 +213,12 @@ async function copyRepoUrl() {
         <div class="field-row">
           <span class="field-label">{{ t('mobile.longPressSaveLabel') }}</span>
           <n-switch :value="longPressSave" size="small" @update:value="setLongPressSave" />
+        </div>
+      </div>
+      <div class="field">
+        <div class="field-row">
+          <span class="field-label">{{ t('interface.hideRareTags') }}</span>
+          <n-switch :value="hideRareTags" size="small" @update:value="setHideRareTags" />
         </div>
       </div>
     </section>

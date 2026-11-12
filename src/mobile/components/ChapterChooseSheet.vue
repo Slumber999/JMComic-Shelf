@@ -21,6 +21,8 @@ const props = defineProps<{
   comicName?: string
   /// 逐本选择时的「第 x / y 本」
   stepText?: string
+  /// 只允许选已下载的章节（PDF 导出用）
+  onlyDownloaded?: boolean
   busy?: boolean
 }>()
 
@@ -37,6 +39,9 @@ const title = computed(() =>
 
 /// 「下载」模式下已下载的章节不可选
 function selectable(chapter: ChapterOption): boolean {
+  if (props.onlyDownloaded === true) {
+    return chapter.downloaded
+  }
   return props.mode === 'export' || !chapter.downloaded
 }
 
@@ -114,6 +119,8 @@ function confirm() {
         </span>
       </button>
     </div>
+
+    <slot name="extra" />
 
     <button class="choose-confirm" type="button" :disabled="checkedCount === 0 || busy" @click="confirm">
       {{ t(mode === 'download' ? 'mobile.downloadSelected' : 'mobile.exportSelected', { count: checkedCount }) }}

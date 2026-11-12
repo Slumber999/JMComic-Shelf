@@ -2,6 +2,7 @@
 import { COVER_PREVIEW_SCALE_MAX, COVER_PREVIEW_SCALE_MIN, useStore } from '../../../store.ts'
 import { NRadio, NRadioGroup, NSlider, NSwitch } from 'naive-ui'
 import { localeOptions, setLocale, useI18n, type Locale } from '../../../i18n.ts'
+import { hideRareTags, setHideRareTags } from '../../../hideRareTags.ts'
 import { Language } from '../../../bindings.ts'
 
 const store = useStore()
@@ -69,6 +70,11 @@ function onScaleChange(value: number) {
         <n-radio value="medium">{{ t('interface.gridMedium') }}</n-radio>
         <n-radio value="large">{{ t('interface.gridLarge') }}</n-radio>
       </n-radio-group>
+    </div>
+
+    <div class="flex items-center gap-2 mt-3">
+      <span class="font-bold">{{ t('interface.hideRareTags') }}</span>
+      <n-switch :value="hideRareTags" @update:value="setHideRareTags" />
     </div>
 
     <div class="flex items-center gap-2 mt-5">

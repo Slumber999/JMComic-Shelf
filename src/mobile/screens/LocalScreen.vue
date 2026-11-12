@@ -18,6 +18,7 @@ import ListStatus from '../components/ListStatus.vue'
 import MobilePager from '../components/MobilePager.vue'
 import PullRefreshBar from '../components/PullRefreshBar.vue'
 import SelectionBar from '../components/SelectionBar.vue'
+import ChapterChooseSheet from '../components/ChapterChooseSheet.vue'
 import TagChips from '../components/TagChips.vue'
 import { tagExpandLabel, useTagCloudPaging } from '../../tagCloudPaging.ts'
 import { clearListMemory, readListMemory, useListMemory } from '../listMemory.ts'
@@ -409,6 +410,59 @@ async function deleteSelected() {
 }
 
 /// 选中漫画导出 zip：一本一个 zip，全部落在后端下载目录里，完成后提示完整路径
+/// 多章漫画：选章节 + 合并/拆分，返回 undefined 表示取消
+const pdfSheetShowing = ref(false)
+const pdfSheetComic = ref<Comic | undefined>(undefined)
+const pdfSheetDefault = ref<number[]>([])
+const pdfSplitMode = ref(false)
+let pdfSheetResolve: ((value: { ids: number[]; split: boolean } | undefined) => void) | undefined
+
+/// 章节选择用详情页那套底部弹窗；多一个「合并/拆分」选择器
+function pickPdfChapters(comic: Comic): Promise<{ ids: number[]; split: boolean } | undefined> {
+  const downloaded = comic.chapterInfos.filter((chapter) => chapter.isDownloaded === true)
+  if (downloaded.length === 0) {
+    return Promise.resolve({ ids: [], split: false })
+  }
+  if (downloaded.length === 1) {
+    return Promise.resolve({ ids: [downloaded[0].chapterId], split: false })
+  }
+
+  pdfSheetComic.value = comic
+  pdfSheetDefault.value = downloaded.map((chapter) => chapter.chapterId)
+  pdfSplitMode.value = false
+  pdfSheetShowing.value = true
+  return new Promise((resolve) => {
+    pdfSheetResolve = resolve
+  })
+}
+
+function finishPdfSheet(result: { ids: number[]; split: boolean } | undefined) {
+  pdfSheetShowing.value = false
+  pdfSheetResolve?.(result)
+  pdfSheetResolve = undefined
+}
+
+// 直接点叉/取消关掉弹窗也要结束等待，避免一直显示「正在导出 PDF」
+watch(pdfSheetShowing, (showing) => {
+  if (!showing && pdfSheetResolve !== undefined) {
+    const resolve = pdfSheetResolve
+    pdfSheetResolve = undefined
+    resolve(undefined)
+  }
+})
+
+const pdfSheetChapters = computed(() =>
+  (pdfSheetComic.value?.chapterInfos ?? []).map((chapter) => ({
+    id: chapter.chapterId,
+    title: chapter.chapterTitle,
+    downloaded: chapter.isDownloaded === true,
+  })),
+)
+
+function onPdfChaptersChosen(ids: number[]) {
+  const split = pdfSplitMode.value
+  finishPdfSheet({ ids, split })
+}
 /// 选中漫画导出 PDF：落点和 zip 一样（后端下载目录 / 安卓公共 Download）
 const pdfExporting = ref(false)
 const pdfDone = ref(0)
@@ -429,18 +483,38 @@ async function exportSelectedPdf() {
   let exported = 0
   let failed = 0
   let lastPath = ''
+  let lastSplit = false
+  let lastName = ''
+  let fileCount = 0
+  let cancelled = false
   for (const comic of targets) {
-    const result = await commands.exportComicPdf(comic.id, store.localLibrarySource)
+    const choice = await pickPdfChapters(comic)
+    if (choice === undefined) {
+      cancelled = true
+      break
+    }
+    const result = await commands.exportComicPdf(
+      comic.id,
+      store.localLibrarySource,
+      choice.ids,
+      choice.split,
+    )
     if (result.status === 'error') {
       failed += 1
       console.error(result.error)
     } else {
       exported += 1
-      lastPath = result.data
+      lastPath = result.data.length > 0 ? result.data[result.data.length - 1] : ''
+      lastSplit = choice.split
+      lastName = comic.name
+      fileCount += result.data.length
     }
     pdfDone.value = exported + failed
   }
   pdfExporting.value = false
+  if (cancelled && exported === 0 && failed === 0) {
+    return
+  }
 
   // 和 zip 同一套提示：说明落到了 下载/{name}，还是应用下载目录的完整路径
   const publicPrefix = 'Download/'
@@ -450,9 +524,11 @@ async function exportSelectedPdf() {
   const parts: string[] = []
   if (exported > 0) {
     parts.push(
-      publicName
-        ? t('mobile.pdfSavedDownloads', { count: exported, name: publicName })
-        : t('mobile.pdfSaved', { count: exported, path: folder }),
+      lastSplit && publicName
+        ? t('mobile.pdfSplitDone', { count: fileCount, name: lastName })
+        : publicName
+          ? t('mobile.pdfSavedDownloads', { count: exported, name: publicName })
+          : t('mobile.pdfSaved', { count: exported, path: folder }),
     )
   }
   if (failed > 0) {
@@ -591,6 +667,33 @@ onBeforeUnmount(() => {
         {{ deleting ? t('mobile.deleting') : t('mobile.deleteSelected') }}
       </button>
     </selection-bar>
+
+    <!-- 导出 PDF：章节选择复用详情页弹窗，多一个合并/拆分选择器 -->
+    <chapter-choose-sheet
+      v-model:showing="pdfSheetShowing"
+      mode="export"
+      :chapters="pdfSheetChapters"
+      :default-selected="pdfSheetDefault"
+      :comic-name="pdfSheetComic?.name"
+      only-downloaded
+      @confirm="onPdfChaptersChosen">
+      <template #extra>
+        <div class="pdf-mode">
+          <button
+            type="button"
+            :class="{ active: !pdfSplitMode }"
+            @click="pdfSplitMode = false">
+            {{ t('mobile.pdfMerge') }}
+          </button>
+          <button
+            type="button"
+            :class="{ active: pdfSplitMode }"
+            @click="pdfSplitMode = true">
+            {{ t('mobile.pdfSplit') }}
+          </button>
+        </div>
+      </template>
+    </chapter-choose-sheet>
 
     <div class="sources">
       <button
@@ -942,4 +1045,26 @@ onBeforeUnmount(() => {
   background: #fff2e6;
   color: #d96200;
 }
+.pdf-mode {
+  display: flex;
+  gap: 8px;
+}
+
+.pdf-mode button {
+  flex: 1;
+  padding: 9px 0;
+  border: 1px solid #eee;
+  border-radius: 10px;
+  background: #fff;
+  color: #666;
+  font-size: 13px;
+}
+
+.pdf-mode button.active {
+  border-color: #ff7a00;
+  background: #fff9f3;
+  color: #d96200;
+  font-weight: 600;
+}
+
 </style>

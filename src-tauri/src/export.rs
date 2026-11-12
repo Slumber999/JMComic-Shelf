@@ -17,6 +17,7 @@ pub use cbz_direct::{
 use eyre::{OptionExt, WrapErr};
 use parking_lot::Mutex;
 pub use pdf::{pdf, pdf_chapters};
+pub(crate) use pdf::create_pdf;
 use tauri::AppHandle;
 use tauri_specta::Event;
 use tracing::instrument;

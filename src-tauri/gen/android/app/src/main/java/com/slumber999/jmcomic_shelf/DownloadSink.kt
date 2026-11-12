@@ -27,7 +27,12 @@ object DownloadSink {
     private const val BUFFER_SIZE = 256 * 1024
 
     @JvmStatic
-    fun publishToDownloads(context: Context, sourcePath: String, displayName: String): String? {
+    fun publishToDownloads(
+        context: Context,
+        sourcePath: String,
+        displayName: String,
+        subDir: String,
+    ): String? {
         if (Build.VERSION.SDK_INT < Build.VERSION_CODES.Q) {
             return null
         }
@@ -38,10 +43,11 @@ object DownloadSink {
         val resolver = context.contentResolver
         // 按扩展名给 MIME：给错类型 MediaStore 会按类型追加后缀（pdf 会变成 xxx.pdf.zip）
         val mime = if (displayName.endsWith(".pdf", true)) MIME_PDF else MIME_ZIP
+        val folder = subDir.ifBlank { SUBDIR }
         val pending = ContentValues().apply {
             put(MediaStore.Downloads.DISPLAY_NAME, displayName)
             put(MediaStore.Downloads.MIME_TYPE, mime)
-            put(MediaStore.Downloads.RELATIVE_PATH, Environment.DIRECTORY_DOWNLOADS + "/" + SUBDIR)
+            put(MediaStore.Downloads.RELATIVE_PATH, Environment.DIRECTORY_DOWNLOADS + "/" + folder)
             // 先标 pending 再写，写完才发布，下载目录里不会出现半截 zip
             put(MediaStore.Downloads.IS_PENDING, 1)
         }

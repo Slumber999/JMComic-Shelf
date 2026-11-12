@@ -53,13 +53,15 @@ pub fn export_comic_zip(
 #[allow(clippy::needless_pass_by_value)]
 #[tauri::command(async)]
 #[specta::specta]
-#[instrument(level = "error", skip_all, fields(comic_id = comic_id, source = ?source))]
+#[instrument(level = "error", skip_all, fields(comic_id = comic_id, source = ?source, split = split))]
 pub fn export_comic_pdf(
     app: AppHandle,
     comic_id: i64,
     source: LocalLibrarySource,
-) -> CommandResult<String> {
-    export_comic_pdf_inner(&app, comic_id, source)
+    chapter_ids: Vec<i64>,
+    split: bool,
+) -> CommandResult<Vec<String>> {
+    export_comic_pdf_inner(&app, comic_id, source, &chapter_ids, split)
         .map_err(|err| CommandError::from("导出pdf失败", err))
 }
 
@@ -67,7 +69,9 @@ fn export_comic_pdf_inner(
     app: &AppHandle,
     comic_id: i64,
     source: LocalLibrarySource,
-) -> eyre::Result<String> {
+    chapter_ids: &[i64],
+    split: bool,
+) -> eyre::Result<Vec<String>> {
     let (comic_dir, comic_name) = match source {
         LocalLibrarySource::DownloadDir => local_index::comic_dir_and_name(app, comic_id),
         LocalLibrarySource::ExportDir => local_index::export_comic_dir_and_name(app, comic_id),
@@ -76,22 +80,21 @@ fn export_comic_pdf_inner(
 
     let comic = crate::types::Comic::from_metadata(&comic_dir.join("元数据.json"))
         .wrap_err("读取漫画元数据失败")?;
-    let has_images = comic
+    let wanted: Vec<&crate::types::ChapterInfo> = comic
         .chapter_infos
         .iter()
-        .filter_map(|chapter| chapter.chapter_download_dir.as_ref())
-        .any(|dir| !list_images(dir).is_empty());
-    if !has_images {
-        return Err(eyre!("这本漫画还没有下载图片，无法导出 PDF"));
+        .filter(|chapter| chapter_ids.is_empty() || chapter_ids.contains(&chapter.chapter_id))
+        .filter(|chapter| {
+            chapter
+                .chapter_download_dir
+                .as_ref()
+                .is_some_and(|dir| !list_images(dir).is_empty())
+        })
+        .collect();
+    if wanted.is_empty() {
+        return Err(eyre!("选中的章节还没有下载图片，无法导出 PDF"));
     }
 
-    crate::export::pdf(app, &comic).wrap_err("生成 PDF 失败")?;
-
-    // pdf 生成在应用导出目录，挪到和 zip 相同的位置
-    let merged = comic
-        .get_comic_export_dir(app)?
-        .join("pdf")
-        .join(format!("{}.pdf", comic.get_comic_download_dir_name()?));
     let download_dir = {
         let config = app.get_config();
         let config = config.read();
@@ -99,25 +102,62 @@ fn export_comic_pdf_inner(
     };
     std::fs::create_dir_all(&download_dir)
         .wrap_err(format!("创建目录`{}`失败", download_dir.display()))?;
-    let pdf_name = format!("{comic_id}-{}.pdf", utils::filename_filter(&comic_name));
-    let pdf_path = download_dir.join(&pdf_name);
-    std::fs::copy(&merged, &pdf_path)
-        .wrap_err(format!("复制 PDF 到`{}`失败", pdf_path.display()))?;
-    if let Err(err) = std::fs::remove_file(&merged) {
-        tracing::warn!("删除中转 PDF`{}`失败: {err:?}", merged.display());
-    }
 
+    let display_name = utils::filename_filter(&comic_name);
+    let temp_dir = download_dir.join(format!(".pdf-temp-{comic_id}-{}", std::process::id()));
+    std::fs::create_dir_all(&temp_dir)
+        .wrap_err(format!("创建临时目录`{}`失败", temp_dir.display()))?;
+
+    let result = (|| -> eyre::Result<Vec<String>> {
+        if split {
+            let mut paths = Vec::new();
+            for chapter in &wanted {
+                let dir = chapter.chapter_download_dir.as_ref().ok_or_eyre("章节没有下载目录")?;
+                let name = format!("{}.pdf", utils::filename_filter(&chapter.chapter_title));
+                let local = temp_dir.join(&name);
+                crate::export::create_pdf(list_images(dir), &local)?;
+                let folder = format!("禁漫书架/{display_name}");
+                paths.push(publish_pdf(app, &local, &name, &folder)?);
+            }
+            Ok(paths)
+        } else {
+            let mut images = Vec::new();
+            for chapter in &wanted {
+                if let Some(dir) = chapter.chapter_download_dir.as_ref() {
+                    images.extend(list_images(dir));
+                }
+            }
+            let name = format!("{comic_id}-{display_name}.pdf");
+            let local = temp_dir.join(&name);
+            crate::export::create_pdf(images, &local)?;
+            Ok(vec![publish_pdf(app, &local, &name, "")?])
+        }
+    })();
+
+    let _ = std::fs::remove_dir_all(&temp_dir);
+    result
+}
+
+/// 把临时 PDF 发布到下载目录：安卓走 MediaStore（sub_dir 为空时放应用子目录），桌面复制到下载目录
+fn publish_pdf(app: &AppHandle, local: &Path, name: &str, sub_dir: &str) -> eyre::Result<String> {
     #[cfg(target_os = "android")]
     {
-        if let Some(public_path) = downloads::publish_to_downloads(&pdf_path, &pdf_name) {
-            if let Err(err) = std::fs::remove_file(&pdf_path) {
-                tracing::warn!("删除中转PDF`{}`失败: {err:?}", pdf_path.display());
-            }
+        if let Some(public_path) = downloads::publish_to_downloads(local, name, sub_dir) {
             return Ok(public_path);
         }
     }
 
-    Ok(pdf_path.to_string_lossy().to_string())
+    let download_dir = {
+        let config = app.get_config();
+        let config = config.read();
+        config.download_dir.clone()
+    };
+    let dir = if sub_dir.is_empty() { download_dir } else { download_dir.join(sub_dir) };
+    std::fs::create_dir_all(&dir).wrap_err(format!("创建目录`{}`失败", dir.display()))?;
+    let dst = dir.join(name);
+    std::fs::copy(local, &dst)
+        .wrap_err(format!("复制 PDF 到`{}`失败", dst.display()))?;
+    Ok(dst.to_string_lossy().to_string())
 }
 
 fn export_comic_zip_inner(
@@ -172,7 +212,7 @@ fn export_comic_zip_inner(
     // 复制失败就保留这份 zip，把私有路径返回给前端（导出结果不能丢）
     #[cfg(target_os = "android")]
     {
-        if let Some(public_path) = downloads::publish_to_downloads(&zip_path, &zip_name) {
+        if let Some(public_path) = downloads::publish_to_downloads(&zip_path, &zip_name, "") {
             if let Err(err) = std::fs::remove_file(&zip_path) {
                 tracing::warn!("删除中转zip`{}`失败: {err:?}", zip_path.display());
             }
@@ -394,11 +434,10 @@ mod downloads {
     /// 与 gen/android 里的 DownloadSink.kt 一一对应
     const SINK_CLASS: &str = "com/slumber999/jmcomic_shelf/DownloadSink";
     const SINK_METHOD: &str = "publishToDownloads";
-    const SINK_SIG: &str =
-        "(Landroid/content/Context;Ljava/lang/String;Ljava/lang/String;)Ljava/lang/String;";
+    const SINK_SIG: &str = "(Landroid/content/Context;Ljava/lang/String;Ljava/lang/String;Ljava/lang/String;)Ljava/lang/String;";
 
     /// 成功返回人类可读的 `Download/禁漫书架/{文件名}`（app 拿不到真实绝对路径）；API < 29 或失败返回 None
-    pub fn publish_to_downloads(zip_path: &Path, display_name: &str) -> Option<String> {
+    pub fn publish_to_downloads(zip_path: &Path, display_name: &str, sub_dir: &str) -> Option<String> {
         // ndk-context 由 wry 在 Activity 启动时写入；拿不到就当 MediaStore 不可用，直接回退
         let android_context = ndk_context::android_context();
         let vm = unsafe { JavaVM::from_raw(android_context.vm().cast()) }.ok()?;
@@ -409,10 +448,12 @@ mod downloads {
         let path_str = zip_path.to_string_lossy();
         let path = env.new_string(path_str.as_ref()).ok()?;
         let name = env.new_string(display_name).ok()?;
+        let folder = env.new_string(sub_dir).ok()?;
         let args = [
             JValue::Object(&activity),
             JValue::Object(&path),
             JValue::Object(&name),
+            JValue::Object(&folder),
         ];
         let result = match env.call_static_method(&class, SINK_METHOD, SINK_SIG, &args) {
             Ok(result) => result,

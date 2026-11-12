@@ -589,9 +589,9 @@ async exportComicZip(comicId: number, source: LocalLibrarySource) : Promise<Resu
 /**
  * 导出单本 PDF：落点和 zip 相同（桌面下载目录 / 安卓公共 Download）
  */
-async exportComicPdf(comicId: number, source: LocalLibrarySource) : Promise<Result<string, CommandError>> {
+async exportComicPdf(comicId: number, source: LocalLibrarySource, chapterIds: number[], split: boolean) : Promise<Result<string[], CommandError>> {
     try {
-    return { status: "ok", data: await TAURI_INVOKE("export_comic_pdf", { comicId, source }) };
+    return { status: "ok", data: await TAURI_INVOKE("export_comic_pdf", { comicId, source, chapterIds, split }) };
 } catch (e) {
     if(e instanceof Error) throw e;
     else return { status: "error", error: e  as any };

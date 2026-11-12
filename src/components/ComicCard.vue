@@ -58,12 +58,12 @@ async function pickComic() {
 }
 
 function downloadComic() {
-  void confirmWholeComic(props.comicId, t('favorite.download'), startDownload)
+  void confirmWholeComic(props.comicId, 'download', startDownload)
 }
 
 /// 免下载直出 cbz：图片在内存里取回、还原后直接打包，不落下载目录
 function exportCbzWithoutDownload() {
-  void confirmWholeComic(props.comicId, t('comic.export'), startExportCbz)
+  void confirmWholeComic(props.comicId, 'export', startExportCbz)
 }
 
 async function startDownload() {

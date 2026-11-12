@@ -16,6 +16,7 @@ import { useI18n } from '../../i18n.ts'
 import { useStore } from '../../store.ts'
 import { coverThumbUrl } from '../../reader/protocol.ts'
 import { tagExpandLabel, useTagCloudPaging } from '../../tagCloudPaging.ts'
+import { hideRareTags, RARE_TAG_MIN_COUNT } from '../../hideRareTags.ts'
 import ComicGrid from '../components/ComicGrid.vue'
 import ComicGridCard from '../components/ComicGridCard.vue'
 import FavoriteGroupCard from '../components/FavoriteGroupCard.vue'
@@ -260,6 +261,12 @@ const indexRefreshTotal = ref(0)
 let requestId = 0
 
 const busy = computed(() => busyAction.value !== '' || selectAllBusy.value || preparing.value)
+/// 设置里可隐藏冷门标签：只影响标签筛选抽屉的展示
+const filteredFavoriteTags = computed(() =>
+  hideRareTags.value
+    ? favoriteTags.value.filter((tag) => tag.count >= RARE_TAG_MIN_COUNT)
+    : favoriteTags.value,
+)
 /// 标签云分批显示：初始 30 个，每次「展开更多」+50（和桌面 tagCloudPaging 一致）
 const {
   visible: visibleFavoriteTags,
@@ -268,7 +275,7 @@ const {
   canCollapse: canCollapseFavoriteTags,
   loadMore: loadMoreFavoriteTags,
   collapse: collapseFavoriteTags,
-} = useTagCloudPaging(favoriteTags)
+} = useTagCloudPaging(filteredFavoriteTags)
 
 const tagFilterActive = computed(() => selectedTags.value.length > 0)
 const searchActive = computed(() => activeKeyword.value.trim() !== '')
@@ -744,7 +751,6 @@ function toggleTag(tag: string) {
     ? selectedTags.value.filter((item) => item !== tag)
     : [...selectedTags.value, tag]
   page.value = 1
-  scrollToTop()
   // 选上标签但缓存还不全：先确认代价，再补一批，进度写在标签条下面
   if (selectedTags.value.length > 0 && tagUnknownCount.value > 0) {
     requestTagFetch()
@@ -754,7 +760,6 @@ function toggleTag(tag: string) {
 function clearTagFilter() {
   selectedTags.value = []
   page.value = 1
-  scrollToTop()
 }
 
 function selectFolder(id: number) {
@@ -1853,7 +1858,7 @@ onBeforeUnmount(() => {
 
             <template v-else>
               <tag-chips
-                v-if="favoriteTags.length > 0"
+                v-if="filteredFavoriteTags.length > 0"
                 :tags="visibleFavoriteTags"
                 :selected="selectedTags"
                 @toggle="toggleTag" />
