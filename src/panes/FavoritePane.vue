@@ -300,6 +300,9 @@ watch(
 const loading = ref<boolean>(false)
 
 async function getFavourite(folderId: number, page: number, sort: FavoriteSort) {
+  if (store.userProfile === undefined) {
+    return
+  }
   folderIdSelected.value = folderId
   sortSelected.value = sort
   pageSelected.value = page
@@ -410,6 +413,9 @@ async function syncFavoriteFolder() {
 
 /// 读本地索引文件（不是网络请求），没有索引就是 null
 async function loadFavoritesIndex() {
+  if (store.userProfile === undefined) {
+    return
+  }
   favoritesIndex.value = await commands.getFavoritesIndex(folderIdSelected.value)
 }
 
@@ -997,7 +1003,6 @@ async function exportCbz() {
         class="shrink-0"
         size="small"
         :loading="loadingAll"
-        :title="t('favorite.listAllHint')"
         @click="toggleListMode">
         {{ listMode ? t('favorite.backToCards') : t('favorite.listAll') }}
       </n-button>
@@ -1093,7 +1098,6 @@ async function exportCbz() {
           <span class="text-xs text-gray-400">
             {{ t('favorite.tags.cachedCount', { cached: tagCached, total: tagTotal }) }}
           </span>
-          <span class="text-xs text-gray-400">{{ t('favorite.tags.multiHint') }}</span>
         </div>
       </template>
     </div>
@@ -1132,9 +1136,6 @@ async function exportCbz() {
         <span class="text-sm text-gray-500">{{ t('favorite.loadingFolder') }}</span>
       </div>
 
-      <div v-if="filterActive && favoritesIndex === null" class="px-2 text-xs text-gray-500">
-        {{ t('favorite.index.noIndexHint') }}
-      </div>
 
       <div
         ref="listRef"

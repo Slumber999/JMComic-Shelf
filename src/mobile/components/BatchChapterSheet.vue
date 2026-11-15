@@ -44,8 +44,7 @@ function choose(choice: 'skip' | 'pick' | 'all') {
 
 <template>
   <mobile-sheet :showing="showing" :title="title" @update:showing="emit('update:showing', $event)">
-    <p class="batch-hint">{{ t('mobile.batchChapterHint', { count: names.length }) }}</p>
-    <div class="batch-names">
+    <div class="batch-names" :title="t('mobile.batchChapterHint', { count: names.length })">
       <span v-for="name in names" :key="name" class="batch-name" :title="name">{{ name }}</span>
     </div>
     <button

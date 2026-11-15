@@ -42,6 +42,10 @@ async function onLogin() {
     }
     markAuthReady()
     store.userProfile = result.data
+    // 主动登录即开启自动恢复；主动退出时再关掉
+    if (store.config !== undefined) {
+      store.config.autoLogin = true
+    }
     message.success(t('login.success'))
     if (remember.value) {
       store.config.username = username.value

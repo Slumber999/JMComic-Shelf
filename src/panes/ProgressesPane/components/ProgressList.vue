@@ -475,7 +475,6 @@ const ExportProgressCard = defineComponent({
 <template>
   <div class="progresses-selection-container h-full flex flex-col px-2" @contextmenu="showDropdown">
     <SelectionArea :options="selectionOptions" @move="updateSelectedIds" @start="unselectAll" />
-    <span class="ml-auto select-none animate-pulse text-red">{{ t('progressList.dragHint') }}</span>
     <div v-if="itemCount === 0" class="select-none py-8 text-center text-sm text-gray-500">
       {{ finished ? t('progressList.noFinished') : t('progressList.noRunning') }}
     </div>

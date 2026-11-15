@@ -39,7 +39,10 @@ function choose(value: string) {
       :disabled="busy"
       @click="choose(option.value)">
       <span class="option-name">{{ option.label }}</span>
-      <span v-if="option.hint !== undefined" class="option-hint">{{ option.hint }}</span>
+      <!-- 说明只在当前高亮项上显示，不再每项常驻 -->
+      <span v-if="option.value === selected && option.hint !== undefined" class="option-hint">
+        {{ option.hint }}
+      </span>
       <ph-check v-if="option.value === selected" class="option-check" :size="16" />
     </button>
   </mobile-sheet>

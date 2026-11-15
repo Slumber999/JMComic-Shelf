@@ -1498,7 +1498,6 @@ onBeforeUnmount(() => {
               @click="toggleManualWord(word)">
               {{ word }}
             </button>
-            <span v-if="manualWords.length === 0" class="block-empty">{{ t('search.blockManualEmpty') }}</span>
           </div>
           <button v-if="manualWords.length > 0" class="block-clear" type="button" @click="forgetManualWords">
             {{ t('search.blockManualClear') }}

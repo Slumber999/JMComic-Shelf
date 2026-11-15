@@ -69,7 +69,6 @@ onUnmounted(() => {
 <template>
   <div
     class="flex items-center gap-3 px-2 h-7 text-xs cursor-pointer select-none hover:bg-gray-1 shrink-0"
-    :title="t('statusBar.toggleTitle')"
     @click="expanded = !expanded">
     <n-icon size="14">
       <PhDownloadSimple />

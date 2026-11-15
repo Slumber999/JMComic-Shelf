@@ -6,6 +6,7 @@ import { PhColumns, PhHandSwipeLeft, PhHandSwipeRight, PhRows, PhX } from '@phos
 import { useMessage } from 'naive-ui'
 import { useI18n } from '../i18n.ts'
 import { getProgress, markChapterRead, saveProgress as saveReaderProgress } from '../reader/progress.ts'
+import { recordLocalHistory } from '../reader/history.ts'
 import { readerPageUrl } from '../reader/protocol.ts'
 import FavoriteButton from '../components/FavoriteButton.vue'
 import LoadingSpinner from '../components/LoadingSpinner.vue'
@@ -61,6 +62,26 @@ let gifObserver: IntersectionObserver | undefined
 /// 拖进度条期间不让滚动自己改页码，否则进度条跟着手抖
 const seeking = ref<boolean>(false)
 const seekRatio = ref<number>()
+/// 拖动期间只挂当前页，手指停住 150ms（或松手）后才恢复邻页与预取
+const seekSettled = ref<boolean>(true)
+let seekSettleTimer = 0
+
+function clearSeekSettleTimer(): void {
+  if (seekSettleTimer !== 0) {
+    window.clearTimeout(seekSettleTimer)
+    seekSettleTimer = 0
+  }
+}
+
+function scheduleSeekSettle(): void {
+  clearSeekSettleTimer()
+  seekSettled.value = false
+  seekSettleTimer = window.setTimeout(() => {
+    seekSettleTimer = 0
+    seekSettled.value = true
+    preloadAround()
+  }, 150)
+}
 /// 当前视口附近（IO 提前 1.8 屏）需要显示禁漫娘动画的页
 const gifPages = ref<Record<number, boolean>>({})
 
@@ -118,6 +139,15 @@ const PAGE_PREFETCH_BEHIND = 1
 /// 低内存后关掉预取，重新打开阅读器时恢复
 let prefetchEnabled = true
 function shouldMountPage(index: number): boolean {
+  // 加载过的页常驻：几百页的章节体量可控，来回滑不会再有空白页；
+  // 系统报低内存后仍退回窗口模式，避免极端情况下撑爆内存
+  if (pageStates.value[index] === 'ok' && prefetchEnabled) {
+    return true
+  }
+  // 拖动经过的未加载页不挂图：请求会把最终目标页堵在队列后面
+  if (seeking.value && !seekSettled.value) {
+    return false
+  }
   return Math.abs(index - pageIndex.value) <= mountWindow.value
 }
 function isHotPage(index: number): boolean {
@@ -137,6 +167,8 @@ function pageSrc(index: number, url: string): string {
   const retry = pageRetries.value[index] ?? 0
   return retry === 0 ? url : url + '?r=' + retry
 }
+
+
 
 function onPageError(index: number): void {
   setPageState(index, 'failed')
@@ -327,6 +359,8 @@ async function open() {
   chapterIndex.value = 0
   seekRatio.value = undefined
   seeking.value = false
+  seekSettled.value = true
+  clearSeekSettleTimer()
   barVisible.value = true
   warmReaderLoadingGif()
 
@@ -410,6 +444,8 @@ async function close() {
   pageRatios.clear()
   seekRatio.value = undefined
   seeking.value = false
+  seekSettled.value = true
+  clearSeekSettleTimer()
   
   await commands.closeReader()
 }
@@ -429,6 +465,13 @@ function markCurrentChapterRead() {
     return
   }
   markChapterRead(comicId.value, chapterIndex.value)
+  recordLocalHistory({
+    comicId: comicId.value,
+    comicTitle: comicTitle.value,
+    chapter: chapterIndex.value,
+    chapterTitle: currentChapter.value?.title ?? '',
+    totalChapters: chapters.value.length,
+  })
 }
 
 async function prepareChapterOnce(token: number): Promise<number> {
@@ -672,6 +715,11 @@ function onScroll() {
 /// 主动预取：翻页模式取相邻 3 页；滚动模式取挂载窗口外的 ±1~2 页。
 /// 引用要留在 preloaded 里，换引用前不回收，否则正在下的图会被中断。
 function preloadAround() {
+  // 拖动途中不预取，避免几十页抢带宽
+  if (seeking.value && !seekSettled.value) {
+    preloaded.length = 0
+    return
+  }
   // 低内存过就不再预取：预取的图也会被解码，省下来的是真内存
   if (!prefetchEnabled) {
     preloaded.length = 0
@@ -790,6 +838,7 @@ function pageAtRatio(ratio: number): number {
 function onSeekPreview(ratio: number) {
   seeking.value = true
   seekRatio.value = ratio
+  scheduleSeekSettle()
   const page = pageAtRatio(ratio)
   if (page !== pageIndex.value) {
     goToPage(page)
@@ -798,11 +847,15 @@ function onSeekPreview(ratio: number) {
 
 function onSeek(ratio: number) {
   seeking.value = false
+  seekSettled.value = true
+  clearSeekSettleTimer()
   seekRatio.value = undefined
   const page = pageAtRatio(ratio)
   if (page !== pageIndex.value) {
     goToPage(page)
   }
+  // 松手后恢复邻页预取（拖动期间被跳过）
+  preloadAround()
   showBar()
 }
 
@@ -1440,6 +1493,7 @@ onBeforeUnmount(() => {
   }).__jmOnLowMemory
   delete (window as Window & { __jmVolumeKey?: (direction: number) => void }).__jmVolumeKey
   cancelLongPress()
+  clearSeekSettleTimer()
   const host = window as Window & { JMGallery?: { setReaderActive?: (active: boolean) => void } }
   host.JMGallery?.setReaderActive?.(false)
   resizeObserver?.disconnect()
@@ -1522,11 +1576,11 @@ onBeforeUnmount(() => {
             alt=""
             :fetchpriority="index === pageIndex ? 'high' : 'low'"
             :draggable="false"
-            :loading="isHotPage(index) ? 'eager' : 'lazy'"
+            :loading="pageStates[index] === 'ok' || isHotPage(index) ? 'eager' : 'lazy'"
             decoding="async"
             @load="onScrollPageLoad(index, $event)"
             @error="onPageError(index)" />
-          <div v-if="pageStates[index] !== 'ok'" class="page-placeholder">
+          <div v-if="pageStates[index] !== 'ok' || !shouldMountPage(index)" class="page-placeholder">
             <div v-if="showGif(index) && pageStates[index] !== 'failed'" class="page-gif" :style="gifStyle" />
             <span v-if="pageStates[index] === 'failed'" class="page-fail">{{ t('reader.imageFailed') }}</span>
             <span class="page-no">{{ index + 1 }}</span>
@@ -1715,8 +1769,11 @@ onBeforeUnmount(() => {
   display: flex;
   flex-direction: column;
   align-items: center;
+  justify-content: center;
   gap: 14px;
-  padding: 80px 0;
+  min-height: 100%;
+  padding: 0 24px 12vh;
+  box-sizing: border-box;
   color: #666;
   font-size: 13px;
 }

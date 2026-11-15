@@ -1,6 +1,8 @@
 export default {
   common: {
     add: '新增',
+    confirm: '確定',
+    loadMore: '載入更多',
     cancel: '取消',
     retry: '重試',
     copied: '已複製',
@@ -205,6 +207,11 @@ export default {
     collapse: '收起',
   },
   settings: {
+    historySource: '閱讀歷史來源',
+    historyOfficial: '官方歷史（賬號同步）',
+    historyLocal: '本地歷史（僅本機）',
+    historyLocalWarningTitle: '改用本地歷史？',
+    historyLocalWarningContent: '本地歷史只儲存在這臺裝置，不會同步到其他端；官方歷史跟隨賬號同步。',
     language: '語言',
     languageHint: '切換後立即生效，並儲存在配置檔案中',
     tab: {
@@ -733,6 +740,7 @@ export default {
     failed: '瀏覽記錄載入失敗',
     retry: '重試',
     delete: '從瀏覽記錄裡刪除',
+    onlyOngoing: '只看追更',
   },
   updateExported: {
     upToDate: '匯出目錄裡的漫畫都是最新的',

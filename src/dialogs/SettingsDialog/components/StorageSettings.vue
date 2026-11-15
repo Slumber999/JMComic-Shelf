@@ -282,9 +282,6 @@ onMounted(() => {
       <!-- 占用最大的漫画 -->
       <div class="flex flex-col gap-1 border border-gray-2 rounded p-2">
         <span class="font-bold text-sm">{{ t('settings.storage.biggestComics', { count: stats.biggestComics.length }) }}</span>
-        <span v-if="stats.biggestComics.length === 0" class="text-xs text-gray-500">
-          {{ t('settings.storage.noComics') }}
-        </span>
         <div
           v-for="item in stats.biggestComics"
           :key="item.path"

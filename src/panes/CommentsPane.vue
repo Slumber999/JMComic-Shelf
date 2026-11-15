@@ -239,10 +239,7 @@ watch(
             <span class="text-xs">{{ t('comments.block.blockHighFreq') }}</span>
             <n-switch :value="blockHighFreq" size="small" @update:value="setBlockHighFreq" />
           </div>
-          <div v-if="keywords.length === 0" class="text-xs text-gray-500">
-            {{ t('comments.block.empty') }}
-          </div>
-          <div v-else class="flex max-h-64 flex-col gap-1 overflow-auto">
+          <div class="flex max-h-64 flex-col gap-1 overflow-auto">
             <div
               v-for="keyword in keywords"
               :key="keyword"

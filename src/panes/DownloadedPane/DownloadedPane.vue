@@ -384,7 +384,6 @@ function useDropdown() {
     </div>
     <!-- 标签云：悬浮窗口，不占列表高度；点标签累加筛选 -->
     <div class="flex gap-2 items-center px-2 pt-1 select-none">
-      <span class="text-xs text-gray-500">{{ t('downloaded.tagCloudHint') }}</span>
       <n-popover
         v-model:show="tagsExpanded"
         trigger="click"
@@ -452,10 +451,6 @@ function useDropdown() {
       </n-popover>
     </div>
     <div class="flex gap-2 items-center px-2 select-none">
-      <div v-if="!fromExportDir" class="animate-pulse text-sm text-red flex flex-col">
-        <div>{{ t('downloaded.selectHint') }}</div>
-        <div>{{ t('downloaded.buttonsHint') }}</div>
-      </div>
       <template v-if="!fromExportDir">
         <n-button class="ml-auto" type="primary" size="small" @click="exportCbz">
           {{ t('downloaded.exportCbz') }}

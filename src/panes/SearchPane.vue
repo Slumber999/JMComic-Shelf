@@ -689,7 +689,6 @@ function resetFilters() {
         size="small"
         :type="multiTagSearchEnabled ? 'primary' : 'default'"
         :class="multiTagSearchEnabled ? '' : 'multi-tag-toggle-off'"
-        :title="t('search.multiTagHint')"
         @click="multiTagSearchEnabled = !multiTagSearchEnabled">
         <template #icon>
           <n-icon size="16">
@@ -932,9 +931,6 @@ function resetFilters() {
             @click="toggleManualWord(word)">
             {{ word }}
           </n-tag>
-          <span v-if="manualWords.length === 0" class="text-xs text-gray-400">
-            {{ t('search.blockManualEmpty') }}
-          </span>
         </div>
         <n-button v-if="manualWords.length > 0" size="tiny" text @click="forgetManualWords">
           {{ t('search.blockManualClear') }}

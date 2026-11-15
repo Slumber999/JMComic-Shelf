@@ -1,7 +1,9 @@
 <script setup lang="ts">
-import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
+import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { PhArrowClockwise } from '@phosphor-icons/vue'
 import { commands } from '../../bindings.ts'
+import { listLocalHistory, type LocalHistoryEntry } from '../../reader/history.ts'
+import { historySource } from '../../historySource.ts'
 import type { WatchHistoryItem } from '../../bindings.ts'
 import { showError } from '../../errors.ts'
 import { useI18n } from '../../i18n.ts'
@@ -27,14 +29,39 @@ const { save, restore } = useListMemory(MEMORY_KEY)
 const emit = defineEmits<{ navigate: [screen: MobileScreen, detail?: DetailTarget] }>()
 
 const items = ref<WatchHistoryItem[]>([])
+const localItems = ref<LocalHistoryEntry[]>([])
+/// 只看多章节的追更作品
+const onlyOngoing = ref(false)
+const isLocal = computed(() => historySource.value === 'local')
 const page = ref(1)
 const loading = ref(false)
 const failed = ref(false)
 
 const pageCount = computed(() => pageCountOf(items.value.length, LIST_PAGE_SIZE))
 const pageItems = computed(() => slicePage(items.value, page.value, LIST_PAGE_SIZE))
+const filteredLocalItems = computed(() =>
+  onlyOngoing.value ? localItems.value.filter((entry) => entry.totalChapters > 1) : localItems.value,
+)
+const localPageCount = computed(() => pageCountOf(filteredLocalItems.value.length, LIST_PAGE_SIZE))
+const localPageItems = computed(() => slicePage(filteredLocalItems.value, page.value, LIST_PAGE_SIZE))
+
+function chapterLabel(entry: LocalHistoryEntry): string {
+  return entry.chapterTitle !== '' ? entry.chapterTitle : `第 ${entry.chapter + 1} 话`
+}
+
+function formatLastAt(ms: number): string {
+  const date = new Date(ms)
+  return `${date.getMonth() + 1}/${date.getDate()} ${String(date.getHours()).padStart(2, '0')}:${String(date.getMinutes()).padStart(2, '0')}`
+}
 
 async function load() {
+  if (isLocal.value) {
+    loading.value = false
+    failed.value = false
+    localItems.value = listLocalHistory()
+    page.value = 1
+    return
+  }
   loading.value = true
   failed.value = false
   try {
@@ -73,6 +100,10 @@ async function refresh() {
 
 const { pullDistance, refreshing } = usePullRefresh(refresh)
 
+watch(historySource, () => {
+  void refresh()
+})
+
 const saved = readListMemory(MEMORY_KEY)
 onMounted(async () => {
   await load()
@@ -91,13 +122,21 @@ onBeforeUnmount(() => save(page.value, ''))
 
     <div class="meta-row">
       <span class="title">{{ t('history.title') }}</span>
+      <button
+        v-if="isLocal"
+        class="filter"
+        :class="{ active: onlyOngoing }"
+        type="button"
+        @click="onlyOngoing = !onlyOngoing; page = 1">
+        {{ t('history.onlyOngoing') }}
+      </button>
       <button class="refresh" type="button" :aria-label="t('common.refresh')" @click="refresh">
         <ph-arrow-clockwise :size="16" />
       </button>
     </div>
 
     <list-status
-      v-if="loading || failed || items.length === 0"
+      v-if="loading || failed || (isLocal ? localItems.length === 0 : items.length === 0)"
       :loading="loading"
       :failed="failed"
       :empty="!loading && !failed"
@@ -105,6 +144,20 @@ onBeforeUnmount(() => save(page.value, ''))
       :failed-text="t('history.failed')"
       :empty-text="t('history.empty')"
       @retry="refresh" />
+
+    <template v-else-if="isLocal">
+      <comic-grid>
+        <comic-grid-card
+          v-for="(entry, index) in localPageItems"
+          :key="entry.comicId"
+          :image="coverThumbUrl(entry.comicId)"
+          :eager="index < 6"
+          :title="entry.comicTitle || 'JM' + entry.comicId"
+          :author="entry.totalChapters > 1 ? `${chapterLabel(entry)} · ${formatLastAt(entry.lastAt)}` : formatLastAt(entry.lastAt)"
+          @select="emit('navigate', 'detail', { comicId: entry.comicId, title: entry.comicTitle })" />
+      </comic-grid>
+      <mobile-pager :page="page" :page-count="localPageCount" @update:page="changePage" />
+    </template>
 
     <template v-else>
       <comic-grid>
@@ -139,6 +192,23 @@ onBeforeUnmount(() => save(page.value, ''))
 .title {
   color: #888;
   font-size: 12px;
+}
+
+.filter {
+  margin-left: auto;
+  margin-right: 6px;
+  padding: 4px 10px;
+  border: 1px solid #e5e5e5;
+  border-radius: 999px;
+  background: #fff;
+  color: #666;
+  font-size: 12px;
+}
+
+.filter.active {
+  border-color: #ff7a00;
+  background: #fff9f3;
+  color: #d96200;
 }
 
 .refresh {

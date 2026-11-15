@@ -363,7 +363,7 @@ pub fn decode_and_encode_img(
 
     let mut src_img = image::load_from_memory(src_img_data)
         .wrap_err("解码图片失败")?
-        .to_rgb8();
+        .into_rgb8();
 
     let dst_img = if block_num == 0 {
         src_img
@@ -379,7 +379,7 @@ pub fn decode_and_encode_img(
         DownloadFormat::Png => {
             let encoder = PngEncoder::new_with_quality(
                 Cursor::new(&mut dst_img_data),
-                png::CompressionType::Best,
+                png::CompressionType::Fast,
                 png::FilterType::default(),
             );
             dst_img.write_with_encoder(encoder)?;
@@ -396,6 +396,9 @@ fn stitch_img(src_img: &mut RgbImage, block_num: u32) -> RgbImage {
     let (width, height) = src_img.dimensions();
     let mut stitched_img = image::ImageBuffer::new(width, height);
     let remainder_height = height % block_num;
+    let row_bytes = width as usize * 3;
+    let src = src_img.as_raw();
+    let dst = stitched_img.as_mut();
     for i in 0..block_num {
         let mut block_height = height / block_num;
         let src_img_y_start = height - (block_height * (i + 1)) - remainder_height;
@@ -407,11 +410,10 @@ fn stitch_img(src_img: &mut RgbImage, block_num: u32) -> RgbImage {
         }
 
         for y in 0..block_height {
-            let src_y = src_img_y_start + y;
-            let dst_y = dst_img_y_start + y;
-            for x in 0..width {
-                stitched_img.put_pixel(x, dst_y, *src_img.get_pixel(x, src_y));
-            }
+            let src_start = (src_img_y_start + y) as usize * row_bytes;
+            let dst_start = (dst_img_y_start + y) as usize * row_bytes;
+            dst[dst_start..dst_start + row_bytes]
+                .copy_from_slice(&src[src_start..src_start + row_bytes]);
         }
     }
 

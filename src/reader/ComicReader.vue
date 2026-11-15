@@ -12,6 +12,7 @@ import {
   PhX,
 } from '@phosphor-icons/vue'
 import { getProgress, markChapterRead, saveProgress as saveReaderProgress } from './progress.ts'
+import { recordLocalHistory } from './history.ts'
 import { readerPageUrl } from './protocol.ts'
 import { useReaderWidthRuler } from './readerWidth.ts'
 import { useI18n } from '../i18n.ts'
@@ -250,6 +251,13 @@ function markCurrentChapterRead() {
     return
   }
   markChapterRead(comicId.value, chapterIndex.value)
+  recordLocalHistory({
+    comicId: comicId.value,
+    comicTitle: comicTitle.value,
+    chapter: chapterIndex.value,
+    chapterTitle: chapters.value[chapterIndex.value]?.title ?? '',
+    totalChapters: chapters.value.length,
+  })
 }
 
 // ---------- 翻页 / 滚动 ----------

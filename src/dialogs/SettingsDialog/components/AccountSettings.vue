@@ -48,7 +48,7 @@ async function markReadNow() {
   }
 }
 
-/// 退出登录：后端丢掉登录态，前端清掉记住的账号密码（配置变化会自动保存）
+/// 退出登录：只丢登录态，不再清配置里记住的账号密码（下次启动仍可自动登录）
 async function logout() {
   const result = await commands.logout()
   if (result.status === 'error') {
@@ -58,12 +58,12 @@ async function logout() {
   }
 
   store.userProfile = undefined
+  // 主动退出 = 不要再自动恢复登录；账号密码仍留在配置里
+  if (store.config !== undefined) {
+    store.config.autoLogin = false
+  }
   // 收藏夹缓存按账号隔离
   clearFavoriteFolderCache()
-  if (store.config !== undefined) {
-    store.config.username = ''
-    store.config.password = ''
-  }
   message.success(t('account.logoutSuccess'))
 }
 
@@ -89,9 +89,6 @@ function confirmLogout() {
         fallback-src="https://cdn-msp.18comic.vip/templates/frontend/airav/img/title-png/more-ms-jm.webp?v=2" />
       <div class="flex flex-col min-w-0">
         <span class="font-semibold truncate">{{ store.userProfile?.username ?? t('account.notLoggedIn') }}</span>
-        <span class="text-xs text-gray-500">
-          {{ store.userProfile === undefined ? t('account.loginHint') : t('account.loggedIn') }}
-        </span>
       </div>
       <div class="ml-auto flex shrink-0 gap-2">
         <n-button size="small" @click="loginDialogShowing = true">

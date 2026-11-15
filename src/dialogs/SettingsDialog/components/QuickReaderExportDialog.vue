@@ -236,7 +236,6 @@ async function exportReader() {
             v-model:value="customDir"
             size="small"
             readonly
-            :placeholder="t('quickReaderDialog.pickDirPlaceholder')"
             @click="pickTargetDir" />
           <n-button size="small" @click="pickTargetDir">{{ t('quickReaderDialog.pickDirButton') }}</n-button>
         </template>
@@ -250,7 +249,6 @@ async function exportReader() {
         <n-button size="small" :disabled="selectedCount === 0" @click="clearAll">
           {{ t('quickReaderDialog.clearAll') }}
         </n-button>
-        <span class="text-xs text-gray-400 ml-auto">{{ t('quickReaderDialog.nameHint') }}</span>
       </div>
 
       <div class="border border-gray-200 rounded-md overflow-auto" style="max-height: 46vh; min-height: 120px">

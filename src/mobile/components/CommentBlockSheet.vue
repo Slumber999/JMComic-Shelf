@@ -43,8 +43,7 @@ function submit(): void {
           </button>
         </form>
 
-        <p v-if="keywords.length === 0" class="empty">{{ t('comments.block.empty') }}</p>
-        <ul v-else class="keywords">
+        <ul class="keywords">
           <li v-for="keyword in keywords" :key="keyword" class="keyword">
             <span class="keyword-text">{{ keyword }}</span>
             <button

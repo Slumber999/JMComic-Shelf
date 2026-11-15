@@ -281,8 +281,8 @@ onMounted(async () => {
       unlistenResize = unlisten
     })
     .catch((error: unknown) => console.error('监听窗口尺寸失败', error))
-  {
-    // 自动恢复登录态（默认行为）（不再每次都拿账号密码登录）
+  if (store.config.autoLogin) {
+    // 只有「登录后 / 没主动退出」才自动恢复；主动退出会把 autoLogin 关掉
     const restored = await commands.getUserProfile()
     if (restored.status === 'ok') {
       markAuthReady()

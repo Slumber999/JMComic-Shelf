@@ -1,12 +1,28 @@
 <script setup lang="ts">
 import { COVER_PREVIEW_SCALE_MAX, COVER_PREVIEW_SCALE_MIN, useStore } from '../../../store.ts'
-import { NRadio, NRadioGroup, NSlider, NSwitch } from 'naive-ui'
+import { NRadio, NRadioGroup, NSlider, NSwitch, useDialog } from 'naive-ui'
 import { localeOptions, setLocale, useI18n, type Locale } from '../../../i18n.ts'
 import { hideRareTags, setHideRareTags } from '../../../hideRareTags.ts'
+import { historySource, setHistorySource, type HistorySource } from '../../../historySource.ts'
 import { Language } from '../../../bindings.ts'
 
 const store = useStore()
 const { t } = useI18n()
+const dialog = useDialog()
+
+function onHistorySourceChange(value: HistorySource) {
+  if (value !== 'local' || historySource.value === 'local') {
+    setHistorySource(value)
+    return
+  }
+  dialog.warning({
+    title: t('settings.historyLocalWarningTitle'),
+    content: () => t('settings.historyLocalWarningContent'),
+    positiveText: t('common.confirm'),
+    negativeText: t('common.cancel'),
+    onPositiveClick: () => setHistorySource('local'),
+  })
+}
 
 function onLanguageChange(value: string | number) {
   if (store.config === undefined) {
@@ -75,6 +91,14 @@ function onScaleChange(value: number) {
     <div class="flex items-center gap-2 mt-3">
       <span class="font-bold">{{ t('interface.hideRareTags') }}</span>
       <n-switch :value="hideRareTags" @update:value="setHideRareTags" />
+    </div>
+
+    <div class="flex flex-col mt-3">
+      <span class="font-bold">{{ t('settings.historySource') }}</span>
+      <n-radio-group :value="historySource" @update:value="onHistorySourceChange">
+        <n-radio value="official">{{ t('settings.historyOfficial') }}</n-radio>
+        <n-radio value="local">{{ t('settings.historyLocal') }}</n-radio>
+      </n-radio-group>
     </div>
 
     <div class="flex items-center gap-2 mt-5">

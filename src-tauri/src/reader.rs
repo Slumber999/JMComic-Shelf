@@ -20,7 +20,7 @@ use crate::{
     downloader::download_img_task::{calculate_block_num, decode_and_encode_img},
     extensions::{AppHandleExt, EyreReportToMessage, PathIsImg},
     jm_client::IMAGE_DOMAIN,
-    types::{ChapterInfo, Comic},
+    types::{ChapterInfo, Comic, DownloadFormat},
     utils,
 };
 
@@ -191,10 +191,22 @@ async fn fetch_remote_page(
     url: &str,
     block_num: u32,
 ) -> eyre::Result<(Bytes, &'static str)> {
-    let download_format = app.get_config().read().download_format;
+    // 阅读只看不存：统一按 JPEG 返回，结果比 PNG/WebP 快且体积小；下载目录仍按用户配置
+    let download_format = DownloadFormat::Jpeg;
     let jm_client = app.get_jm_client();
     let (img_data, src_format) = jm_client.get_img_data_and_format(url).await?;
-    let encoded = decode_and_encode_img(&img_data, src_format, block_num, download_format)?;
+
+    // 没切图的页直接交给 WebView 原生解码：webp/gif 都支持，省掉解码 + 逐像素拼接 + 重编码
+    if block_num == 0 {
+        return Ok((img_data, content_type_of_format(src_format)));
+    }
+
+    // 转码是 CPU 密集操作，放到 blocking 线程池，避免多页并发时把协议线程串行卡死
+    let encoded = tauri::async_runtime::spawn_blocking(move || {
+        decode_and_encode_img(&img_data, src_format, block_num, download_format)
+    })
+    .await
+    .map_err(|err| eyre!("图片转码任务异常: {err}"))??;
 
     let content_type = if src_format == image::ImageFormat::Gif {
         "image/gif"
@@ -736,6 +748,16 @@ fn handle_request_inner(app: &AppHandle, path: &str) -> tauri::http::Response<Ve
             tracing::error!(err_title, message);
             not_found("read page failed")
         }
+    }
+}
+
+fn content_type_of_format(format: image::ImageFormat) -> &'static str {
+    match format {
+        image::ImageFormat::Gif => "image/gif",
+        image::ImageFormat::Jpeg => "image/jpeg",
+        image::ImageFormat::Png => "image/png",
+        image::ImageFormat::WebP => "image/webp",
+        _ => "application/octet-stream",
     }
 }
 

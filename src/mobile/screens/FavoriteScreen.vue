@@ -451,6 +451,9 @@ async function load(nextPage: number) {
 
 /// 补文件夹本数：每个文件夹取第一页读 total，和列表计数同一口径
 async function loadFolderCounts() {
+  if (store.userProfile === undefined) {
+    return
+  }
   if (folderCountsLoading.value) {
     return
   }
@@ -528,6 +531,9 @@ function clearSearch() {
 }
 
 async function loadFavoritesIndex() {
+  if (store.userProfile === undefined) {
+    return
+  }
   const targetFolder = folderId.value
   const index = await commands.getFavoritesIndex(targetFolder)
   // 读的时候换了收藏夹：这份结果属于上一个目录，丢掉
@@ -545,6 +551,9 @@ async function loadFavoritesIndex() {
 
 /// 读标签快照：纯本地读缓存文件，不发请求
 async function loadFavoriteTags() {
+  if (store.userProfile === undefined) {
+    return
+  }
   const targetFolder = folderId.value
   const snapshot = await commands.getFavoritesTags(targetFolder)
   if (folderId.value !== targetFolder) {
@@ -557,6 +566,9 @@ async function loadFavoriteTags() {
 }
 
 async function refreshTagData() {
+  if (store.userProfile === undefined) {
+    return
+  }
   await loadFavoritesIndex()
   if (tagIndex.value !== null) {
     await loadFavoriteTags()
@@ -946,7 +958,8 @@ function createGroupFromSelection() {
 
 /// 没有分组时「添加到分组」只提示一句，不弹空列表
 function showNoGroupHint() {
-  message.info(t('favorite.groups.noGroupsHint'))
+  // 没有分组时直接进「创建分组」，省掉一句说明
+  createGroupFromSelection()
 }
 
 /// 添加到已有分组：弹分组列表，点哪个就追加进哪个，重复的跳过并报本数
@@ -1715,7 +1728,6 @@ onBeforeUnmount(() => {
     </selection-bar>
 
     <div v-if="store.userProfile === undefined" class="empty">
-      <p>{{ t('account.loginHint') }}</p>
       <button class="primary" type="button" @click="emit('login')">{{ t('app.login') }}</button>
     </div>
 
@@ -1796,7 +1808,6 @@ onBeforeUnmount(() => {
         </div>
 
         <div v-if="filterActive && tagIndex === null" class="index-hint">
-          <span>{{ t('favorite.index.noIndexHint') }}</span>
           <button type="button" :disabled="indexBuilding" @click="promptBuildIndex(true)">
             {{ indexBuilding ? t('favorite.index.building') : t('favorite.tags.buildIndex') }}
           </button>
@@ -1826,7 +1837,6 @@ onBeforeUnmount(() => {
                 :comic-ids="group.comicIds.slice(0, 4)"
                 @open="openGroup(group.id)" />
             </div>
-            <p v-else class="group-empty">{{ t('favorite.groups.emptyHint') }}</p>
           </div>
         </div>
 
@@ -1862,7 +1872,6 @@ onBeforeUnmount(() => {
                 :tags="visibleFavoriteTags"
                 :selected="selectedTags"
                 @toggle="toggleTag" />
-              <p v-else class="tag-empty">{{ t('mobile.tagsEmptyHint') }}</p>
               <div v-if="hasMoreFavoriteTags || canCollapseFavoriteTags" class="tag-more">
                 <button v-if="hasMoreFavoriteTags" type="button" @click="loadMoreFavoriteTags">
                   {{ tagExpandLabel(t, remainingFavoriteTags) }}

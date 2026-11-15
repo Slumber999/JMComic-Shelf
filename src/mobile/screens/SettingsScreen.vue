@@ -7,6 +7,7 @@ import {
   NRadio,
   NRadioGroup,
   NSwitch,
+  useDialog,
   useMessage,
 } from 'naive-ui'
 import { PhTrash } from '@phosphor-icons/vue'
@@ -26,10 +27,27 @@ import { useStore } from '../../store.ts'
 import { readerVolumeKeys, setReaderVolumeKeys } from '../useReaderVolume.ts'
 import { longPressSave, setLongPressSave } from '../useLongPressSave.ts'
 import { hideRareTags, setHideRareTags } from '../../hideRareTags.ts'
+import { historySource, setHistorySource, type HistorySource } from '../../historySource.ts'
 
 const store = useStore()
 const { t } = useI18n()
 const message = useMessage()
+const dialog = useDialog()
+
+/// 切到本地历史前说明：本地历史不会跨端同步
+function onHistorySourceChange(value: HistorySource) {
+  if (value !== 'local' || historySource.value === 'local') {
+    setHistorySource(value)
+    return
+  }
+  dialog.warning({
+    title: t('settings.historyLocalWarningTitle'),
+    content: () => t('settings.historyLocalWarningContent'),
+    positiveText: t('common.confirm'),
+    negativeText: t('common.cancel'),
+    onPositiveClick: () => setHistorySource('local'),
+  })
+}
 
 /// 手机端设置一页四段：账号 → 界面 → 空间 → 关于，不再做横向分组
 const REPO_URL = 'https://github.com/Slumber999/JMComic-Shelf'
@@ -221,6 +239,13 @@ async function copyRepoUrl() {
           <n-switch :value="hideRareTags" size="small" @update:value="setHideRareTags" />
         </div>
       </div>
+      <div class="field">
+        <span class="field-label">{{ t('settings.historySource') }}</span>
+        <n-radio-group :value="historySource" size="small" @update:value="onHistorySourceChange">
+          <n-radio value="official">{{ t('settings.historyOfficial') }}</n-radio>
+          <n-radio value="local">{{ t('settings.historyLocal') }}</n-radio>
+        </n-radio-group>
+      </div>
     </section>
 
     <section class="block">
@@ -294,9 +319,6 @@ async function copyRepoUrl() {
       <!-- 占用最大的漫画：只保留删除，打开文件夹按钮已去掉 -->
       <div v-if="stats !== undefined" class="card">
         <span class="card-title">{{ t('settings.storage.biggestComics', { count: stats.biggestComics.length }) }}</span>
-        <span v-if="stats.biggestComics.length === 0" class="field-hint">
-          {{ t('settings.storage.noComics') }}
-        </span>
         <div v-for="item in stats.biggestComics" :key="item.path" class="comic-row">
           <span class="comic-name" :title="item.name">
             {{ item.name }}

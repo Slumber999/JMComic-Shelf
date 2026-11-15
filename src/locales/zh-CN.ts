@@ -1,6 +1,8 @@
 export default {
   common: {
     add: '添加',
+    confirm: '确定',
+    loadMore: '加载更多',
     cancel: '取消',
     retry: '重试',
     copied: '已复制',
@@ -205,6 +207,11 @@ export default {
     collapse: '收起',
   },
   settings: {
+    historySource: '阅读历史来源',
+    historyOfficial: '官方历史（账号同步）',
+    historyLocal: '本地历史（仅本机）',
+    historyLocalWarningTitle: '改用本地历史？',
+    historyLocalWarningContent: '本地历史只保存在这台设备，不会同步到其他端；官方历史跟随账号同步。',
     language: '语言',
     languageHint: '切换后立即生效，并保存在配置文件中',
     tab: {
@@ -733,6 +740,7 @@ export default {
     failed: '浏览记录加载失败',
     retry: '重试',
     delete: '从浏览记录里删除',
+    onlyOngoing: '只看追更',
   },
   updateExported: {
     upToDate: '导出目录里的漫画都是最新的',
