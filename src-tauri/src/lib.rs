@@ -109,6 +109,8 @@ pub fn run() {
             get_active_image_domain,
             get_comic,
             get_comments,
+            get_my_comments,
+            send_comment,
             get_novel_comments,
             get_watch_history,
             delete_watch_history,

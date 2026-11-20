@@ -91,6 +91,8 @@ export function useComments(options: {
   const loading = ref<boolean>(false)
   const comments = ref<Comment[]>([])
   const total = ref<number>(0)
+  /// 当前页实际用的章节 id（回调评论时 aid 要和列表请求一致）
+  const resolvedChapterId = ref<number | undefined>()
 
   const pageCount = computed(() => Math.max(1, Math.ceil(total.value / PAGE_SIZE)))
 
@@ -105,10 +107,12 @@ export function useComments(options: {
 
     // 章节评论：先把「第几话」解析成章节 id（可能要先拉一次漫画详情）
     let chapterId: number | undefined
+    resolvedChapterId.value = undefined
     if (target !== null && target.kind === 'comic') {
       const chapter = options.chapter?.()
       if (chapter !== undefined) {
         chapterId = await resolveChapterId(target.id, chapter)
+        resolvedChapterId.value = chapterId
         // 期间又发起了新请求：这份响应已过期，不写任何状态
         if (seq !== requestSeq) {
           return
@@ -144,5 +148,5 @@ export function useComments(options: {
     void loadComments()
   }
 
-  return { loading, comments, total, pageCount, loadComments, goToPage }
+  return { loading, comments, total, pageCount, resolvedChapterId, loadComments, goToPage }
 }

@@ -175,6 +175,28 @@ async getComments(aid: number | null, page: number, chapterId: number | null) : 
 }
 },
 /**
+ * 我的评论：uid 是当前登录用户，分页口径与全站评论一致
+ */
+async getMyComments(uid: number, page: number) : Promise<Result<CommentPage, CommandError>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("get_my_comments", { uid, page }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+/**
+ * 发表漫画评论：aid 口径与 get_comments 一致；comment_id 有值表示回复该条评论
+ */
+async sendComment(aid: number, content: string, commentId: string | null) : Promise<Result<null, CommandError>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("send_comment", { aid, content, commentId }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+/**
  * 小说评论（只读）：官方 /forum 走 mode=novel + nid，返回结构和漫画评论一致
  */
 async getNovelComments(nid: number, page: number) : Promise<Result<CommentPage, CommandError>> {

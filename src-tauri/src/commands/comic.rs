@@ -100,6 +100,42 @@ pub async fn get_comments(
         .map_err(|err| CommandError::from("获取评论失败", err))
 }
 
+/// 我的评论：uid 是当前登录用户，分页口径与全站评论一致
+#[tauri::command]
+#[specta::specta]
+#[instrument(level = "error", skip_all, fields(uid = uid, page = page))]
+pub async fn get_my_comments(
+    app: AppHandle,
+    uid: i64,
+    page: i64,
+) -> CommandResult<crate::types::CommentPage> {
+    let jm_client = app.get_jm_client();
+
+    jm_client
+        .get_user_comments(uid, page)
+        .await
+        .map_err(|err| CommandError::from("获取我的评论失败", err))
+}
+
+/// 发表漫画评论：aid 口径与 get_comments 一致（章节评论传章节 id）；
+/// comment_id 有值表示回复该条评论
+#[tauri::command]
+#[specta::specta]
+#[instrument(level = "error", skip_all, fields(aid = aid, reply_to = ?comment_id))]
+pub async fn send_comment(
+    app: AppHandle,
+    aid: i64,
+    content: String,
+    comment_id: Option<String>,
+) -> CommandResult<()> {
+    let jm_client = app.get_jm_client();
+
+    jm_client
+        .send_comment(aid, &content, comment_id.as_deref())
+        .await
+        .map_err(|err| CommandError::from("发表评论失败", err))
+}
+
 /// 小说评论（只读）：官方 /forum 走 mode=novel + nid，返回结构和漫画评论一致
 #[tauri::command]
 #[specta::specta]

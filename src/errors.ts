@@ -95,7 +95,11 @@ export function friendlyError(error: CommandError): string {
   console.error(`[${error.err_title}] ${error.message}`)
   const key = `error.${error.code}`
   const text = t(key)
-  return text === key ? t('error.unknown') : text
+  if (text !== key) {
+    return text
+  }
+  // 后端已经挑好一句人话（例如服务端对评论内容的拒绝说明），认不出的码直接用它
+  return error.message !== '' ? error.message : t('error.unknown')
 }
 
 /// 取错误码对应的操作名，作为通知标题；没写就用通用标题

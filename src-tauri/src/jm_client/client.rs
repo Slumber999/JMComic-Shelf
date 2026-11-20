@@ -29,6 +29,8 @@ enum CommentTarget {
     All,
     Comic(i64),
     Novel(i64),
+    /// 某个用户发表过的评论（官方 /forum 的 uid 参数）
+    User(i64),
 }
 
 impl CommentTarget {
@@ -38,7 +40,7 @@ impl CommentTarget {
         query.insert("page".to_string(), serde_json::Value::from(api_page));
         let mode = match self {
             CommentTarget::Novel(_) => "novel",
-            CommentTarget::All | CommentTarget::Comic(_) => "all",
+            CommentTarget::All | CommentTarget::Comic(_) | CommentTarget::User(_) => "all",
         };
         query.insert("mode".to_string(), serde_json::Value::from(mode));
         match self {
@@ -48,6 +50,9 @@ impl CommentTarget {
             }
             CommentTarget::Novel(nid) => {
                 query.insert("nid".to_string(), serde_json::Value::from(nid));
+            }
+            CommentTarget::User(uid) => {
+                query.insert("uid".to_string(), serde_json::Value::from(uid));
             }
         }
         serde_json::Value::Object(query)
@@ -901,6 +906,12 @@ impl JmClient {
         self.get_comments_by_target(target, page).await
     }
 
+    /// 我的评论：官方 /forum 的 uid 参数，响应结构与全站评论一致
+    #[instrument(level = "error", skip_all, fields(uid = uid, page = page))]
+    pub async fn get_user_comments(&self, uid: i64, page: i64) -> eyre::Result<CommentPage> {
+        self.get_comments_by_target(CommentTarget::User(uid), page).await
+    }
+
     /// 小说评论：官方 /forum 要 mode=novel + nid=<小说id>，响应结构与漫画评论一致
     #[instrument(level = "error", skip_all, fields(nid = nid, page = page))]
     pub async fn get_novel_comments(&self, nid: i64, page: i64) -> eyre::Result<CommentPage> {
@@ -1019,6 +1030,45 @@ impl JmClient {
         Ok(())
     }
 
+    /// 发表漫画评论：POST /comment，表单 comment + aid
+    /// - aid：整本评论传漫画 id；章节评论传该话的 photo id（和 /forum 的 aid 口径一致）
+    /// - comment_id：回复某条评论时传父评论 CID，不传就是新评论
+    #[instrument(level = "error", skip_all, fields(aid = aid, reply_to = ?comment_id))]
+    pub async fn send_comment(
+        &self,
+        aid: i64,
+        content: &str,
+        comment_id: Option<&str>,
+    ) -> eyre::Result<()> {
+        let mut form = json!({
+            "aid": aid,
+            "comment": content,
+        });
+        if let Some(comment_id) = comment_id {
+            form["comment_id"] = json!(comment_id);
+        }
+
+        let data = self
+            .request_decrypted_data(
+                reqwest::Method::POST,
+                ApiPath::SendComment,
+                None,
+                Some(form),
+                "发表评论失败",
+                None,
+            )
+            .await?;
+
+        // 官方返回 { status: "ok", msg: ... }；status 不是 ok 就把服务端原话带出来
+        let resp: serde_json::Value = serde_json::from_str(&data)
+            .wrap_err(format!("将解密后的数据解析为评论返回失败: {data}"))?;
+        let status = resp.get("status").and_then(serde_json::Value::as_str).unwrap_or("");
+        if status != "ok" {
+            let message = resp.get("msg").and_then(serde_json::Value::as_str).unwrap_or("");
+            return Err(eyre!("发表评论失败，服务端返回 status={status}: {message}"));
+        }
+        Ok(())
+    }
     /// 官方通知列表：GET /notifications（需要登录态）
     /// - 官方可能返回裸数组，也可能返回 {total, list}，两种都接
     #[instrument(level = "error", skip_all)]

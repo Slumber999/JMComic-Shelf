@@ -16,6 +16,9 @@ const { t } = useI18n()
 
 /// 全站评论的官方页码游标记在 store 里：切去看漫画再回来，已经拉过的评论还在，从这里继续往后拉
 const total = ref<number>(0)
+/// 我的评论：只替换数据源，渲染和屏蔽逻辑不变
+const myMode = ref<boolean>(false)
+const myPage = ref<number>(1)
 const loading = ref<boolean>(false)
 const exhausted = ref<boolean>(false)
 /// 连续补页仍凑不够时提示「已扫描 N 条，命中 K 条」；只针对这一轮补页
@@ -67,15 +70,22 @@ async function loadBatch(): Promise<void> {
         break
       }
 
-      const page = store.commentsPage
-      const result = await commands.getComments(null, page, null)
+      const page = myMode.value ? myPage.value : store.commentsPage
+      const uid = Number(store.userProfile?.uid ?? 0)
+      const result = myMode.value
+        ? await commands.getMyComments(uid, page)
+        : await commands.getComments(null, page, null)
       if (result.status === 'error') {
         console.error(result.error)
         showError(result.error)
         break
       }
 
-      store.commentsPage = page + 1
+      if (myMode.value) {
+        myPage.value = page + 1
+      } else {
+        store.commentsPage = page + 1
+      }
       scannedPages++
       total.value = result.data.total ?? total.value
 
@@ -126,7 +136,11 @@ function refresh(): void {
   if (loading.value) {
     return
   }
-  store.commentsPage = 1
+  if (myMode.value) {
+    myPage.value = 1
+  } else {
+    store.commentsPage = 1
+  }
   scannedComments.value = []
   displayedRaw.value = []
   pending.value = []
@@ -136,6 +150,25 @@ function refresh(): void {
   scanNotice.value = undefined
   void loadBatch()
 }
+
+/// 切换全站 / 我的：两套游标分开，切换时从第一页重来
+function toggleMyMode() {
+  if (loading.value) {
+    return
+  }
+  if (myMode.value) {
+    myMode.value = false
+  } else if (store.userProfile !== undefined) {
+    myMode.value = true
+  } else {
+    return
+  }
+  myPage.value = 1
+  store.commentsPage = 1
+  refresh()
+}
+
+const headerTitle = computed(() => (myMode.value ? t('comments.mine') : t('comments.titlePlain')))
 
 function loadMore(): void {
   void loadBatch()
@@ -205,16 +238,25 @@ watch(
       <n-icon size="18">
         <PhChatCircleDots />
       </n-icon>
-      <span class="text-sm text-gray-500">{{ t('comments.title', { count: total }) }}</span>
+      <span class="text-sm text-gray-500">{{ headerTitle }}</span>
       <span class="text-xs text-gray-500">{{ t('comments.shownCount', { count: comments.length }) }}</span>
       <span v-if="blockedCount > 0" class="text-xs text-gray-500">
         {{ t('comments.blockedCount', { count: blockedCount }) }}
       </span>
 
+      <n-button
+        class="ml-auto"
+        size="small"
+        :type="myMode ? 'primary' : 'default'"
+        :disabled="store.userProfile === undefined"
+        @click="toggleMyMode">
+        {{ t('comments.mine') }}
+      </n-button>
+
       <!-- 屏蔽设置放在刷新左侧：关键词存在本地，改动即时重新过滤 -->
       <n-popover v-model:show="blockSettingsShowing" trigger="click" placement="bottom-end" raw>
         <template #trigger>
-          <n-button class="ml-auto" size="small" quaternary :title="t('comments.block.open')">
+          <n-button size="small" quaternary :title="t('comments.block.open')">
             <template #icon>
               <n-icon size="16">
                 <PhShieldSlash />
