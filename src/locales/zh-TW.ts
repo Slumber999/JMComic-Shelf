@@ -616,6 +616,7 @@ export default {
     title: '全站最新評論 · 共 {count} 條',
     titlePlain: '全站最新評論',
     mine: '我的',
+    mineTitle: '我的評論',
     loading: '正在載入評論…',
     empty: '暫時沒有評論',
     blockedEmpty: '這 {count} 條評論都被關鍵詞遮蔽了',
@@ -629,8 +630,6 @@ export default {
     replyCount: '{count} 條回覆',
     send: '傳送',
     sendSuccess: '評論已發表',
-    sendNoAscii: '評論不能全是英文或數字',
-    sendTooFrequent: '傳送太頻繁或內容重複，稍等一會兒再試',
     replyTo: '回覆 {name}',
     cancelReply: '取消回覆',
     block: {

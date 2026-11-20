@@ -1,9 +1,8 @@
 <script setup lang="ts">
-import { computed, nextTick, ref, watch } from 'vue'
+import { computed, ref, watch } from 'vue'
 import { NButton, NDrawer, NDrawerContent, NInput, NSelect, useMessage } from 'naive-ui'
 import LoadingSpinner from '../components/LoadingSpinner.vue'
 import { commands, type Comment } from '../bindings.ts'
-import { showError } from '../errors.ts'
 import { useI18n } from '../i18n.ts'
 import CommentThread from '../comments/CommentThread.vue'
 import {
@@ -26,10 +25,10 @@ const showing = defineModel<boolean>('showing', { required: true })
 
 const { t } = useI18n()
 const message = useMessage()
-/// 输入框只给桌面端：移动评论抽屉复用同一个组件，但暂不提供发评论
-const showComposer = computed(
-  () => props.target.kind === 'comic' && !/Android|iPhone|iPad|iPod/i.test(navigator.userAgent),
-)
+/// 移动端输入框放抽屉顶部；桌面端仍在底部（移动抽屉复用同一个组件）
+const isMobilePlatform = /Android|iPhone|iPad|iPod/i.test(navigator.userAgent)
+const showMobileComposer = computed(() => props.target.kind === 'comic' && isMobilePlatform)
+const showDesktopComposer = computed(() => props.target.kind === 'comic' && !isMobilePlatform)
 
 /// 抽屉的页码是组件内的：每次打开都从第一页重新开始
 const page = ref<number>(1)
@@ -84,7 +83,6 @@ function resetChapter() {
 
 function pickReply(comment: Comment) {
   replyTo.value = comment
-  void nextTick(() => inputRef.value?.focus())
 }
 
 function cancelReply() {
@@ -96,12 +94,6 @@ async function sendComment() {
   if (content === '' || sending.value) {
     return
   }
-  // 官方只拒绝「全是英文或数字」的评论：先在本地拦下，别等请求回来才报错
-  const compact = content.replace(/[\s\p{P}\p{S}]/gu, '')
-  if (compact !== '' && /^[A-Za-z0-9]+$/.test(compact)) {
-    message.warning(t('comments.sendNoAscii'))
-    return
-  }
   sending.value = true
   const result = await commands.sendComment(
     resolvedChapterId.value ?? props.target.id,
@@ -110,14 +102,8 @@ async function sendComment() {
   )
   sending.value = false
   if (result.status === 'error') {
-    const reason = result.error.message
-    if (reason.includes('英文和数字')) {
-      message.warning(t('comments.sendNoAscii'))
-    } else if (reason.includes('重复留言')) {
-      message.warning(t('comments.sendTooFrequent'))
-    } else {
-      showError(result.error)
-    }
+    // 服务端的拒绝理由会变（含字母数字、重复留言等），原样展示
+    message.error(result.error.message !== '' ? result.error.message : t('error.unknown'))
     return
   }
   message.success(t('comments.sendSuccess'))
@@ -173,6 +159,33 @@ watch(
         </div>
       </template>
 
+      <!-- 输入框固定在抽屉顶部：回复条在它上面，列表从下面开始滚动 -->
+      <div v-if="showMobileComposer" class="flex flex-col gap-2 pb-2 border-b border-gray-1">
+        <div v-if="replyTo !== undefined" class="flex items-center gap-2 text-xs text-gray-500">
+          <span class="min-w-0 truncate">{{ t('comments.replyTo', { name: userNameOf(replyTo) }) }}</span>
+          <n-button class="ml-auto" size="tiny" quaternary :title="t('comments.cancelReply')" @click="cancelReply">
+            ×
+          </n-button>
+        </div>
+        <div class="flex items-end gap-2">
+          <n-input
+            ref="inputRef"
+            v-model:value="draft"
+            class="flex-1"
+            type="textarea"
+            size="small"
+            :autosize="{ minRows: 1, maxRows: 3 }"
+            @keydown.enter.exact.prevent="sendComment" />
+          <n-button
+            type="primary"
+            size="small"
+            :loading="sending"
+            :disabled="draft.trim() === ''"
+            @click="sendComment">
+            {{ t('comments.send') }}
+          </n-button>
+        </div>
+      </div>
       <div v-if="loading" class="flex flex-col items-center gap-3 py-12 text-orange">
         <loading-spinner :size="14" />
         <span class="text-sm text-gray-500">{{ t('comments.loading') }}</span>
@@ -188,9 +201,9 @@ watch(
 
       <comment-thread v-else :comments="visibleComments" list-class="flex flex-col" @select="pickReply" />
 
-      <!-- 翻页放在列表末尾，跟随内容滚动；底部只留输入 -->
+      <!-- 翻页放在列表末尾，跟随内容滚动 -->
       <div
-        v-if="showComposer && !loading"
+        v-if="showDesktopComposer && !loading"
         class="flex items-center justify-center gap-2 pt-4 pb-1">
         <n-button size="small" :disabled="page <= 1" @click="goToPage(page - 1)">
           {{ t('commentDrawer.prev') }}
@@ -202,7 +215,7 @@ watch(
 
       <template #footer>
         <div class="flex w-full flex-col gap-2">
-          <template v-if="showComposer">
+          <template v-if="showDesktopComposer">
             <div v-if="replyTo !== undefined" class="flex items-center gap-2 text-xs text-gray-500">
               <span class="min-w-0 truncate">{{ t('comments.replyTo', { name: userNameOf(replyTo) }) }}</span>
               <n-button class="ml-auto" size="tiny" quaternary :title="t('comments.cancelReply')" @click="cancelReply">

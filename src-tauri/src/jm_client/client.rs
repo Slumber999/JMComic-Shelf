@@ -1064,8 +1064,12 @@ impl JmClient {
             .wrap_err(format!("将解密后的数据解析为评论返回失败: {data}"))?;
         let status = resp.get("status").and_then(serde_json::Value::as_str).unwrap_or("");
         if status != "ok" {
+            // 直接把服务端的原话抛给界面：限制规则会变，前端不该自己写死文案
             let message = resp.get("msg").and_then(serde_json::Value::as_str).unwrap_or("");
-            return Err(eyre!("发表评论失败，服务端返回 status={status}: {message}"));
+            if message.is_empty() {
+                return Err(eyre!("评论没有发出去，请稍后重试"));
+            }
+            return Err(eyre!("{message}"));
         }
         Ok(())
     }

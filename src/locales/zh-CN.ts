@@ -616,6 +616,7 @@ export default {
     title: '全站最新评论 · 共 {count} 条',
     titlePlain: '全站最新评论',
     mine: '我的',
+    mineTitle: '我的评论',
     loading: '正在加载评论…',
     empty: '暂时没有评论',
     blockedEmpty: '这 {count} 条评论都被关键词屏蔽了',
@@ -629,8 +630,6 @@ export default {
     replyCount: '{count} 条回复',
     send: '发送',
     sendSuccess: '评论已发表',
-    sendNoAscii: '评论不能全是英文或数字',
-    sendTooFrequent: '发送太频繁或内容重复，稍等一会儿再试',
     replyTo: '回复 {name}',
     cancelReply: '取消回复',
     block: {

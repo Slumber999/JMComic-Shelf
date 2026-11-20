@@ -6,6 +6,7 @@ import { commands } from '../../bindings.ts'
 import type { Comment } from '../../bindings.ts'
 import { showError } from '../../errors.ts'
 import { useI18n } from '../../i18n.ts'
+import { useStore } from '../../store.ts'
 import { filterComments, useCommentKeywords } from '../../commentBlock.ts'
 import CommentBlockSheet from '../components/CommentBlockSheet.vue'
 import PullRefreshBar from '../components/PullRefreshBar.vue'
@@ -34,6 +35,7 @@ const MAX_SCAN_PAGES = 5
 
 const { t } = useI18n()
 const message = useMessage()
+const store = useStore()
 const { host, scrollToTop } = useScreenScroll()
 const emit = defineEmits<{ navigate: [screen: MobileScreen, detail?: DetailTarget] }>()
 
@@ -41,6 +43,8 @@ const emit = defineEmits<{ navigate: [screen: MobileScreen, detail?: DetailTarge
 const rawComments = ref<Comment[]>([])
 const total = ref(0)
 const page = ref(1)
+/// 只看自己发表过的评论
+const myMode = ref(false)
 const loading = ref(false)
 const finished = ref(false)
 const failed = ref(false)
@@ -83,8 +87,9 @@ async function load(reset = false) {
     while (added < BATCH_VISIBLE && scannedPages < MAX_SCAN_PAGES && !finished.value) {
       if (rebuildPending.value) break
 
-      // 全站评论没有漫画 id，传 null 走后端的全站接口
-      const result = await retryResult(() => commands.getComments(null, nextPage, null))
+      const result = myMode.value
+        ? await retryResult(() => commands.getMyComments(Number(store.userProfile?.uid ?? 0), nextPage))
+        : await retryResult(() => commands.getComments(null, nextPage, null))
       if (result.status === 'error') {
         if (scannedPages === 0 && !hadData) {
           showError(result.error)
@@ -160,6 +165,22 @@ function openComic(comment: Comment) {
 }
 
 /// 下拉刷新：丢掉已加载的评论、页码与位置记忆，重新拉第一页
+function toggleMyMode() {
+  if (store.userProfile === undefined) {
+    return
+  }
+  myMode.value = !myMode.value
+  clearListCache(CACHE_KEY)
+  rawComments.value = []
+  total.value = 0
+  page.value = 1
+  finished.value = false
+  failed.value = false
+  scanNotice.value = undefined
+  scrollToTop()
+  void load(true)
+}
+
 async function refresh() {
   clearListCache(CACHE_KEY)
   rawComments.value = []
@@ -196,6 +217,9 @@ onMounted(async () => {
 })
 
 onBeforeUnmount(() => {
+  if (myMode.value) {
+    return
+  }
   writeListCache<CommentsCache>(CACHE_KEY, {
     raw: [...rawComments.value],
     total: total.value,
@@ -212,9 +236,17 @@ onBeforeUnmount(() => {
 
     <div class="head">
       <p class="count">
-        {{ t('comments.title', { count: total }) }}
+        {{ myMode ? t('comments.mineTitle') : t('comments.title', { count: total }) }}
         <span v-if="blockedCount > 0" class="blocked">· {{ t('comments.blockedCount', { count: blockedCount }) }}</span>
       </p>
+      <button
+        class="mine-button"
+        :class="{ active: myMode }"
+        type="button"
+        :disabled="store.userProfile === undefined"
+        @click="toggleMyMode">
+        {{ t('comments.mine') }}
+      </button>
       <button
         class="block-button"
         type="button"
@@ -297,6 +329,26 @@ onBeforeUnmount(() => {
 
 .blocked {
   color: #d96200;
+}
+
+.mine-button {
+  flex: 0 0 auto;
+  padding: 4px 10px;
+  border: 1px solid #e5e5e5;
+  border-radius: 999px;
+  background: #fff;
+  color: #666;
+  font-size: 12px;
+}
+
+.mine-button.active {
+  border-color: #ff7a00;
+  background: #fff9f3;
+  color: #d96200;
+}
+
+.mine-button:disabled {
+  opacity: 0.5;
 }
 
 .block-button {

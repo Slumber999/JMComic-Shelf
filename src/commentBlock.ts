@@ -8,7 +8,7 @@ const STORAGE_KEY = 'commentBlockKeywords'
 const HIGH_FREQ_STORAGE_KEY = 'commentBlockHighFreq'
 
 /// 高频广告词：开关打开后，正文命中这些词的评论一律隐藏
-export const HIGH_FREQ_KEYWORDS = ['寇裙', '瀏覽器', '流覽器', '浏览器', '扣扣', '無', '💕', '🉑']
+export const HIGH_FREQ_KEYWORDS = ['寇裙', '瀏覽器', '流覽器', '浏览器', '扣扣', '🈚', '💕', '🉑']
 
 /// 是否屏蔽高频广告词：默认关，纯本地开关
 export function loadBlockHighFreq(): boolean {
@@ -80,23 +80,23 @@ export function isBlocked(
   keywords: string[],
   blockHighFreq = false,
 ): boolean {
-  const content = keywordKey(comment.content ?? '')
-  if (content === '') {
-    return false
-  }
-  if (blockHighFreq) {
-    const hit = HIGH_FREQ_KEYWORDS.some((word) => {
-      const key = keywordKey(word)
-      return key !== '' && content.includes(key)
-    })
-    if (hit) {
-      return true
+  const raw = comment.content ?? ''
+  const content = keywordKey(raw)
+  /// 纯符号/emoji 不做 NFKC：🈚 会被规范化成「無」，会把「純愛無敵」一起误杀
+  const hit = (keyword: string): boolean => {
+    if (!/[\u4e00-\u9fffA-Za-z0-9]/.test(keyword)) {
+      return keyword !== '' && raw.includes(keyword)
     }
-  }
-  return keywords.some((keyword) => {
     const key = keywordKey(keyword)
     return key !== '' && content.includes(key)
-  })
+  }
+  if (content === '' && raw === '') {
+    return false
+  }
+  if (blockHighFreq && HIGH_FREQ_KEYWORDS.some(hit)) {
+    return true
+  }
+  return keywords.some(hit)
 }
 
 /// 回复递归过滤：命中的回复连同它的下级一起隐藏，父评论保留
