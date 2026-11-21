@@ -748,6 +748,7 @@ export default {
     retry: '重试',
     delete: '从浏览记录里删除',
     onlyOngoing: '只看追更',
+    dateFilter: '日期',
   },
   updateExported: {
     upToDate: '导出目录里的漫画都是最新的',

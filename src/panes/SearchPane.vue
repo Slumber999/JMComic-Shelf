@@ -420,6 +420,11 @@ async function search(keyword: string, page: number, sort: SearchSort) {
     await nextTick()
     scrollListToTop(listRef.value)
   } else if ('Comic' in searchResultVariant) {
+    // 按禁漫号直接命中：回到未搜索状态并展开标签，返回后不残留「搜索中」
+    searchInput.value = ''
+    store.searchResult = undefined
+    multiState.value = undefined
+    setTagsExpanded(true)
     store.pickComic(searchResultVariant.Comic)
   }
 

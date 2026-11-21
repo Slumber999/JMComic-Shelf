@@ -8,7 +8,7 @@ const STORAGE_KEY = 'commentBlockKeywords'
 const HIGH_FREQ_STORAGE_KEY = 'commentBlockHighFreq'
 
 /// 高频广告词：开关打开后，正文命中这些词的评论一律隐藏
-export const HIGH_FREQ_KEYWORDS = ['寇裙', '瀏覽器', '流覽器', '浏览器', '扣扣', '🈚', '💕', '🉑']
+export const HIGH_FREQ_KEYWORDS = ['寇裙', '瀏覽器', '流覽器', '資源', '扣扣', '🈚', '💕', '🉑']
 
 /// 是否屏蔽高频广告词：默认关，纯本地开关
 export function loadBlockHighFreq(): boolean {

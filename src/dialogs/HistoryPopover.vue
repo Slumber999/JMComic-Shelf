@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed, ref, watch } from 'vue'
 import { NButton, NIcon } from 'naive-ui'
-import { PhArrowClockwise, PhX } from '@phosphor-icons/vue'
+import { PhArrowClockwise, PhCalendarDots, PhX } from '@phosphor-icons/vue'
 import { commands, WatchHistoryItem } from '../bindings.ts'
 import { showError } from '../errors.ts'
 import { openComicDetail } from '../openComicDetail.ts'
@@ -25,9 +25,88 @@ const items = ref<WatchHistoryItem[]>([])
 const localItems = ref<LocalHistoryEntry[]>([])
 const isLocal = computed(() => historySource.value === 'local')
 const onlyOngoing = ref(false)
-/// 本地记录里只看多章节的追更作品
+const selectedDate = ref<string>()
+const calendarOpen = ref(false)
+
+function dayKeyOf(ms: number): string {
+  const date = new Date(ms)
+  const pad = (value: number) => String(value).padStart(2, '0')
+  return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}`
+}
+
+const historyDayKeys = computed(() => new Set(localItems.value.map((entry) => dayKeyOf(entry.lastAt))))
+const earliestDate = computed(() => {
+  const earliest = localItems.value.reduce<number | undefined>(
+    (min, entry) => (min === undefined || entry.lastAt < min ? entry.lastAt : min),
+    undefined,
+  )
+  return earliest === undefined ? undefined : new Date(earliest)
+})
+const today = new Date()
+const calendarYear = ref(today.getFullYear())
+const calendarMonth = ref(today.getMonth())
+
+function openCalendar() {
+  const earliest = earliestDate.value
+  if (earliest !== undefined) {
+    calendarYear.value = earliest.getFullYear()
+    calendarMonth.value = earliest.getMonth()
+  }
+  calendarOpen.value = true
+}
+
+const canGoPrevMonth = computed(() => {
+  const earliest = earliestDate.value
+  if (earliest === undefined) {
+    return false
+  }
+  return calendarYear.value > earliest.getFullYear() ||
+    (calendarYear.value === earliest.getFullYear() && calendarMonth.value > earliest.getMonth())
+})
+
+const canGoNextMonth = computed(() =>
+  calendarYear.value < today.getFullYear() ||
+  (calendarYear.value === today.getFullYear() && calendarMonth.value < today.getMonth()),
+)
+
+function shiftMonth(delta: number) {
+  const date = new Date(calendarYear.value, calendarMonth.value + delta, 1)
+  calendarYear.value = date.getFullYear()
+  calendarMonth.value = date.getMonth()
+}
+
+const calendarCells = computed<(string | null)[]>(() => {
+  const year = calendarYear.value
+  const month = calendarMonth.value
+  const firstWeekday = new Date(year, month, 1).getDay()
+  const days = new Date(year, month + 1, 0).getDate()
+  const cells: (string | null)[] = Array.from({ length: firstWeekday }, () => null)
+  for (let day = 1; day <= days; day++) {
+    cells.push(`${year}-${String(month + 1).padStart(2, '0')}-${String(day).padStart(2, '0')}`)
+  }
+  return cells
+})
+const calendarTitle = computed(() => `${calendarYear.value}年${calendarMonth.value + 1}月`)
+
+function pickDate(key: string) {
+  selectedDate.value = key
+  visibleCount.value = PAGE_STEP
+}
+
+function clearDate() {
+  selectedDate.value = undefined
+  visibleCount.value = PAGE_STEP
+  calendarOpen.value = false
+}
+
+/// 本地记录里只看多章节的追更作品，并叠加日期筛选
 const filteredLocalItems = computed(() =>
-  onlyOngoing.value ? localItems.value.filter((entry) => entry.totalChapters > 1) : localItems.value,
+  localItems.value.filter((entry) => {
+    if (onlyOngoing.value && entry.totalChapters <= 1) {
+      return false
+    }
+    return selectedDate.value === undefined || dayKeyOf(entry.lastAt) === selectedDate.value
+  }),
 )
 const displayCount = computed(() => (isLocal.value ? filteredLocalItems.value.length : items.value.length))
 /// 一次只渲染这么多，避免 500 行 + 500 张封面一起挂上
@@ -79,6 +158,8 @@ watch(
 )
 
 watch(historySource, () => {
+  selectedDate.value = undefined
+  calendarOpen.value = false
   if (props.active) {
     void load()
   }
@@ -107,6 +188,15 @@ async function openLocal(entry: LocalHistoryEntry) {
         {{ t('history.count', { count: displayCount }) }}
       </span>
       <span class="ml-auto flex items-center gap-0.5">
+        <n-button
+          v-if="isLocal"
+          size="tiny"
+          quaternary
+          :type="selectedDate !== undefined || calendarOpen ? 'primary' : 'default'"
+          :title="t('history.dateFilter')"
+          @click="calendarOpen ? (calendarOpen = false) : openCalendar()">
+          <template #icon><n-icon :size="15"><PhCalendarDots /></n-icon></template>
+        </n-button>
         <n-button size="tiny" quaternary :loading="loading" :title="t('common.refresh')" @click="load">
           <template #icon><n-icon :size="15"><PhArrowClockwise /></n-icon></template>
         </n-button>
@@ -114,6 +204,34 @@ async function openLocal(entry: LocalHistoryEntry) {
           <template #icon><n-icon :size="15"><PhX /></n-icon></template>
         </n-button>
       </span>
+    </div>
+
+    <div v-if="isLocal && calendarOpen" class="hist-calendar">
+      <div class="cal-head">
+        <button class="cal-nav" type="button" :disabled="!canGoPrevMonth" @click="shiftMonth(-1)">‹</button>
+        <span class="cal-title">{{ calendarTitle }}</span>
+        <button class="cal-nav" type="button" :disabled="!canGoNextMonth" @click="shiftMonth(1)">›</button>
+        <button v-if="selectedDate !== undefined" class="cal-cancel" type="button" @click="clearDate">
+          {{ t('common.cancel') }}
+        </button>
+      </div>
+      <div class="cal-week">
+        <span v-for="weekday in ['日', '一', '二', '三', '四', '五', '六']" :key="weekday">{{ weekday }}</span>
+      </div>
+      <div class="cal-grid">
+        <template v-for="(key, index) in calendarCells" :key="index">
+          <span v-if="key === null" class="cal-blank" />
+          <button
+            v-else
+            class="cal-day"
+            :class="{ has: historyDayKeys.has(key), selected: selectedDate === key }"
+            type="button"
+            :disabled="!historyDayKeys.has(key)"
+            @click="pickDate(key)">
+            {{ Number(key.slice(-2)) }}
+          </button>
+        </template>
+      </div>
     </div>
 
     <div v-if="loading && items.length === 0" class="flex items-center justify-center gap-2 py-10 text-xs text-gray-500">
@@ -176,6 +294,92 @@ async function openLocal(entry: LocalHistoryEntry) {
 </template>
 <style scoped>
 /* 和 naive-ui 弹层一致的阴影，别用灰底 */
+.hist-calendar {
+  padding: 8px 10px 10px;
+  border-bottom: 1px solid #f0f0f0;
+}
+
+.cal-head {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.cal-nav {
+  width: 22px;
+  height: 22px;
+  border: none;
+  border-radius: 50%;
+  background: #f2f2f2;
+  color: #666;
+  font-size: 14px;
+  line-height: 1;
+}
+
+.cal-nav:disabled {
+  opacity: 0.35;
+}
+
+.cal-title {
+  min-width: 80px;
+  color: #444;
+  font-size: 12px;
+  font-weight: 600;
+  text-align: center;
+}
+
+.cal-cancel {
+  margin-left: auto;
+  padding: 2px 8px;
+  border: 1px solid #ffd9b8;
+  border-radius: 999px;
+  background: #fff9f3;
+  color: #d96200;
+  font-size: 11px;
+}
+
+.cal-week,
+.cal-grid {
+  display: grid;
+  grid-template-columns: repeat(7, 1fr);
+  gap: 3px;
+  margin-top: 6px;
+}
+
+.cal-week span {
+  color: #999;
+  font-size: 10px;
+  text-align: center;
+}
+
+.cal-day {
+  height: 26px;
+  border: none;
+  border-radius: 6px;
+  background: #f3f3f3;
+  color: #999;
+  font-size: 11px;
+}
+
+.cal-day.has {
+  background: #ffe6d1;
+  color: #b35400;
+}
+
+.cal-day.selected {
+  outline: 2px solid #ff7a00;
+  color: #d96200;
+  font-weight: 700;
+}
+
+.cal-day:disabled {
+  opacity: 1;
+}
+
+.cal-blank {
+  height: 26px;
+}
+
 .hist-panel {
   box-shadow:
     0 3px 6px -4px rgb(0 0 0 / 12%),

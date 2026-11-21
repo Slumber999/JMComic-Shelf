@@ -58,23 +58,42 @@ class MainActivity : TauriActivity() {
         applySystemBars()
         // JS 桥：Tauri 的 WebView 在 super.onCreate 之后才挂，建好前要重试
         attachGalleryBridge()
-        // onBackPressedDispatcher 在主线程分发返回：WebView 还能回退就回退，否则交回系统默认实现
+        // 返回键交给 JS 的导航栈（window.__jmBack）；JS 返回 true 表示已处理，否则走系统默认退出
         onBackPressedDispatcher.addCallback(
             this,
             object : OnBackPressedCallback(true) {
                 override fun handleOnBackPressed() {
                     val webView = findWebView(window.decorView)
-                    if (webView != null && webView.canGoBack()) {
-                        webView.goBack()
-                    } else {
-                        // 先停用回调再分发，避免递归，最终走系统默认处理（退出应用）
-                        isEnabled = false
-                        onBackPressedDispatcher.onBackPressed()
-                        isEnabled = true
+                    if (webView == null) {
+                        finishWithoutHandler()
+                        return
                     }
+                    webView.evaluateJavascript(
+                        "(typeof window.__jmBack === 'function') ? window.__jmBack() : false",
+                    ) { result ->
+                        if (result != "true") {
+                            finishWithoutHandler()
+                        }
+                    }
+                }
+
+                private fun finishWithoutHandler() {
+                    // 先停用回调再分发，避免递归，最终走系统默认处理（退出应用）
+                    isEnabled = false
+                    onBackPressedDispatcher.onBackPressed()
+                    isEnabled = true
                 }
             },
         )
+    }
+
+    // WryActivity 的 onKeyDown 会先看 canGoBack，这里改成统一走返回桥
+    override fun onKeyDown(keyCode: Int, event: KeyEvent?): Boolean {
+        if (keyCode == KeyEvent.KEYCODE_BACK) {
+            onBackPressedDispatcher.onBackPressed()
+            return true
+        }
+        return super.onKeyDown(keyCode, event)
     }
 
     // WebView 创建完成的回调：此时页面还没加载，桥从这里挂最稳（晚挂的话已加载的 JS 里看不到）

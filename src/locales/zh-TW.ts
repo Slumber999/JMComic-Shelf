@@ -748,6 +748,7 @@ export default {
     retry: '重試',
     delete: '從瀏覽記錄裡刪除',
     onlyOngoing: '只看追更',
+    dateFilter: '日期',
   },
   updateExported: {
     upToDate: '匯出目錄裡的漫畫都是最新的',

@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { useSearchBlock } from '../../searchBlock.ts'
-import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch, watchEffect } from 'vue'
+import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { PhMagnifyingGlass, PhTag } from '@phosphor-icons/vue'
 import { commands } from '../../bindings.ts'
 import type {
@@ -34,7 +34,12 @@ import { clearListMemory, readListMemory, useListMemory } from '../listMemory.ts
 import { retryResult } from '../netRetry.ts'
 import { LIST_PAGE_SIZE, SEARCH_PAGE_SIZE, pageCountOf, slicePage } from '../paging.ts'
 import { usePullRefresh } from '../usePullRefresh.ts'
-import { searchModeActive, setSearchResetHandler } from '../searchMode.ts'
+import {
+  beginSearchSession,
+  clearSearchResetHandler,
+  endSearchSession,
+  setSearchResetHandler,
+} from '../searchMode.ts'
 import { useScreenScroll } from '../useScrollHost.ts'
 import { WEEKLY_DAYS, WEEKLY_TYPES, todayWeekday } from '../../weeklySerial.ts'
 import type { DetailTarget, MobileScreen, NovelTarget } from '../useNavStack.ts'
@@ -556,6 +561,9 @@ async function load(nextPage: number) {
         return
       }
       if (isComicVariant(result.data)) {
+        // 直接按禁漫号命中：先回到空闲态（清关键词、展开标签），再进详情。
+        // 否则返回后仍是「搜索中」，刷新会再次命中详情，返回栈也会被顶掉。
+        resetToInitial()
         emit('navigate', 'detail', { comicId: result.data.Comic.id, title: result.data.Comic.name })
         return
       }
@@ -652,6 +660,7 @@ function openNovel(novel: NovelMeta) {
 /// 进入结果态时重置手动状态，标签区回到默认收起
 function enterMode(next: ListMode) {
   mode.value = next
+  beginSearchSession()
   tagManualOpen.value = undefined
   activeCategory.value = undefined
   activeTag.value = undefined
@@ -958,6 +967,7 @@ function resetToInitial() {
   failed.value = false
   loading.value = false
   mode.value = 'idle'
+  endSearchSession()
   // 回到未搜索态：清掉手动状态，标签区自动展开
   tagManualOpen.value = undefined
   // 作废在途请求：回到空闲态后它们不该再把结果写回来
@@ -1114,11 +1124,6 @@ watch(
   { immediate: true },
 )
 
-// 返回逻辑靠这个标记判断要不要先退出结果态、回到空闲态
-watchEffect(() => {
-  searchModeActive.value = mode.value !== 'idle'
-})
-
 /// 有缓存且筛选条件一致：直接把列表塞回去（返回时秒开，不重新请求第一页）
 async function restoreCache(scrollTop?: number): Promise<boolean> {
   if (isIdle.value) {
@@ -1139,8 +1144,10 @@ async function restoreCache(scrollTop?: number): Promise<boolean> {
   return true
 }
 
+let searchResetToken = 0
+
 onMounted(async () => {
-  setSearchResetHandler(resetToInitial)
+  searchResetToken = setSearchResetHandler(resetToInitial)
   loadHistory()
   // 官方标签/分类：缓存已在 setup 里同步渲染，这里只在后台刷新（失败保留缓存）
   void loadOfficialTags()
@@ -1161,8 +1168,10 @@ onMounted(async () => {
   }
   if (!applySavedState(savedState)) {
     mode.value = 'idle'
+    endSearchSession()
     return
   }
+  beginSearchSession()
   if (await restoreCache(saved.scrollTop)) {
     return
   }
@@ -1172,8 +1181,7 @@ onMounted(async () => {
 })
 
 onBeforeUnmount(() => {
-  setSearchResetHandler(undefined)
-  searchModeActive.value = false
+  clearSearchResetHandler(searchResetToken)
   if (isIdle.value) {
     return
   }
