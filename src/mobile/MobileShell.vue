@@ -15,6 +15,7 @@ import { setLocale, useI18n } from '../i18n.ts'
 import { useStore } from '../store.ts'
 import { useNotifications } from '../notifications/useNotifications.ts'
 import FanMenu from './components/FanMenu.vue'
+import { fanMenuEnabled } from './useFanMenu.ts'
 import LinePanel from './components/LinePanel.vue'
 import ScreenPage from './components/ScreenPage.vue'
 import MobileComicReader from './MobileComicReader.vue'
@@ -60,6 +61,12 @@ const activeIndex = ref(0)
 const visitedScreens = ref<Set<string>>(new Set([SHELL_SCREENS[0]]))
 /// 扇形菜单展开时禁用滑动切页（遮罩在挡点击）
 const fanOpen = ref(false)
+// 关掉悬浮按钮时顺手收起菜单，避免分页手势一直被它锁住
+watch(fanMenuEnabled, (enabled) => {
+  if (!enabled) {
+    fanOpen.value = false
+  }
+})
 
 /// 压在分页器上的层级页：下面的列表不卸载，返回键原样退回。
 /// 历史 / 小说 / 排行榜已不在滑动顺序里，只能从入口压进来。
@@ -599,7 +606,7 @@ function onFanNavigate(screen: MobileScreen) {
       </div>
     </main>
 
-    <fan-menu :current="current" @navigate="onFanNavigate" @open-change="fanOpen = $event" />
+    <fan-menu v-if="fanMenuEnabled" :current="current" @navigate="onFanNavigate" @open-change="fanOpen = $event" />
 
     <div v-if="exitHintVisible" class="exit-hint">{{ t('mobile.exitHint') }}</div>
 

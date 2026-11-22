@@ -7,6 +7,12 @@ import { useStore } from './store.ts'
 /// 失败在这里统一弹一次通知：调用方只关心成功后的事，不用各自处理错误。
 export async function openComicDetail(comicId: number): Promise<boolean> {
   const store = useStore()
+  // 离线时本地库存已经握着完整详情，直接打开，别先等一个必然超时的请求
+  const local = store.downloadedComics.find((comic) => comic.id === comicId)
+  if (!navigator.onLine && local !== undefined && (local.chapterInfos?.length ?? 0) > 0) {
+    store.pickComic(local)
+    return true
+  }
   const result = await commands.getComic(comicId)
   if (result.status === 'error') {
     showError(result.error)

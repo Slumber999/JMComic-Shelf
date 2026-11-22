@@ -28,6 +28,7 @@ import { readerVolumeKeys, setReaderVolumeKeys } from '../useReaderVolume.ts'
 import { longPressSave, setLongPressSave } from '../useLongPressSave.ts'
 import { hideRareTags, setHideRareTags } from '../../hideRareTags.ts'
 import { historySource, setHistorySource, type HistorySource } from '../../historySource.ts'
+import { fanMenuEnabled, setFanMenuEnabled } from '../useFanMenu.ts'
 
 const store = useStore()
 const { t } = useI18n()
@@ -237,6 +238,12 @@ async function copyRepoUrl() {
         <div class="field-row">
           <span class="field-label">{{ t('interface.hideRareTags') }}</span>
           <n-switch :value="hideRareTags" size="small" @update:value="setHideRareTags" />
+        </div>
+      </div>
+      <div class="field">
+        <div class="field-row">
+          <span class="field-label">{{ t('interface.showFanMenu') }}</span>
+          <n-switch :value="fanMenuEnabled" size="small" @update:value="setFanMenuEnabled" />
         </div>
       </div>
       <div class="field">

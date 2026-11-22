@@ -591,6 +591,67 @@ impl JmClient {
         decrypt_data(ts, data)
     }
 
+    /// 单线路、单次尝试：不快速重试、不换线。评论这类非幂等 POST 用它，避免重复提交。
+    async fn jm_request_once(
+        &self,
+        method: reqwest::Method,
+        path: ApiPath,
+        form: Option<serde_json::Value>,
+        ts: u64,
+    ) -> eyre::Result<(StatusCode, String)> {
+        let domain = self.api_domain();
+        let generation = self.session_generation.load(Ordering::Relaxed);
+        if !self.cookie_store.has_session(&domain) {
+            self.relogin(generation, &domain).await;
+        }
+
+        let attempt_started = Instant::now();
+        match self
+            .attempt_on_domain(&domain, &method, path, None, form.as_ref(), ts, true)
+            .await
+        {
+            Attempt::Ok { status, body } => Ok((status, body)),
+            Attempt::Unusable { status, body, .. } => Ok((status, body)),
+            Attempt::Transport(err) => {
+                tracing::warn!(
+                    domain = %domain,
+                    elapsed_ms = attempt_started.elapsed().as_millis(),
+                    reason = %err,
+                    "评论提交失败（不换线重发）",
+                );
+                Err(err)
+            }
+        }
+    }
+    /// 只走当前线路一次，响应处理与 request_decrypted_data_with 相同
+    async fn request_decrypted_data_once(
+        &self,
+        method: reqwest::Method,
+        path: ApiPath,
+        form: Option<serde_json::Value>,
+        err_title: &str,
+    ) -> eyre::Result<String> {
+        let ts = SystemTime::now().duration_since(UNIX_EPOCH)?.as_secs();
+        let (status, body) = self.jm_request_once(method, path, form, ts).await?;
+        if status != reqwest::StatusCode::OK {
+            tracing::error!(err_title, status = %status, body = %body, "接口返回了预料之外的状态码");
+            return Err(eyre!("{err_title}，预料之外的状态码({status})，请稍后重试"));
+        }
+        let jm_resp = match serde_json::from_str::<JmResp>(&body) {
+            Ok(jm_resp) => jm_resp,
+            Err(err) => {
+                tracing::error!(err_title, body = %body, reason = %err, "将body解析为JmResp失败");
+                return Err(eyre!("{err_title}，服务端返回的不是接口数据（可能是临时故障），请稍后重试"));
+            }
+        };
+        if jm_resp.code != 200 {
+            return Err(eyre!("{err_title}，预料之外的code: {jm_resp:?}"));
+        }
+        let Some(data) = jm_resp.data.as_str() else {
+            return Err(eyre!("{err_title}，data字段不是字符串: {jm_resp:?}"));
+        };
+        decrypt_data(ts, data)
+    }
     /// 在 request_decrypted_data 之后把解密后的 JSON 文本反序列化为 T
     /// - `parse_err_title`：反序列化失败的文案前缀，最终文案是 `{parse_err_title}失败: {data}`
     async fn request_decrypted<T: serde::de::DeserializeOwned>(
@@ -1048,16 +1109,14 @@ impl JmClient {
             form["comment_id"] = json!(comment_id);
         }
 
+        // 评论是非幂等提交：只走当前线路一次，失败直接报错，不换线重发
         let data = self
-            .request_decrypted_data(
-                reqwest::Method::POST,
-                ApiPath::SendComment,
-                None,
-                Some(form),
-                "发表评论失败",
-                None,
-            )
-            .await?;
+            .request_decrypted_data_once(reqwest::Method::POST, ApiPath::SendComment, Some(form), "发表评论失败")
+            .await
+            .map_err(|err| {
+                tracing::warn!(reason = %err, "评论提交失败");
+                eyre!("网络波动，评论没有发出去，请稍后再试")
+            })?;
 
         // 官方返回 { status: "ok", msg: ... }；status 不是 ok 就把服务端原话带出来
         let resp: serde_json::Value = serde_json::from_str(&data)

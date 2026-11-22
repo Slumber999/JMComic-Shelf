@@ -339,7 +339,7 @@ function onCardSelect(comic: Comic) {
     toggle(comic.id)
     return
   }
-  emit('navigate', 'detail', { comicId: comic.id, title: comic.name })
+  emit('navigate', 'detail', { comicId: comic.id, title: comic.name, comic })
 }
 
 function onCardLongPress(comic: Comic) {

@@ -1009,6 +1009,7 @@ export default {
     gridSizeHint: '切换档位时主窗口会跟着一起缩放',
     splitReader: '阅读器独立窗口',
     hideRareTags: '隐藏收藏夹标签中计数小于 5 的标签',
+    showFanMenu: '显示悬浮菜单按钮',
     coverPreview: '封面悬停预览',
     previewScale: '预览放大倍数',
     times: '{value} 倍',

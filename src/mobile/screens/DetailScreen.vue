@@ -133,6 +133,15 @@ async function load() {
   tagsExpanded.value = false
   exportSheetShowing.value = false
   downloadSheetShowing.value = false
+
+  // 本地库存已经带了完整详情：直接渲染，不把网络请求放在前面（离线也能打开）
+  const prefetched = target.comic
+  if (prefetched !== undefined && (comic.value === undefined || comic.value.id !== prefetched.id)) {
+    comic.value = prefetched
+    loading.value = false
+    return
+  }
+
   // 刷新失败时保留已经加载的详情，只弹一条轻提示
   const hadData = comic.value !== undefined
   try {

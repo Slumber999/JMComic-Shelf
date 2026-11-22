@@ -1009,6 +1009,7 @@ export default {
     gridSizeHint: '切換檔位時主視窗會跟著一起縮放',
     splitReader: '閱讀器獨立視窗',
     hideRareTags: '隱藏收藏夾標籤中計數小於 5 的標籤',
+    showFanMenu: '顯示懸浮選單按鈕',
     coverPreview: '封面懸停預覽',
     previewScale: '預覽放大倍數',
     times: '{value} 倍',

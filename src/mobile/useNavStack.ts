@@ -1,7 +1,7 @@
 import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import type { Ref } from 'vue'
 import { invoke, isTauri } from '@tauri-apps/api/core'
-import type { NovelMeta } from '../bindings.ts'
+import type { Comic, NovelMeta } from '../bindings.ts'
 import { resetSearchMode, searchIsActive } from './searchMode.ts'
 import { exitSelection, selectionActive } from './selectionMode.ts'
 
@@ -22,6 +22,8 @@ export type MobileScreen =
 export interface DetailTarget {
   comicId: number
   title: string
+  /// 本地库存等已经握有完整详情时直接带上，详情页无需先请求服务器
+  comic?: Comic
 }
 
 export interface NovelTarget {
