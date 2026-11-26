@@ -4,6 +4,10 @@ import { PhArrowClockwise, PhCalendarDots } from '@phosphor-icons/vue'
 import { commands } from '../../bindings.ts'
 import { listLocalHistory, type LocalHistoryEntry } from '../../reader/history.ts'
 import { historySource } from '../../historySource.ts'
+import {
+  historyOnlyOngoing as onlyOngoing,
+  historySelectedDate as selectedDate,
+} from '../historyFilters.ts'
 import type { WatchHistoryItem } from '../../bindings.ts'
 import { showError } from '../../errors.ts'
 import { useI18n } from '../../i18n.ts'
@@ -30,10 +34,6 @@ const emit = defineEmits<{ navigate: [screen: MobileScreen, detail?: DetailTarge
 
 const items = ref<WatchHistoryItem[]>([])
 const localItems = ref<LocalHistoryEntry[]>([])
-/// 只看多章节的追更作品
-const onlyOngoing = ref(false)
-/// 日期筛选：为空表示不筛；值为 YYYY-MM-DD（本地时区）
-const selectedDate = ref<string>()
 const calendarOpen = ref(false)
 const isLocal = computed(() => historySource.value === 'local')
 const page = ref(1)
@@ -115,6 +115,11 @@ function clearDate() {
   selectedDate.value = undefined
   page.value = 1
   calendarOpen.value = false
+}
+
+function toggleOngoing() {
+  onlyOngoing.value = !onlyOngoing.value
+  page.value = 1
 }
 
 const filteredLocalItems = computed(() =>
@@ -231,7 +236,7 @@ onBeforeUnmount(() => save(page.value, ''))
         class="filter"
         :class="{ active: onlyOngoing }"
         type="button"
-        @click="onlyOngoing = !onlyOngoing; page = 1">
+        @click="toggleOngoing">
         {{ t('history.onlyOngoing') }}
       </button>
       <button class="refresh" type="button" :aria-label="t('common.refresh')" @click="refresh">
