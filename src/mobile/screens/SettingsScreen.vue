@@ -10,13 +10,14 @@ import {
   useDialog,
   useMessage,
 } from 'naive-ui'
-import { PhTrash } from '@phosphor-icons/vue'
+import { PhCaretDown, PhTrash } from '@phosphor-icons/vue'
 import { getVersion } from '@tauri-apps/api/app'
 import AccountSettings from '../../dialogs/SettingsDialog/components/AccountSettings.vue'
 import {
   commands,
   type FavoritesFolderIndex,
   type Language,
+  type LocalLibrarySource,
   type StorageEntry,
   type StorageStats,
 } from '../../bindings.ts'
@@ -29,6 +30,7 @@ import { longPressSave, setLongPressSave } from '../useLongPressSave.ts'
 import { hideRareTags, setHideRareTags } from '../../hideRareTags.ts'
 import { historySource, setHistorySource, type HistorySource } from '../../historySource.ts'
 import { fanMenuEnabled, setFanMenuEnabled } from '../useFanMenu.ts'
+import { galleryEnabled, setGalleryEnabled } from '../useGalleryEnabled.ts'
 
 const store = useStore()
 const { t } = useI18n()
@@ -73,10 +75,6 @@ const indexStatusText = computed(() => {
     count: favoritesIndex.value.total,
   })
 })
-
-const leftoverBytes = computed(() =>
-  (stats.value?.leftovers ?? []).reduce((sum, item) => sum + item.bytes, 0),
-)
 
 
 async function refreshFavoritesIndex() {
@@ -146,13 +144,50 @@ async function runClean(key: string, clean: () => Promise<CleanResult>, what: st
   }
 }
 
-function cleanLeftovers() {
-  void runClean('leftovers', () => commands.cleanStorageLeftovers(), t('settings.storage.leftovers'))
-}
-
 
 function cleanLogs() {
   void runClean('logs', () => commands.cleanStorageLogs(), t('settings.storage.oldLogs'))
+}
+
+function confirmCleanLogs() {
+  dialog.warning({
+    title: t('settings.storage.logsLabel'),
+    content: () => t('settings.storage.logsNote'),
+    positiveText: t('common.confirm'),
+    negativeText: t('common.cancel'),
+    onPositiveClick: cleanLogs,
+  })
+}
+
+/// 展开某个目录：按需拉全部条目，固定高度滚动
+const expandedSource = ref<LocalLibrarySource>()
+const dirEntries = ref<StorageEntry[]>([])
+const dirLoading = ref(false)
+
+async function loadDirEntries(source: LocalLibrarySource) {
+  dirLoading.value = true
+  try {
+    const result = await commands.getStorageEntries(source)
+    if (result.status === 'error') {
+      showError(result.error)
+      dirEntries.value = []
+      return
+    }
+    dirEntries.value = result.data
+  } catch (error) {
+    console.error(error)
+  } finally {
+    dirLoading.value = false
+  }
+}
+
+function toggleDir(source: LocalLibrarySource) {
+  if (expandedSource.value === source) {
+    expandedSource.value = undefined
+    return
+  }
+  expandedSource.value = source
+  void loadDirEntries(source)
 }
 
 async function deleteComic(entry: StorageEntry) {
@@ -166,6 +201,9 @@ async function deleteComic(entry: StorageEntry) {
     () => commands.deleteLocalComic(comicId, source),
     t('settings.storage.comics'),
   )
+  if (expandedSource.value === source) {
+    await loadDirEntries(source)
+  }
 }
 
 
@@ -247,6 +285,12 @@ async function copyRepoUrl() {
         </div>
       </div>
       <div class="field">
+        <div class="field-row">
+          <span class="field-label">{{ t('mobile.showGallery') }}</span>
+          <n-switch :value="galleryEnabled" size="small" @update:value="setGalleryEnabled" />
+        </div>
+      </div>
+      <div class="field">
         <span class="field-label">{{ t('settings.historySource') }}</span>
         <n-radio-group :value="historySource" size="small" @update:value="onHistorySourceChange">
           <n-radio value="official">{{ t('settings.historyOfficial') }}</n-radio>
@@ -264,97 +308,67 @@ async function copyRepoUrl() {
         <span v-if="loading" class="field-hint">{{ t('settings.storage.counting') }}</span>
       </div>
       <div v-if="stats !== undefined" class="dir-list">
-        <div class="dir-row">
-          <div class="dir-line">
-            <span class="dir-name">{{ t('settings.download.dir') }}</span>
-            <span class="usage-size">{{ formatBytes(stats.download.bytes) }}</span>
-            <span class="usage-count">{{ t('settings.storage.comicCount', { count: stats.download.count }) }}</span>
+        <div v-for="source in (['DownloadDir', 'ExportDir'] as const)" :key="source" class="dir-group">
+          <div class="dir-row">
+            <button class="dir-line dir-toggle" type="button" @click="toggleDir(source)">
+              <span class="dir-name">{{ source === 'DownloadDir' ? t('settings.download.dir') : t('settings.export.dir') }}</span>
+              <span class="usage-size">{{ formatBytes(source === 'DownloadDir' ? stats.download.bytes : stats.export.bytes) }}</span>
+              <span class="usage-count">
+                {{
+                  t('settings.storage.comicCount', {
+                    count: source === 'DownloadDir' ? stats.download.count : stats.export.count,
+                  })
+                }}
+              </span>
+              <ph-caret-down
+                :size="14"
+                class="chevron"
+                :class="{ open: expandedSource === source }" />
+            </button>
+          </div>
+          <div v-if="expandedSource === source" class="dir-entries">
+            <span v-if="dirLoading" class="field-hint">{{ t('common.loading') }}</span>
+            <template v-else>
+              <div v-for="item in dirEntries" :key="item.path" class="comic-row">
+                <span class="comic-name" :title="item.name">{{ item.name }}</span>
+                <span class="comic-size">{{ formatBytes(item.bytes) }}</span>
+                <n-popconfirm @positive-click="deleteComic(item)">
+                  <template #trigger>
+                    <n-button
+                      size="tiny"
+                      quaternary
+                      type="error"
+                      :loading="cleaning === `comic-${item.comicId}-${item.source}`">
+                      <template #icon>
+                        <n-icon><PhTrash /></n-icon>
+                      </template>
+                    </n-button>
+                  </template>
+                  {{
+                    t('settings.storage.deleteConfirm', {
+                      name: item.name,
+                      kind: item.source === 'ExportDir' ? t('settings.storage.exportFile') : t('settings.storage.downloadFile'),
+                      size: formatBytes(item.bytes),
+                    })
+                  }}<br />
+                  {{ t('settings.storage.filesDeleted') }}
+                </n-popconfirm>
+              </div>
+              <span v-if="dirEntries.length === 0" class="field-hint">{{ t('settings.storage.none') }}</span>
+            </template>
           </div>
         </div>
         <div class="dir-row">
-          <div class="dir-line">
-            <span class="dir-name">{{ t('settings.export.dir') }}</span>
-            <span class="usage-size">{{ formatBytes(stats.export.bytes) }}</span>
-            <span class="usage-count">{{ t('settings.storage.comicCount', { count: stats.export.count }) }}</span>
-          </div>
-        </div>
-        <div class="dir-row">
-          <div class="dir-line">
+          <button class="dir-line dir-toggle" type="button" @click="confirmCleanLogs">
             <span class="dir-name">{{ t('settings.storage.logsLabel') }}</span>
             <span class="usage-size">{{ formatBytes(stats.logs.bytes) }}</span>
             <span class="usage-count">{{ t('settings.storage.fileCount', { count: stats.logs.count }) }}</span>
-          </div>
+          </button>
         </div>
       </div>
       <p v-else-if="!loading" class="field-hint">{{ t('settings.storage.countingShort') }}</p>
 
-      <!-- 可清理项：按钮与确认流程保持桌面同款 -->
-      <div v-if="stats !== undefined" class="card">
-        <span class="card-title">{{ t('settings.storage.cleanable') }}</span>
 
-        <div class="entry-row">
-          <span class="entry-text">
-            {{ t('settings.storage.leftoversDetail', { count: stats.leftovers.length, size: formatBytes(leftoverBytes) }) }}
-          </span>
-          <n-popconfirm v-if="stats.leftovers.length > 0" @positive-click="cleanLeftovers">
-            <template #trigger>
-              <n-button size="small" type="warning" secondary :loading="cleaning === 'leftovers'">
-                {{ t('settings.storage.clean') }}
-              </n-button>
-            </template>
-            {{ t('settings.storage.leftoversConfirm', { count: stats.leftovers.length }) }}
-          </n-popconfirm>
-          <span v-else class="field-hint">{{ t('settings.storage.none') }}</span>
-        </div>
-
-
-        <div class="entry-row">
-          <span class="entry-text">
-            {{ t('settings.storage.logsDetail', { count: stats.logs.count, size: formatBytes(stats.logs.bytes) }) }}
-          </span>
-          <n-popconfirm @positive-click="cleanLogs">
-            <template #trigger>
-              <n-button size="small" type="warning" quaternary :loading="cleaning === 'logs'">
-                {{ t('settings.storage.cleanOldLogs') }}
-              </n-button>
-            </template>
-            {{ t('settings.storage.logsNote') }}
-          </n-popconfirm>
-        </div>
-      </div>
-
-      <!-- 占用最大的漫画：只保留删除，打开文件夹按钮已去掉 -->
-      <div v-if="stats !== undefined" class="card">
-        <span class="card-title">{{ t('settings.storage.biggestComics', { count: stats.biggestComics.length }) }}</span>
-        <div v-for="item in stats.biggestComics" :key="item.path" class="comic-row">
-          <span class="comic-name" :title="item.name">
-            {{ item.name }}
-            <span v-if="item.source === 'ExportDir'" class="comic-tag">{{ t('settings.storage.exportTag') }}</span>
-          </span>
-          <span class="comic-size">{{ formatBytes(item.bytes) }}</span>
-          <n-popconfirm @positive-click="deleteComic(item)">
-            <template #trigger>
-              <n-button
-                size="tiny"
-                quaternary
-                type="error"
-                :loading="cleaning === `comic-${item.comicId}-${item.source}`">
-                <template #icon>
-                  <n-icon><PhTrash /></n-icon>
-                </template>
-              </n-button>
-            </template>
-            {{
-              t('settings.storage.deleteConfirm', {
-                name: item.name,
-                kind: item.source === 'ExportDir' ? t('settings.storage.exportFile') : t('settings.storage.downloadFile'),
-                size: formatBytes(item.bytes),
-              })
-            }}<br />
-            {{ t('settings.storage.filesDeleted') }}
-          </n-popconfirm>
-        </div>
-      </div>
 
       <!-- 收藏索引：搜索收藏夹要用的本地文件，重建就是整层覆盖 -->
       <div class="card">
@@ -467,6 +481,41 @@ async function copyRepoUrl() {
   display: flex;
   align-items: center;
   gap: 8px;
+}
+
+.dir-toggle {
+  width: 100%;
+  padding: 0;
+  border: none;
+  background: none;
+  text-align: left;
+}
+
+.chevron {
+  flex: 0 0 auto;
+  color: #999;
+  transition: transform 0.2s ease;
+}
+
+.chevron.open {
+  transform: rotate(180deg);
+}
+
+.dir-group {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.dir-entries {
+  display: flex;
+  flex-direction: column;
+  gap: 9px;
+  height: 62vh;
+  padding: 9px 10px;
+  overflow-y: auto;
+  border: 1px solid #eee;
+  border-radius: 10px;
 }
 
 .dir-name {

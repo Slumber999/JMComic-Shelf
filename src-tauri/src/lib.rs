@@ -33,6 +33,7 @@ mod events;
 mod export;
 mod extensions;
 mod favorites_index;
+mod gallery;
 mod jm_client;
 mod lines;
 mod reader_window;
@@ -169,6 +170,7 @@ pub fn run() {
             export_cbz_chapters,
             export_pdf_chapters,
             get_storage_stats,
+            get_storage_entries,
             clean_storage_leftovers,
             clean_storage_quick_readers,
             clean_storage_logs,
@@ -177,6 +179,9 @@ pub fn run() {
             get_synced_comic_in_favorite,
             get_synced_comic_in_search,
             get_synced_comic_in_weekly,
+            gallery_list,
+            gallery_add_page,
+            gallery_remove,
             open_log_file,
             open_reader_window,
             get_reader_window_target,
@@ -234,6 +239,7 @@ pub fn run() {
                     .name("comic-proto".to_string())
                     .spawn(move || {
                         let response = covers::handle_cover_request(&app, &path, query.as_deref())
+                            .or_else(|| gallery::handle_request(&app, &path))
                             .unwrap_or_else(|| reader::handle_request(&app, &path));
                         measure::finish(
                             "protocol-handle",
@@ -265,6 +271,7 @@ pub fn run() {
                 std::thread::spawn(move || {
                     // 封面（/cover、/local-cover）先走 covers，其余都交给阅读器
                     let response = covers::handle_cover_request(&app, &path, query.as_deref())
+                        .or_else(|| gallery::handle_request(&app, &path))
                         .unwrap_or_else(|| reader::handle_request(&app, &path));
                     // 主线程可能已经超时返回 504 并把 rx 丢掉，send 失败就算了
                     let _ = tx.send(response);

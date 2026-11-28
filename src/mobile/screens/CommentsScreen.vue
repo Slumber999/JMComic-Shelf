@@ -56,7 +56,14 @@ const rebuildPending = ref(false)
 /// 与评论抽屉共用同一份关键词，嵌套回复的过滤由 filterComments 处理（只隐藏命中的那条）
 const { keywords, blockHighFreq } = useCommentKeywords()
 const blockSettingsShowing = ref(false)
-const filtered = computed(() => filterComments(rawComments.value, keywords.value, blockHighFreq.value))
+/// 全站评论里 JM 号为 0 的记录没有目标漫画，不展示
+const filtered = computed(() =>
+  filterComments(
+    rawComments.value.filter((comment) => Number(comment.AID) > 0),
+    keywords.value,
+    blockHighFreq.value,
+  ),
+)
 const visibleComments = computed(() => filtered.value.comments)
 const blockedCount = computed(() => filtered.value.blocked)
 

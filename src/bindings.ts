@@ -567,6 +567,30 @@ async getLocalComics(source: LocalLibrarySource) : Promise<Comic[]> {
 async getLocalTagsAll() : Promise<LocalTag[]> {
     return await TAURI_INVOKE("get_local_tags_all");
 },
+async galleryList() : Promise<Result<GalleryItem[], CommandError>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("gallery_list") };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+async galleryAddPage(token: number, index: number, comicId: number, comicTitle: string, chapterId: number, chapterTitle: string, pageIndex: number) : Promise<Result<GalleryItem, CommandError>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("gallery_add_page", { token, index, comicId, comicTitle, chapterId, chapterTitle, pageIndex }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+async galleryRemove(id: string) : Promise<Result<null, CommandError>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("gallery_remove", { id }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
 async getDownloadedComics() : Promise<Comic[]> {
     return await TAURI_INVOKE("get_downloaded_comics");
 },
@@ -724,6 +748,14 @@ async exportPdfChapters(comic: Comic, chapterIds: number[]) : Promise<Result<nul
 /**
  * 空间统计：下载目录 / 导出目录 / 日志目录的占用，以及可以清理的东西
  */
+async getStorageEntries(source: LocalLibrarySource) : Promise<Result<StorageEntry[], CommandError>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("get_storage_entries", { source }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
 async getStorageStats() : Promise<Result<StorageStats, CommandError>> {
     try {
     return { status: "ok", data: await TAURI_INVOKE("get_storage_stats") };
@@ -1089,6 +1121,7 @@ export type Language = "zh-CN" | "zh-TW"
  * - 注意：这只是"看哪个目录"的视图偏好，由前端存在 localStorage 里，
  * 不再是 Config 的一部分（切一下目录不该触发保存配置）
  */
+export type GalleryItem = { id: string; galleryId: string; comicId: number; comicTitle: string; chapterId: number; chapterTitle: string; pageIndex: number; width: number; height: number; createdAt: number }
 export type LocalLibrarySource = 
 /**
  * 下载目录（正常下载的漫画）

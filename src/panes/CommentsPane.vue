@@ -45,7 +45,9 @@ const blockSettingsShowing = ref<boolean>(false)
 const keywordInput = ref<string>('')
 
 const pageCount = computed(() => Math.max(1, Math.ceil(total.value / PAGE_SIZE)))
-const comments = computed(() => filterComments(displayedRaw.value, keywords.value, blockHighFreq.value).comments)
+/// 全站评论里 JM 号为 0 的记录没有目标漫画，不展示
+const displayableComments = computed(() => displayedRaw.value.filter((comment) => Number(comment.AID) > 0))
+const comments = computed(() => filterComments(displayableComments.value, keywords.value, blockHighFreq.value).comments)
 const blockedCount = computed(() =>
   keywords.value.length === 0 ? 0 : scannedComments.value.filter((c) => isBlocked(c, keywords.value)).length,
 )

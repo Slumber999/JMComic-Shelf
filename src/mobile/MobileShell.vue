@@ -16,6 +16,7 @@ import { useStore } from '../store.ts'
 import { useNotifications } from '../notifications/useNotifications.ts'
 import FanMenu from './components/FanMenu.vue'
 import { fanMenuEnabled } from './useFanMenu.ts'
+import { useSwipeDismiss } from './useSwipeDismiss.ts'
 import LinePanel from './components/LinePanel.vue'
 import ScreenPage from './components/ScreenPage.vue'
 import MobileComicReader from './MobileComicReader.vue'
@@ -32,6 +33,8 @@ import { useTaskProgress } from './useTaskProgress.ts'
 import { refreshFavoriteFolders } from '../favoriteFolders.ts'
 import { SHELL_SCREENS, SHELL_SCREEN_COMPONENTS, isShellScreen } from './shellScreens.ts'
 import { usePagerSwipe } from './usePagerSwipe.ts'
+
+useSwipeDismiss()
 
 const store = useStore()
 const { t } = useI18n()

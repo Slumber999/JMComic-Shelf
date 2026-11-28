@@ -140,6 +140,29 @@ pub fn stats(app: &AppHandle) -> eyre::Result<StorageStats> {
     })
 }
 
+
+/// 列出某个目录下所有漫画条目（名字、大小、删除用 comicId），不截断
+pub fn entries(app: &AppHandle, source: LocalLibrarySource) -> eyre::Result<Vec<StorageEntry>> {
+    let (download_dir, export_dir) = dirs(app);
+    let (dir, comics) = match source {
+        LocalLibrarySource::DownloadDir => (download_dir, local_index::download_comics(app)),
+        LocalLibrarySource::ExportDir => (export_dir, local_index::export_comics(app)),
+    };
+    let comic_dirs: Vec<PathBuf> = comics.iter().map(|(_, _, dir)| dir.clone()).collect();
+    let scan = scan_tree(&dir, &comic_dirs);
+    let mut entries: Vec<StorageEntry> = comics
+        .iter()
+        .map(|(id, name, path)| StorageEntry {
+            name: name.clone(),
+            path: path.to_string_lossy().to_string(),
+            bytes: scan.size_by_comic.get(path).copied().unwrap_or(0),
+            comic_id: Some(*id),
+            source: Some(source),
+        })
+        .collect();
+    entries.sort_by(|a, b| b.bytes.cmp(&a.bytes));
+    Ok(entries)
+}
 /// 清理下载残留（`.下载中-*`），返回释放的字节数
 pub fn clean_leftovers(app: &AppHandle) -> eyre::Result<u64> {
     let (download_dir, _) = dirs(app);

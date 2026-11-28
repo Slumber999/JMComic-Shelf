@@ -17,7 +17,7 @@ use crate::extensions::AppHandleExt;
 use crate::jm_client;
 use crate::lines::{self, ApiLineProbeResult, ImageLineProbeResult};
 use crate::logger;
-use crate::storage::{self, StorageStats};
+use crate::storage::{self, StorageEntry, StorageStats};
 use crate::types::LogMetadata;
 #[tauri::command]
 #[specta::specta]
@@ -233,6 +233,14 @@ pub fn show_config_dir_in_file_manager(app: AppHandle) -> CommandResult<()> {
 #[instrument(level = "error", skip_all)]
 pub fn get_storage_stats(app: AppHandle) -> CommandResult<StorageStats> {
     storage::stats(&app).map_err(|err| CommandError::from("统计空间占用失败", err))
+}
+
+/// 某个本地目录下的全部漫画条目，供设置页展开查看/删除
+#[tauri::command(async)]
+#[specta::specta]
+#[instrument(level = "error", skip_all)]
+pub fn get_storage_entries(app: AppHandle, source: LocalLibrarySource) -> CommandResult<Vec<StorageEntry>> {
+    storage::entries(&app, source).map_err(|err| CommandError::from("读取目录条目失败", err))
 }
 
 /// 清理下载残留（`.下载中-*`），返回释放的字节数

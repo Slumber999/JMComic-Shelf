@@ -140,7 +140,7 @@ function flush(): void {
 
   if (fresh.length === 1) {
     const only = fresh[0]
-    notifier.error({ title: only.title, content: only.content, duration: 6000, keepAliveOnHover: true })
+    notifier.error({ title: only.title, content: only.content, duration: 6000, keepAliveOnHover: true, closable: true })
     return
   }
 
@@ -150,6 +150,7 @@ function flush(): void {
     content: allNetwork ? t('error.networkBusy') : t('error.multiple'),
     duration: 6000,
     keepAliveOnHover: true,
+    closable: true,
   })
 }
 

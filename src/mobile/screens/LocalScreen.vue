@@ -30,6 +30,8 @@ import { useSelection } from '../useSelection.ts'
 import ShelfCanvas from '../components/shelf/ShelfCanvas.vue'
 import type { ShelfBook } from '../components/shelf/ShelfCanvas.vue'
 import { openReaderForComic } from '../../reader/localReader.ts'
+import GalleryPanel from '../components/GalleryPanel.vue'
+import { galleryEnabled } from '../useGalleryEnabled.ts'
 import { useZipExport } from '../useZipExport.ts'
 import type { DetailTarget, MobileScreen } from '../useNavStack.ts'
 
@@ -46,11 +48,26 @@ const dialog = useDialog()
 const message = useMessage()
 const emit = defineEmits<{ navigate: [screen: MobileScreen, detail?: DetailTarget] }>()
 
-/// 下载目录 / 导出目录两栏：来源偏好存在 store 里（localStorage），切换后立刻重扫
-const sources = computed<{ value: LocalLibrarySource; label: string }[]>(() => [
-  { value: 'DownloadDir', label: t('settings.download.dir') },
-  { value: 'ExportDir', label: t('settings.export.dir') },
-])
+type LocalSource = LocalLibrarySource | 'Gallery'
+
+/// 下载目录 / 导出目录 / 画廊三栏：前两个来源偏好存在 store 里，画廊只切本地视图
+const sources = computed<{ value: LocalSource; label: string }[]>(() => {
+  const list: { value: LocalSource; label: string }[] = [
+    { value: 'DownloadDir', label: t('settings.download.dir') },
+    { value: 'ExportDir', label: t('settings.export.dir') },
+  ]
+  if (galleryEnabled.value) {
+    list.push({ value: 'Gallery', label: t('mobile.gallery') })
+  }
+  return list
+})
+
+const galleryActive = ref(false)
+watch(galleryEnabled, (enabled) => {
+  if (!enabled) {
+    galleryActive.value = false
+  }
+})
 
 const comics = ref<Comic[]>([])
 const tags = ref<LocalTag[]>([])
@@ -306,7 +323,13 @@ async function loadTags() {
   }
 }
 
-function selectSource(source: LocalLibrarySource) {
+function selectSource(source: LocalSource) {
+  if (source === 'Gallery') {
+    galleryActive.value = true
+    exit()
+    return
+  }
+  galleryActive.value = false
   if (store.localLibrarySource === source) {
     return
   }
@@ -700,12 +723,16 @@ onBeforeUnmount(() => {
         v-for="source in sources"
         :key="source.value"
         class="source"
-        :class="{ active: store.localLibrarySource === source.value }"
+        :class="{ active: source.value === 'Gallery' ? galleryActive : !galleryActive && store.localLibrarySource === source.value }"
         type="button"
         @click="selectSource(source.value)">
         {{ source.label }}
       </button>
     </div>
+
+    <gallery-panel v-if="galleryActive" @navigate="(screen, detail) => emit('navigate', screen, detail)" />
+
+    <template v-else>
 
     <!-- 本地标签区：默认收起，展开状态只在本会话内记住 -->
     <div v-if="tags.length > 0" class="tag-drawer">
@@ -817,6 +844,7 @@ onBeforeUnmount(() => {
         </comic-grid>
         <mobile-pager :page="page" :page-count="pageCount" @update:page="changePage" />
       </template>
+    </template>
     </template>
 
     <!-- 开书动画：封面从书架飞到中央再翻开 -->

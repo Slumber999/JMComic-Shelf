@@ -21,3 +21,5 @@ pub use settings::*;
 
 mod zip_export;
 pub use zip_export::*;
+
+pub use crate::gallery::{gallery_add_page, gallery_list, gallery_remove};

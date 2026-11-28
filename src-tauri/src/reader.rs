@@ -120,6 +120,23 @@ impl PageCache {
     }
 }
 
+/// 给画廊用：按 token + 页码取当前页处理后的字节（在线页会先转码）
+pub(crate) async fn read_page_bytes(
+    app: &AppHandle,
+    token: u32,
+    index: usize,
+) -> eyre::Result<(Bytes, &'static str)> {
+    let source = {
+        let state = app.state::<ReaderState>();
+        let chapters = state.chapters.read();
+        chapters.get(&token).cloned()
+    }
+    .ok_or_eyre("阅读器章节已失效，请重新打开")?;
+    let app = app.clone();
+    tauri::async_runtime::spawn_blocking(move || source.read_page(&app, index))
+        .await
+        .map_err(|err| eyre::eyre!("读取页面任务异常: {err}"))?
+}
 impl ChapterSource {
     fn page_count(&self) -> usize {
         match self {
@@ -130,7 +147,6 @@ impl ChapterSource {
             }
         }
     }
-
     /// 读取一页，返回 (图片字节, Content-Type)
     fn read_page(&self, app: &AppHandle, index: usize) -> eyre::Result<(Bytes, &'static str)> {
         match self {

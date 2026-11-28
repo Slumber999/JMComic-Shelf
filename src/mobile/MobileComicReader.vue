@@ -5,6 +5,7 @@ import type { Comic, ReaderComic } from '../bindings.ts'
 import { PhColumns, PhHandSwipeLeft, PhHandSwipeRight, PhRows, PhX } from '@phosphor-icons/vue'
 import { useMessage } from 'naive-ui'
 import { useI18n } from '../i18n.ts'
+import { showError } from '../errors.ts'
 import { getProgress, markChapterRead, saveProgress as saveReaderProgress } from '../reader/progress.ts'
 import { recordLocalHistory } from '../reader/history.ts'
 import { readerPageUrl } from '../reader/protocol.ts'
@@ -1264,7 +1265,7 @@ function onPointerCancel(event: PointerEvent) {
 
 // ---------- 长按保存当前页到系统相册 ----------
 
-const LONG_PRESS_MS = 520
+const LONG_PRESS_MS = 600
 const saveSheetShowing = ref(false)
 const savePage = ref(0)
 let longPressTimer = 0
@@ -1307,6 +1308,34 @@ function readAsBase64(blob: Blob): Promise<string> {
 }
 
 /// 取原始字节交给原生写入相册
+async function collectCurrentPage() {
+  const chapter = currentChapter.value
+  const index = savePage.value
+  saveSheetShowing.value = false
+  if (chapter === undefined) {
+    return
+  }
+  try {
+    const result = await commands.galleryAddPage(
+      chapter.token,
+      index,
+      comicId.value,
+      comicTitle.value,
+      chapter.chapterId,
+      chapter.title,
+      index,
+    )
+    if (result.status === 'error') {
+      showError(result.error)
+      return
+    }
+    message.success(t('mobile.collectedToGallery'))
+  } catch (error) {
+    console.error(error)
+    message.error(t('mobile.collectGalleryFailed'))
+  }
+}
+
 async function savePageToGallery() {
   const index = savePage.value
   const url = pageUrls.value[index] ?? ''
@@ -1687,6 +1716,9 @@ onBeforeUnmount(() => {
           </button>
         </header>
         <div class="sheet-list">
+          <button class="sheet-item" type="button" @click="collectCurrentPage">
+            <span class="sheet-title">{{ t('mobile.collectToGallery') }}</span>
+          </button>
           <button class="sheet-item" type="button" @click="savePageToGallery">
             <span class="sheet-title">{{ t('mobile.saveToGallery') }}</span>
           </button>

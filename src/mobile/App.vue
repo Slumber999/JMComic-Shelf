@@ -77,7 +77,7 @@ const themeOverrides: GlobalThemeOverrides = {
   <n-config-provider :theme-overrides="themeOverrides" :locale="naiveLocale">
     <n-modal-provider>
       <n-notification-provider placement="bottom-right" :max="3">
-        <n-message-provider>
+        <n-message-provider :closable="true">
           <n-dialog-provider>
             <mobile-shell />
           </n-dialog-provider>
@@ -86,3 +86,12 @@ const themeOverrides: GlobalThemeOverrides = {
     </n-modal-provider>
   </n-config-provider>
 </template>
+
+<style>
+/* 关闭按钮只作为滑动的程序化入口，不给用户看 */
+.n-message .n-base-close,
+.n-notification .n-base-close {
+  opacity: 0;
+  pointer-events: none;
+}
+</style>
